@@ -505,6 +505,20 @@ class KTransformersLinear(BaseInjectedModule, KLinearBase):
         else:
             assert self.generate_linear is not None, "gpu linear is not initialized"
             y = self.generate_linear.forward(x)
+
+        # LoRA分支计算（仅在训练时激活）
+        if self.training and hasattr(self.orig_module, "lora_A") and hasattr(self.orig_module, "lora_B"):
+            print("!!Training SFT LoRAAAAA!!")
+            print(LoRAAAAA)
+            lora_A = self.orig_module.lora_A["default"]  # 获取LoRA参数
+            lora_B = self.orig_module.lora_B["default"]
+            lora_scale = self.orig_module.scaling["default"]
+            dropout = self.orig_module.lora_dropout["default"]
+            
+            x = dropout(x)
+            lora_output = lora_B(lora_A(x)) * lora_scale
+            y += lora_output  # 叠加LoRA输出
+        
         return y
 
     def load(self, w: dict | nn.Parameter | tuple | None = None, mode: InferenceState = InferenceState.GENERATE):
