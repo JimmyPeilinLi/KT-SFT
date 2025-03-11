@@ -353,6 +353,9 @@ class KDeepseekV2Attention(BaseInjectedModule, DeepseekV2Attention):
         bsz, q_len, _ = hidden_states.size()
 
         if self.q_lora_rank is None:
+            # print(f"self.q_proj.type:{type(self.q_proj)}")
+            # print(f"self.q_proj:{self.q_proj}")
+            # print(f"self.q_proj.__dict__:{self.q_proj.__dict__}")
             q = self.q_proj(hidden_states)
         else:
             q = self.q_b_proj(self.q_a_layernorm(self.q_a_proj(hidden_states)))

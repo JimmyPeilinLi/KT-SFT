@@ -631,15 +631,16 @@ class KDeepseekV2Model(BaseInjectedModule):
             # TODO move to embed_tokens's device, not hard code to cpu
             # input_ids = input_ids.to("cpu")
             input_ids = input_ids.to(self.embed_tokens.weight.device)
-            print(f"input_ids:{input_ids}")
-            print(f"org_device:{org_device}")
-            print(f"self.embed_tokens(input_ids):{type(self.embed_tokens)}")
-            print(f"self.embed_tokens(input_ids):{self.embed_tokens.__dict__}")
-            print(f"print(self.embed_tokens.weight.device):{self.embed_tokens.weight.device}")
+            # print(f"input_ids:{input_ids}")
+            # print(f"org_device:{org_device}")
+            # print(f"self.embed_tokens(input_ids):{type(self.embed_tokens)}")
+            # print(f"self.embed_tokens(input_ids):{self.embed_tokens.__dict__}")
+            # print(f"print(self.embed_tokens.weight.device):{self.embed_tokens.weight.device}")
             inputs_embeds = self.embed_tokens(input_ids).to(org_device)
-            print(f"inputs_embeds:{inputs_embeds}")
-            print(f"inputs_embeds.device:{inputs_embeds.device}")
+            # print(f"inputs_embeds:{inputs_embeds}")
+            # print(f"inputs_embeds.device:{inputs_embeds.device}")
             # print(xx)
+            input_ids = input_ids.to(org_device)
 
         if cache_position is None:
             past_seen_tokens = (

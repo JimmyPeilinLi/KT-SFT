@@ -49,6 +49,7 @@ class KLinearBase(ABC):
     ):
         # super().__init__(key, gguf_loader, config, orig_module, device, **kwargs)
         super().__init__()
+        
         self.key = key
         self.gguf_loader = gguf_loader
         self.device = device
@@ -490,10 +491,14 @@ class KTransformersLinear(BaseInjectedModule, KLinearBase):
             self.prefill_linear = LINEAR_MAP[prefill_op](key, gguf_loader, config, orig_module, prefill_device, **kwargs)
         else:
             self.prefill_linear = None
-
+        # print(f"prefill_op:{prefill_op}")
+        # print(f"generate_op:{generate_op}")
         if generate_op is not None:
             assert generate_op in LINEAR_MAP, f"linear_type {generate_op} not supported"
+            # print(xx)
             self.generate_linear = LINEAR_MAP[generate_op](key, gguf_loader, config, orig_module, generate_device, **kwargs)
+            # print(f"self.__dict__:{self.__dict__}")
+            # print(f"self.generate_linear.__dict__:{self.generate_linear.__dict__}")
         else:
             self.generate_linear = None
         self.mode = InferenceState.UNLOAD
@@ -505,19 +510,6 @@ class KTransformersLinear(BaseInjectedModule, KLinearBase):
         else:
             assert self.generate_linear is not None, "gpu linear is not initialized"
             y = self.generate_linear.forward(x)
-
-        # LoRA分支计算（仅在训练时激活）
-        if self.training and hasattr(self.orig_module, "lora_A") and hasattr(self.orig_module, "lora_B"):
-            print("!!Training SFT LoRAAAAA!!")
-            print(LoRAAAAA)
-            lora_A = self.orig_module.lora_A["default"]  # 获取LoRA参数
-            lora_B = self.orig_module.lora_B["default"]
-            lora_scale = self.orig_module.scaling["default"]
-            dropout = self.orig_module.lora_dropout["default"]
-            
-            x = dropout(x)
-            lora_output = lora_B(lora_A(x)) * lora_scale
-            y += lora_output  # 叠加LoRA输出
         
         return y
 

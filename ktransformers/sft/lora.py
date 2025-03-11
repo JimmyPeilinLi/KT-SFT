@@ -6,6 +6,7 @@ import torch
 from torch.utils.data import DataLoader
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model
+from ktransformers.sft.peft_utils.mapping import inject_adapter_in_model
 # from ktransformers.sft.load_lora import get_custom_peft_model
 import os
 
@@ -71,16 +72,18 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         target_modules=[
-            "q_proj.orig_module",
-            "kv_a_proj_with_mqa.orig_module",
-            "kv_b_proj.orig_module",
-            "o_proj.orig_module"
+            "q_proj",
+            "kv_a_proj_with_mqa",
+            "kv_b_proj",
+            "o_proj"
         ],
         r=8,
         lora_alpha=32,
         lora_dropout=0.1,
     )
-    model = get_peft_model(model, lora_config)
+    
+    model = inject_adapter_in_model(lora_config, model)
+    # model = get_peft_model(model, lora_config)
     # model = get_custom_peft_model(model, lora_config)
 
     # inspect_device(model, '/home/yj/ktransformers/device1.txt')
@@ -126,7 +129,11 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
         ),
     )
 
-    trainer.train()
+    # trainer.train()
+
+
+    model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
+
     model.save_pretrained(save_adapter_path)
 
 

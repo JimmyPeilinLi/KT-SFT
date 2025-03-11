@@ -202,4 +202,12 @@ def local_chat(
 
 
 if __name__ == "__main__":
-    fire.Fire(local_chat)
+    local_chat(
+    model_path="/home/yj/ktransformers/DeepSeek-V2-Lite-Chat",
+    gguf_path="/home/yj/ktransformers/GGUF-DeepSeek-V2-Lite-Chat",
+    cpu_infer=32,
+    max_new_tokens=1000,
+    force_think=True,
+    optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft.yaml",
+    sft_data_path="/home/yj/ktransformers/train_data.json",
+    save_adapter_path="/home/yj/ktransformers/ktransformers/sft/adapter")
