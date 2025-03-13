@@ -51,6 +51,8 @@ class BaseInjectedModule(nn.Module):
     def __setattr__(self, name: str, value: Tensor | nn.Module) -> None:
         if name == "orig_module":
             return nn.Module.__setattr__(self, "orig_module", value)
+        # elif name == "base_layer":
+        #     return nn.Module.__setattr__(self, "base_layer", value)
         elif hasattr(self, name):
             return object.__setattr__(self, name, value)
         return nn.Module.__getattr__(self, "orig_module").__setattr__(name, value)

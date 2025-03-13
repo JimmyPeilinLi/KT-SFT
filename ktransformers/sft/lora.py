@@ -72,10 +72,10 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         target_modules=[
-            "q_proj",
-            "kv_a_proj_with_mqa",
-            "kv_b_proj",
-            "o_proj"
+            "q_proj"
+            # "kv_a_proj_with_mqa",
+            # "kv_b_proj",
+            # "o_proj"
         ],
         r=8,
         lora_alpha=32,

@@ -47,8 +47,9 @@ class KLinearBase(ABC):
         device: str = "cuda",
         **kwargs,
     ):
+        print(KLinearBase.__mro__)
         # super().__init__(key, gguf_loader, config, orig_module, device, **kwargs)
-        super().__init__()
+        ABC().__init__()
         
         self.key = key
         self.gguf_loader = gguf_loader

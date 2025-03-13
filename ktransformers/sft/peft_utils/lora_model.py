@@ -250,7 +250,7 @@ class LoraModel(nn.Module, ABC):
             "loaded_in_4bit": getattr(self.model, "is_loaded_in_4bit", False),
         }
 
-        new_module = self._create_new_module(lora_config, adapter_name, target, **kwargs)
+        new_module = self._create_new_module(lora_config, adapter_name, target, parent, **kwargs)
         self._replace_module(parent, target_name, new_module, target)
 
     def _replace_module(self, parent, child_name, new_module, child):
@@ -259,10 +259,10 @@ class LoraModel(nn.Module, ABC):
         # _mark_only_adapters_as_trainable
 
         # child layer wraps the original module, unpack it
-        if hasattr(child, "base_layer"):
-            child = child.base_layer
+        if hasattr(child, "orig_module"):
+            child = child.orig_module
 
-        if not hasattr(new_module, "base_layer"):
+        if not hasattr(new_module, "orig_module"):
             if hasattr(new_module, "W_q"):  # HQQ
                 new_module.W_q = child.W_q
             else:
@@ -271,8 +271,8 @@ class LoraModel(nn.Module, ABC):
                 new_module.bias = child.bias
 
         if getattr(child, "state", None) is not None:
-            if hasattr(new_module, "base_layer"):
-                new_module.base_layer.state = child.state
+            if hasattr(new_module, "orig_module"):
+                new_module.orig_module.state = child.state
             else:
                 new_module.state = child.state
             new_module.to(child.weight.device)
@@ -292,6 +292,9 @@ class LoraModel(nn.Module, ABC):
                     if hasattr(child.generate_linear, "weight")
                     else next(child.parameters())
                 )
+                # (orig_module): Lora.Linear(
+                    # (orig_module): Linear(..),
+                    # (Lora_A): Linear(..)...)
                 
                 if not any(p.device == meta for p in module.parameters()):
                     module.to(weight.device)
@@ -318,7 +321,7 @@ class LoraModel(nn.Module, ABC):
                 raise NotImplementedError(f"Requested bias: {bias}, is not implemented.")
 
     @staticmethod
-    def _create_new_module(lora_config, adapter_name, target, **kwargs):
+    def _create_new_module(lora_config, adapter_name, target, parent, **kwargs):
         # Collect dispatcher functions to decide what backend to use for the replaced LoRA layer. The order matters,
         # because the first match is always used. Therefore, the default layers should be checked last.
         dispatchers = []
@@ -331,7 +334,7 @@ class LoraModel(nn.Module, ABC):
 
         new_module = None
         for dispatcher in dispatchers:
-            new_module = dispatcher(target, adapter_name, lora_config=lora_config, **kwargs)
+            new_module = dispatcher(target=target, adapter_name=adapter_name, lora_config=lora_config, **kwargs)
             if new_module is not None:  # first match wins
                 break
 

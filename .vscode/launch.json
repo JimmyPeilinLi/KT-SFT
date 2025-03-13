@@ -2,17 +2,13 @@
     "version": "0.2.0",
     "configurations": [
         
+        
         {
             "name": "Python: Current File",
             "type": "debugpy",
             "request": "launch",
-            // 要调试的 Python 文件
             "program": "/home/yj/ktransformers/ktransformers/local_chat.py",
-            
-            // 禁用只调试你自己写的代码
             "justMyCode": false
-            
-            // 其他调试配置也可以在此处设置
         }
     ]
 }
