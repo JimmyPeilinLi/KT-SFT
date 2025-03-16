@@ -287,7 +287,7 @@ class LoraLayer(BaseTunerLayer):
     other_param_names = ("r", "lora_alpha", "scaling", "lora_dropout")
 
     def __init__(self, base_layer: nn.Module, ephemeral_gpu_offload: bool = False, **kwargs) -> None:
-        print("Received kwargs:", kwargs)  # 查看实际传递的参数
+        # print("Received kwargs:", kwargs)  # 查看实际传递的参数
         self.base_layer = base_layer
         self.r = {}
         self.lora_alpha = {}

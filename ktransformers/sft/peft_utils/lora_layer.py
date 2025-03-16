@@ -15,6 +15,7 @@ from peft.tuners.lora.config import LoraConfig
 
 from ktransformers.operators.linear import KTransformersLinear, KLinearTorch, KLinearBase
 from ktransformers.operators.base_operator import BaseInjectedModule
+from ktransformers.util.utils import InferenceState
 
 def dispatch_default(
     target: torch.nn.Module,
@@ -288,7 +289,7 @@ class LoraLayer(BaseTunerLayer):
     other_param_names = ("r", "lora_alpha", "scaling", "lora_dropout")
 
     def __init__(self, orig_module: nn.Module, ephemeral_gpu_offload: bool = False, **kwargs) -> None:
-        print("Received kwargs:", kwargs)  # 查看实际传递的参数
+        # print("Received kwargs:", kwargs)  # 查看实际传递的参数
         self.orig_module = orig_module
         self.r = {}
         self.lora_alpha = {}
@@ -1044,7 +1045,7 @@ class KTransformersLinearLora(KTransformersLinear, LoraLayer):  # 保持原始�
         **kwargs,
     ):
         # super().__init__(orig_module, **kwargs)
-        print(f"KTransformersLinearLora:{KTransformersLinearLora.__mro__}")
+        # print(f"KTransformersLinearLora:{KTransformersLinearLora.__mro__}")
         
         # 先初始化KTransformersLinear
         KTransformersLinear.__init__(
@@ -1063,6 +1064,7 @@ class KTransformersLinearLora(KTransformersLinear, LoraLayer):  # 保持原始�
         # 再初始化LoraLayer
         LoraLayer.__init__(self, orig_module=orig_module.orig_module, **kwargs)
 
+        self.load(mode = InferenceState.GENERATE)
 
         self._active_adapter = adapter_name
 

@@ -33,6 +33,8 @@ from ktransformers.server.config.config import Config
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled
 from ktransformers.sft.lora import lora_and_load_adapter
 
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
 # for debug
 def write_to_file(content, file_path: str = '/home/yj/ktransformers/mark_content.txt', mode: str = 'a', encoding: str = 'utf-8') -> None:
     """

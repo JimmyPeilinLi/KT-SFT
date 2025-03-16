@@ -1742,7 +1742,8 @@ class DeepseekV2ForCausalLM(DeepseekV2PreTrainedModel):
         )
 
         hidden_states = outputs[0]
-        logits = self.lm_head(hidden_states[:,-1:,:]).float()
+        # logits = self.lm_head(hidden_states[:,-1:,:]).float()
+        logits = self.lm_head(hidden_states).float() 
 
         loss = None
         if labels is not None:

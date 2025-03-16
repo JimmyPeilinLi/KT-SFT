@@ -1,8 +1,61 @@
 import torch
+from transformers import PreTrainedModel
+import warnings
+from typing import TYPE_CHECKING, Any, Optional
 
 from peft.config import PeftConfig
+from peft.peft_model import (
+    PeftModel,
+    PeftModelForCausalLM)
 
 from ktransformers.sft.peft_utils.lora_model import LoraModel
+from ktransformers.sft.base_tuner import BaseTuner, BaseTunerLayer
+
+def get_peft_model(
+    model: PreTrainedModel,
+    peft_config: PeftConfig,
+    adapter_name: str = "default",
+    mixed: bool = False,
+    autocast_adapter_dtype: bool = True,
+    revision: Optional[str] = None,
+    low_cpu_mem_usage: bool = False,
+) -> PeftModel:
+    """
+    Returns a Peft model object from a model and a config.
+
+    Args:
+        model ([`transformers.PreTrainedModel`]):
+            Model to be wrapped.
+        peft_config ([`PeftConfig`]):
+            Configuration object containing the parameters of the Peft model.
+        adapter_name (`str`, `optional`, defaults to `"default"`):
+            The name of the adapter to be injected, if not provided, the default adapter name is used ("default").
+        mixed (`bool`, `optional`, defaults to `False`):
+            Whether to allow mixing different (compatible) adapter types.
+        autocast_adapter_dtype (`bool`, *optional*):
+            Whether to autocast the adapter dtype. Defaults to `True`. Right now, this will only cast adapter weights
+            using float16 or bfloat16 to float32, as this is typically required for stable training, and only affect
+            select PEFT tuners.
+        revision (`str`, `optional`, defaults to `main`):
+            The revision of the base model. If this isn't set, the saved peft model will load the `main` revision for
+            the base model
+        low_cpu_mem_usage (`bool`, `optional`, defaults to `False`):
+            Create empty adapter weights on meta device. Useful to speed up the loading process. Leave this setting as
+            False if you intend on training the model, unless the adapter weights will be replaced by different weights
+            before training starts.
+    """
+    model_config = BaseTuner.get_model_config(model)
+    old_name = peft_config.base_model_name_or_path
+    new_name = model.__dict__.get("name_or_path", None)
+    peft_config.base_model_name_or_path = new_name
+
+    return PeftModelForCausalLM[peft_config.task_type](
+        model,
+        peft_config,
+        adapter_name=adapter_name,
+        autocast_adapter_dtype=autocast_adapter_dtype,
+        low_cpu_mem_usage=low_cpu_mem_usage,
+    )
 
 def inject_adapter_in_model(
     peft_config: PeftConfig, model: torch.nn.Module, adapter_name: str = "default", low_cpu_mem_usage: bool = False
