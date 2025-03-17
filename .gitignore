@@ -2,3 +2,6 @@ GGUF-DeepSeek-V2-Lite-Chat
 DeepSeek-V2-Lite-Chat
 ktransformers/sft/adapter
 tmp
+graphviz/
+compute_graph*
+graphviz*

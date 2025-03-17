@@ -42,7 +42,7 @@ from peft.utils.constants import (
 from peft.utils.peft_types import PeftType, TaskType
 
 from peft.config import PeftConfig
-from peft.tuners_utils import ModulesToSaveWrapper, _get_submodules
+from peft.tuners.tuners_utils import _get_submodules
 from ._buffer_dict import BufferDict
 
 
@@ -479,11 +479,7 @@ class BaseTuner(nn.Module, ABC):
                 # Optionally set the modules to save
                 parent, target, target_name = _get_submodules(model, key)
 
-                if not isinstance(target, ModulesToSaveWrapper):
-                    new_module = ModulesToSaveWrapper(target, adapter_name)
-                    setattr(parent, target_name, new_module)
-                else:
-                    target.update(adapter_name)
+                target.update(adapter_name)
 
                 _has_modules_to_save = True
                 continue

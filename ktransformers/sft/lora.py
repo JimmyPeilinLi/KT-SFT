@@ -5,10 +5,12 @@ from transformers.trainer import TRAINING_ARGS_NAME
 import torch
 from torch.utils.data import DataLoader
 from datasets import Dataset
-from peft import LoraConfig, TaskType, get_peft_model
-from ktransformers.sft.peft_utils.mapping import inject_adapter_in_model
+from peft import LoraConfig, TaskType
+from ktransformers.sft.peft_utils.mapping import inject_adapter_in_model, get_peft_model
+from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
 # from ktransformers.sft.load_lora import get_custom_peft_model
 import os
+from torchviz import make_dot
 
 def preprocess_function(examples, tokenizer):
     inputs = examples["input"]
@@ -106,7 +108,8 @@ def print_lora_params(model):
     # for layer_idx in range(len(model.model.orig_module.layers)):
     for layer_idx in range(0, 3):
         # 获取当前Decoder层
-        layer = model.model.orig_module.layers[layer_idx]
+        layer = model.base_model.model.model.orig_module.layers[layer_idx]
+        # layer = model.model.orig_module.layers[layer_idx]
         
         # 定位到目标模块路径
         q_proj_module = layer.self_attn.orig_module.q_proj.orig_module
@@ -131,7 +134,35 @@ def print_lora_params(model):
         print("\nLora_B (first row slice):")
         print(lora_B_weight.cpu())  # 第一行前5个参数
 
+def print_grad_fn(grad_fn, indent=0):
+    """递归打印计算图节点"""
+    if grad_fn is None:
+        return
+    # 打印当前节点信息
+    print(' ' * indent, f"Node: {str(grad_fn).split('(')[0]}")
+    print(' ' * indent, f"  Metadata: {grad_fn.metadata}")
+    # 遍历子节点
+    for child in getattr(grad_fn, 'next_functions', []):
+        if child[0] is not None:
+            print_grad_fn(child[0], indent + 2)
+
+def forward_hook(module, inputs, output):
+    if isinstance(output, (tuple, list)):
+        for i, o in enumerate(output):
+            if o is None:
+                print(f"{module.__class__.__name__} output index {i} is None")
+            else:
+                print(f"{module.__class__.__name__} output index {i}: requires_grad={o.requires_grad}, grad_fn={o.grad_fn}")
+    elif output is None:
+        print(f"{module.__class__.__name__} returned None")
+    else:
+        print(f"{module.__class__.__name__}: requires_grad={output.requires_grad}, grad_fn={output.grad_fn}")
+
+
+
 def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
+
+    torch.autograd.set_detect_anomaly(True) # 在反向传播出错时，PyTorch 会提供更详细的堆栈信息
     
     # tokenizer = AutoTokenizer.from_pretrained('/data/model/Qwen2.5-7B-Instruct', trust_remote_code=True)
 
@@ -153,7 +184,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     #     if "q_proj" in name or "kv_a_proj" in name or "o_proj" in name:
     #         print(name)
 
-    print_model_params(model)
+    # print_model_params(model)
 
     # 配置 LoRA
     lora_config = LoraConfig(
@@ -169,9 +200,11 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
         lora_dropout=0.1,
     )
     
-    model = inject_adapter_in_model(lora_config, model)
-    # model = get_peft_model(model, lora_config)
+    # model = inject_adapter_in_model(lora_config, model)
+    model = get_peft_model(model, lora_config)
     # model = get_custom_peft_model(model, lora_config)
+
+    model = KTransformersLinearLora()
 
     # inspect_device(model, '/home/yj/ktransformers/device1.txt')
     # with open('/home/yj/ktransformers/device1.txt', 'a') as file:
@@ -185,6 +218,28 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     # model = model.to('cuda')
     model.config.use_cache = False
 
+    # for name, module in model.named_modules():
+    #     module.register_forward_hook(forward_hook)
+
+    # for name, parms in model.named_parameters():	
+    #     print('-->name:', name)
+    #     print('-->para:', parms)
+    #     print('-->grad_requirs:',parms.requires_grad)
+    #     print('-->grad_fn:',parms.grad_fn)
+    #     print('-->grad_value:',parms.grad)
+    #     print("===")
+
+    # 选择特定层的输入输出
+    output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
+    loss = output.logits.mean()
+    # print_grad_fn(loss.grad_fn)
+    # 生成计算图
+    dot = make_dot(loss, params=dict(model.named_parameters()))
+    dot_str = dot.source
+    with open("compute_graph.dot", "w") as f:
+        f.write(dot_str)
+    dot.render("compute_graph", format="svg")
+
     # inspect_device(model, '/home/yj/ktransformers/device2.txt')
     # with open('/home/yj/ktransformers/device2.txt', 'a') as file:
     #     file.write(f"Base model device: {model.base_model.device}\n")
@@ -195,7 +250,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     os.environ["NCCL_P2P_DISABLE"]  = "1"
     os.environ["NCCL_IB_DISABLE"]  = "1"
 
-    print_lora_params(model)
+    # print_lora_params(model)
 
     trainer = ModifiedTrainer(
         model=model,
@@ -217,15 +272,16 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
     )
+    
+    model.print_trainable_parameters() 
 
-    trainer.train()
+    # trainer.train()
 
 
     # model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
 
     model.save_pretrained(save_adapter_path)
 
-    # model.print_trainable_parameters() 
 
     print_lora_params(model)
 

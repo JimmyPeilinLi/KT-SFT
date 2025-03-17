@@ -4,12 +4,9 @@ import warnings
 from typing import TYPE_CHECKING, Any, Optional
 
 from peft.config import PeftConfig
-from peft.peft_model import (
-    PeftModel,
-    PeftModelForCausalLM)
 
 from ktransformers.sft.peft_utils.lora_model import LoraModel
-from ktransformers.sft.base_tuner import BaseTuner, BaseTunerLayer
+from ktransformers.sft.peft_utils.peft_model import PeftModel, PeftModelForCausalLM
 
 def get_peft_model(
     model: PreTrainedModel,
@@ -44,12 +41,10 @@ def get_peft_model(
             False if you intend on training the model, unless the adapter weights will be replaced by different weights
             before training starts.
     """
-    model_config = BaseTuner.get_model_config(model)
-    old_name = peft_config.base_model_name_or_path
     new_name = model.__dict__.get("name_or_path", None)
     peft_config.base_model_name_or_path = new_name
 
-    return PeftModelForCausalLM[peft_config.task_type](
+    return PeftModelForCausalLM(
         model,
         peft_config,
         adapter_name=adapter_name,

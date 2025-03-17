@@ -172,6 +172,36 @@ class KLinearTorch(KLinearBase):
             self.bias = self.bias.to(device)
         self.loaded = True
 
+    # def load(self, w: dict | nn.Parameter | tuple | None = None, device: str|None = None):
+    #     if self.loaded: return
+    #     if device is None: device = self.device
+    #     if w is None: w = self.load_weight(device=device)
+        
+    #     if isinstance(w, nn.Parameter):
+    #         self.weight = nn.Parameter(
+    #             w.to(dtype=self.dtype).view(self.out_features, self.in_features).T,
+    #             requires_grad=True
+    #         )
+    #         self.has_bias = False
+    #     elif isinstance(w, tuple):
+    #         self.weight = nn.Parameter(
+    #             w[0].to(dtype=self.dtype).view(self.out_features, self.in_features).T,
+    #             requires_grad=True
+    #         )
+    #         self.bias = nn.Parameter(
+    #             w[1].to(dtype=self.dtype),
+    #             requires_grad=True
+    #         )
+    #         self.has_bias = True
+    #     else:
+    #         raise ValueError("Invalid weight type")
+        
+    #     # 强制移动到目标设备
+    #     self.weight = self.weight.to(device)
+    #     if self.has_bias:
+    #         self.bias = self.bias.to(device)
+    #     self.loaded = True
+
     def unload(self):
         if self.weight is not None:
             self.weight = None
