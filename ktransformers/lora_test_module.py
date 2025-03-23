@@ -60,14 +60,25 @@ class TestModelBase(nn.Module):
             key="linear",
             gguf_loader=gguf_loader, 
             config=config, 
-            orig_module=nn.Linear(in_features=2048, out_features=3072, bias=False),
+            orig_module=nn.Linear(in_features=3072, out_features=2048, bias=False),
             generate_op="KLinearTorch"
         )
-        self.layer.generate_linear.weight = torch.randn(3072, 2048).to("cuda")
+        # self.layer.generate_linear.weight = torch.randn(3072, 2048).to("cuda")
+        # TODO: load function not being well.
+        weight = torch.randn(3072, 2048, device="cuda")
+        self.layer.load(w=nn.Parameter(weight), mode = InferenceState.GENERATE) # 这里不存在矩阵转置，所以没有TBackward也很合理
+        # self.layer.generate_linear.weight = nn.Parameter(torch.randn(3072, 2048).to("cuda"))
+        self.fc1 = nn.Linear(3072, 2048, bias=False)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(2048, 3072, bias=False) # 这里有一个矩阵转置的T，所以TBackward
         # self.layer.load(mode=InferenceState.GENERATE)
 
     def forward(self, x):
-        return self.layer(x)
+        x = self.layer(x)
+        # x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        return x
 
 class TestModelTorch(nn.Module):
     def __init__(self):
@@ -77,13 +88,15 @@ class TestModelTorch(nn.Module):
             key="linear",
             gguf_loader=gguf_loader, 
             config=config, 
-            orig_module=nn.Linear(in_features=2048, out_features=3072, bias=False)
+            orig_module=nn.Linear(in_features=3072, out_features=2048, bias=False)
         )
         # self.layer.weight = nn.Parameter(torch.randn(3072, 2048).to("cuda"))
-        self.layer.weight = torch.randn(3072, 2048).to("cuda")
+        # self.layer.weight = torch.randn(3072, 2048).to("cuda")
+        weight = torch.randn(3072, 2048, device="cuda")
+        self.layer.load(w=nn.Parameter(weight), device="cuda") # 这里不存在矩阵转置，所以没有TBackward也很合理
         self.fc1 = nn.Linear(3072, 2048, bias=False)
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(2048, 3072, bias=False)
+        self.fc2 = nn.Linear(2048, 3072, bias=False) # 这里有一个矩阵转置的T，所以TBackward
         # self.layer.load(mode=InferenceState.GENERATE) 
 
     def forward(self, x):
@@ -94,7 +107,7 @@ class TestModelTorch(nn.Module):
         return x
 
 
-# 对KTLinear模型
+# # KLinearTorch Well DONE for test!
 model = TestModelTorch()
 x = torch.randn(2048, 3072, requires_grad=True)
 out = model(x)
@@ -103,7 +116,8 @@ make_dot(out, params=dict(model.named_parameters())).render("KTLinear_graph", fo
 
 # 对基础模型
 # model = TestModelBase()
-# out = model(torch.randn(2048, 3072))
+# x = torch.randn(2048, 3072, requires_grad=True)
+# out = model(x)
 # make_dot(out, params=dict(model.named_parameters())).render("base_graph", format="svg")
 
 # MyConvNet_graph=hl.build_graph(model,torch.zeros(size=[2048, 3072]))

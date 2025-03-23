@@ -49,9 +49,9 @@ class KLinearBase(nn.Module, ABC):
     ):
         print(KLinearBase.__mro__)
         # super().__init__(key, gguf_loader, config, orig_module, device, **kwargs)
+        # nn.Module().__init__()
         # ABC().__init__()
         super().__init__()
-        
         self.key = key
         self.gguf_loader = gguf_loader
         self.device = device
@@ -178,6 +178,22 @@ class KLinearTorch(KLinearBase):
             self.has_bias = True
         else:
             raise ValueError("Invalid weight type")
+
+        # if isinstance(w, nn.Parameter):
+        #     try:
+        #         self.weight = w.to(dtype=self.dtype).view(self.out_features, self.in_features).T
+        #     except: 
+        #         self.weight = w.to(dtype=self.dtype).T
+        #     self.has_bias = False
+        # elif isinstance(w, tuple):
+        #     try:
+        #         self.weight = w[0].to(dtype=self.dtype).view(self.out_features, self.in_features).T
+        #     except:
+        #         self.weight = w[0].to(dtype=self.dtype).T
+        #     self.bias = w[1].to(dtype=self.dtype)
+        #     self.has_bias = True
+        # else:
+        #     raise ValueError("Invalid weight type")
         # self.linear = self.linear.to(device)
         self.weight = self.weight.to(device)
         if self.has_bias:
