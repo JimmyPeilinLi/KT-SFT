@@ -204,7 +204,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     model = get_peft_model(model, lora_config)
     # model = get_custom_peft_model(model, lora_config)
 
-    model = KTransformersLinearLora()
+    # model = KTransformersLinearLora()
 
     # inspect_device(model, '/home/yj/ktransformers/device1.txt')
     # with open('/home/yj/ktransformers/device1.txt', 'a') as file:
@@ -235,9 +235,9 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     # print_grad_fn(loss.grad_fn)
     # 生成计算图
     dot = make_dot(loss, params=dict(model.named_parameters()))
-    dot_str = dot.source
-    with open("compute_graph.dot", "w") as f:
-        f.write(dot_str)
+    # dot_str = dot.source
+    # with open("compute_graph.dot", "w") as f:
+    #     f.write(dot_str)
     dot.render("compute_graph", format="svg")
 
     # inspect_device(model, '/home/yj/ktransformers/device2.txt')
@@ -286,3 +286,20 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     print_lora_params(model)
 
     # model = model.merge_and_unload()
+
+
+def inject_lora_layer(model):
+
+    lora_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        target_modules=[
+            "q_proj"
+        ],
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.0,
+    )
+    
+    model = inject_adapter_in_model(lora_config, model)
+
+    

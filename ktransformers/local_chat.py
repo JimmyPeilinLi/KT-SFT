@@ -28,10 +28,11 @@ from ktransformers.models.modeling_qwen2_moe import Qwen2MoeForCausalLM
 from ktransformers.models.modeling_deepseek_v3 import DeepseekV3ForCausalLM
 from ktransformers.models.modeling_llama import LlamaForCausalLM
 from ktransformers.models.modeling_mixtral import MixtralForCausalLM
-from ktransformers.util.utils import prefill_and_generate, get_compute_capability
+from ktransformers.util.utils import load_weights, prefill_and_generate, get_compute_capability
 from ktransformers.server.config.config import Config
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled
-from ktransformers.sft.lora import lora_and_load_adapter
+from ktransformers.sft.lora import inject_lora_layer, lora_and_load_adapter
+from ktransformers.util.custom_gguf import GGUFLoader
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
@@ -81,6 +82,8 @@ def local_chat(
     is_sft: bool = True,
     sft_data_path: str | None = None,
     save_adapter_path: str | None = None,
+    use_adapter: bool = False,
+    use_adapter_path: str | None = None,
 ):
 
     torch.set_grad_enabled(False)
@@ -128,9 +131,32 @@ def local_chat(
         )
     optimize_and_load_gguf(model, optimize_config_path, gguf_path, config)
     
+    model.train()
+
     if is_sft == True:
         print(f"sft with lora in dataset: {sft_data_path} ...")
         lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path)
+
+    if use_adapter == True:
+        if is_sft == True:
+            raise AttributeError("We do not support more than one adapter up to now...")
+        
+        # TODO: 判断如果是GGUF格式的adapter，把他跟原来的模型一起处理一下，在后面进行推理
+        # 处理GGUF格式的适配器
+        if use_adapter_path.endswith('.gguf'):
+            inject_lora_layer(model)
+            # 加载适配器权重到现有模型结构
+            adapter_gguf_loader = GGUFLoader(use_adapter_path)
+            # 获取模型当前设备信息
+            current_device = next(model.parameters()).device
+            # 直接加载权重到模型的适配器部分（假设适配器层的名称与GGUF键名匹配）
+            load_weights(model, adapter_gguf_loader)
+            # 确保模型回到训练模式（适配器可能需要梯度）
+            model.train()
+            # 将模型移回原设备（GGUF加载可能改变设备）
+            model.to(current_device)
+        else:
+            raise NotImplementedError("Currently only GGUF format adapters are supported. Please provide a .gguf file.")
 
     try:
         model.generation_config = GenerationConfig.from_pretrained(model_path)
@@ -210,6 +236,9 @@ if __name__ == "__main__":
     cpu_infer=32,
     max_new_tokens=1000,
     force_think=True,
-    optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft.yaml",
+    optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-use-adapter.yaml",
+    is_sft=False,
     sft_data_path="/home/yj/ktransformers/train_data.json",
-    save_adapter_path="/home/yj/ktransformers/ktransformers/sft/adapter")
+    save_adapter_path="/home/yj/ktransformers/ktransformers/sft/adapter",
+    use_adapter=True,
+    use_adapter_path="/home/yj/ktransformers/demo_adapter/lora.gguf")

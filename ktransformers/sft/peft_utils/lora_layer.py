@@ -1064,7 +1064,7 @@ class KTransformersLinearLora(KTransformersLinear, LoraLayer):  # 保持原始�
         # 再初始化LoraLayer
         LoraLayer.__init__(self, orig_module=orig_module.orig_module, **kwargs)
 
-        self.load(mode = InferenceState.GENERATE)
+        # self.load(mode = InferenceState.GENERATE) # for test
 
         self._active_adapter = adapter_name
 

@@ -37,7 +37,7 @@ from ktransformers.operators.cpuinfer import CPUInfer
 from ktransformers.server.config.config import Config
 
 #class KLinearBase(BaseInjectedModule, ABC):
-class KLinearBase(ABC):
+class KLinearBase(nn.Module, ABC):
     def __init__(
         self,
         key: str,
@@ -47,9 +47,10 @@ class KLinearBase(ABC):
         device: str = "cuda",
         **kwargs,
     ):
-        # print(KLinearBase.__mro__)
+        print(KLinearBase.__mro__)
         # super().__init__(key, gguf_loader, config, orig_module, device, **kwargs)
-        ABC().__init__()
+        # ABC().__init__()
+        super().__init__()
         
         self.key = key
         self.gguf_loader = gguf_loader
@@ -137,6 +138,11 @@ class KLinearTorch(KLinearBase):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         dtype = x.dtype
         out_device = x.device
+
+        # 确保输入张量需要梯度
+        if not x.requires_grad:
+            x = x.requires_grad_(True)
+
         # TODO: support CUDA Graph when using cpu, but CPUInfer is recommended.
         x = x.to(device=self.device, dtype=self.dtype)
         x = x @ self.weight
@@ -151,18 +157,24 @@ class KLinearTorch(KLinearBase):
         if w is None: w = self.load_weight(device=device)
         # else: self.out_features = w.shape[0], self.in_features = w.shape[1]
         
+        # 明确注册为Parameter并启用梯度
         if isinstance(w, nn.Parameter):
             try:
-                self.weight = w.to(dtype=self.dtype).view(self.out_features, self.in_features).T
+                self.weight = nn.Parameter(w.to(dtype=self.dtype).view(self.out_features, self.in_features).T,
+                                           requires_grad=True)
             except: 
-                self.weight = w.to(dtype=self.dtype).T
+                self.weight = nn.Parameter(w.to(dtype=self.dtype).T,
+                                           requires_grad=True)
             self.has_bias = False
         elif isinstance(w, tuple):
             try:
-                self.weight = w[0].to(dtype=self.dtype).view(self.out_features, self.in_features).T
+                self.weight = nn.Parameter(w[0].to(dtype=self.dtype).view(self.out_features, self.in_features).T,
+                                           requires_grad=True)
             except:
-                self.weight = w[0].to(dtype=self.dtype).T
-            self.bias = w[1].to(dtype=self.dtype)
+                self.weight = nn.Parameter(w[0].to(dtype=self.dtype).T,
+                                           requires_grad=True)
+            self.bias = nn.Parameter(w[1].to(dtype=self.dtype),
+                                           requires_grad=True)
             self.has_bias = True
         else:
             raise ValueError("Invalid weight type")

@@ -5,3 +5,7 @@ tmp
 graphviz/
 compute_graph*
 graphviz*
+third_party/
+demo_adapter/
+*.whl
+*.svg
