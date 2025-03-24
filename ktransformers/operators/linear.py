@@ -38,6 +38,7 @@ from ktransformers.server.config.config import Config
 
 #class KLinearBase(BaseInjectedModule, ABC):
 class KLinearBase(nn.Module, ABC):
+# class KLinearBase(ABC):
     def __init__(
         self,
         key: str,
@@ -52,6 +53,7 @@ class KLinearBase(nn.Module, ABC):
         # nn.Module().__init__()
         # ABC().__init__()
         super().__init__()
+        nn.Module.__setattr__(self, "orig_module", orig_module)
         self.key = key
         self.gguf_loader = gguf_loader
         self.device = device
@@ -129,11 +131,12 @@ class KLinearTorch(KLinearBase):
         device: str = "cuda",
         **kwargs,
     ):
+        # nn.Module().__init__()
+        # KLinearBase().__init__(key, gguf_loader, config, orig_module, device, **kwargs)
         super().__init__(key, gguf_loader, config, orig_module, device, **kwargs)
         self.has_bias = False
         self.dtype = torch.get_default_dtype()
         self.weight = None
-        self.has_bias = False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         dtype = x.dtype
@@ -542,6 +545,8 @@ class KTransformersLinear(BaseInjectedModule, KLinearBase):
         prefill_op: str| None = "KLinearTorch",
         **kwargs,
     ):
+        # KTransformersLinear(
+        # (orig_module): Linear(in_features...))
         BaseInjectedModule.__init__(self, key, gguf_loader, config, orig_module, prefill_device, generate_device, **kwargs)
         KLinearBase.__init__(self, key, gguf_loader, config, orig_module, generate_device, **kwargs)
         # build all the linear operators

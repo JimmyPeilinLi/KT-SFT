@@ -17,7 +17,7 @@ from transformers import (
 )
 
 from ktransformers.operators.linear import KLinearTorch, KTransformersLinear
-# from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
+from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
 from ktransformers.util.custom_gguf import GGUFLoader
 from ktransformers.util.utils import InferenceState
 
@@ -108,17 +108,17 @@ class TestModelTorch(nn.Module):
 
 
 # # KLinearTorch Well DONE for test!
-model = TestModelTorch()
-x = torch.randn(2048, 3072, requires_grad=True)
-out = model(x)
-make_dot(out, params=dict(model.named_parameters())).render("KTLinear_graph", format="svg")
+# model = TestModelTorch()
+# x = torch.randn(2048, 3072, requires_grad=True)
+# out = model(x)
+# make_dot(out, params=dict(model.named_parameters())).render("KTLinear_graph", format="svg")
 
 
 # 对基础模型
-# model = TestModelBase()
-# x = torch.randn(2048, 3072, requires_grad=True)
-# out = model(x)
-# make_dot(out, params=dict(model.named_parameters())).render("base_graph", format="svg")
+model = TestModelBase()
+x = torch.randn(2048, 3072, requires_grad=True)
+out = model(x)
+make_dot(out, params=dict(model.named_parameters())).render("base_graph", format="svg")
 
 # MyConvNet_graph=hl.build_graph(model,torch.zeros(size=[2048, 3072]))
 # MyConvNet_graph.theme=hl.graph.THEMES['blue'].copy()
