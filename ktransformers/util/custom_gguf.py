@@ -933,6 +933,55 @@ def translate_name_to_gguf(name):
     
     return name
 
+def translate_adapter_name_to_gguf(name):
+
+    # name = translate_name_to_gguf_mixtral(name)
+
+    name = name.replace("lora_A.default.weight", "lora_A.weight")
+    name = name.replace("lora_B.default.weight", "lora_B.weight")
+    # NOT fine-tun embedding model
+    # name = name.replace("base_model.model", "token_embd.")
+    # name = name.replace("model.norm.", "output_norm.")
+    
+    name = name.replace("blk.", "model.layers.")
+    # name = name.replace(".input_layernorm", ".attn_norm")
+    # name = name.replace(".mlp.down_proj", ".ffn_down")
+    # name = name.replace(".mlp.gate_proj", ".ffn_gate")
+    # name = name.replace(".mlp.up_proj", ".ffn_up")
+    # name = name.replace(".post_attention_layernorm", ".ffn_norm")
+    # name = name.replace(".self_attn.q_proj", ".attn_q")
+    # name = name.replace(".self_attn.k_proj", ".attn_k")
+    # name = name.replace(".self_attn.v_proj", ".attn_v")
+    # name = name.replace(".self_attn.o_proj", ".attn_output")
+    # name = name.replace(".self_attn.qkv_proj", ".attn_qkv")
+    # name = name.replace(".self_attn.kv_a_proj_with_mqa", ".attn_kv_a_mqa")
+    # name = name.replace(".self_attn.kv_a_layernorm", ".attn_kv_a_norm")
+    # name = name.replace(".self_attn.kv_b_proj", ".attn_kv_b")
+    # name = name.replace(".self_attn.q_a_proj", ".attn_q_a")
+    # name = name.replace(".self_attn.q_a_layernorm", ".attn_q_a_norm")
+    # name = name.replace(".self_attn.q_b_proj", ".attn_q_b")
+    
+    # name = name.replace(".shared_expert.", ".shared_experts.")
+    # name = name.replace(".shared_expert_", ".shared_experts_")
+    # name = name.replace(".gate_up_proj.", ".up_proj")
+    
+    # name = name.replace(".mlp.shared_experts.down_proj", ".ffn_down_shexp")
+    # name = name.replace(".mlp.gate", ".ffn_gate_inp")
+    # name = name.replace(".mlp.shared_experts.gate_proj", ".ffn_gate_shexp")
+    # name = name.replace(".mlp.shared_experts.up_proj", ".ffn_up_shexp")
+    # name = name.replace(".mlp.shared_experts_gate", ".ffn_gate_inp_shexp")
+    # name = name.replace(".mlp.experts", "")
+    # name = name.replace(".mlp.experts.ffn_down_exps", ".ffn_down_exps")
+    # name = name.replace(".mlp.experts.ffn_gate_exps", ".ffn_gate_exps")
+    # name = name.replace(".mlp.experts.ffn_up_exps", ".ffn_up_exps")
+
+    
+    # name = name.replace(".block_sparse_moe.gate.", ".ffn_gate_inp.")
+    # name = name.replace(".block_sparse_moe.experts", "")
+    
+    return name
+
+
 if __name__ == '__main__':
     gguf_path = '/mnt/data/model/DeepSeek-Coder-V2-GGUF-WJH'
     loader = GGUFLoader(gguf_path)

@@ -293,7 +293,8 @@ def inject_lora_layer(model):
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         target_modules=[
-            "q_proj"
+            "kv_a_proj_with_mqa",
+            "kv_b_proj"
         ],
         r=8,
         lora_alpha=16,

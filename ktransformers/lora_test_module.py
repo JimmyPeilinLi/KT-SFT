@@ -19,7 +19,7 @@ from transformers import (
 from ktransformers.operators.linear import KLinearTorch, KTransformersLinear
 from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
 from ktransformers.util.custom_gguf import GGUFLoader
-from ktransformers.util.utils import InferenceState
+from ktransformers.util.inference_state import InferenceState
 
 import hiddenlayer as hl
 
@@ -114,18 +114,18 @@ class TestModelTorch(nn.Module):
 # make_dot(out, params=dict(model.named_parameters())).render("KTLinear_graph", format="svg")
 
 
-# 对基础模型
-model = TestModelBase()
-x = torch.randn(2048, 3072, requires_grad=True)
-out = model(x)
-make_dot(out, params=dict(model.named_parameters())).render("base_graph", format="svg")
+# # 对基础模型 WELL DONE for test!
+# model = TestModelBase()
+# x = torch.randn(2048, 3072, requires_grad=True)
+# out = model(x)
+# make_dot(out, params=dict(model.named_parameters())).render("base_graph", format="svg")
 
 # MyConvNet_graph=hl.build_graph(model,torch.zeros(size=[2048, 3072]))
 # MyConvNet_graph.theme=hl.graph.THEMES['blue'].copy()
 # MyConvNet_graph.save(path='./base_graph.png',format='png')
 
 # 对 LoRA 模型
-# x = torch.randn(2048, 3072)
-# model = TestModelLora()
-# out = model(x)
-# make_dot(out, params=dict(model.named_parameters())).render("lora_graph")
+model = TestModelLora()
+x = torch.randn(2048, 3072, requires_grad=True)
+out = model(x)
+make_dot(out, params=dict(model.named_parameters())).render("lora_graph")

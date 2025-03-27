@@ -37,7 +37,7 @@ from ktransformers.operators.cpuinfer import CPUInfer
 from ktransformers.server.config.config import Config
 
 #class KLinearBase(BaseInjectedModule, ABC):
-class KLinearBase(ABC):
+class KLinearBase(nn.Module, ABC):
 # class KLinearBase(ABC):
     def __init__(
         self,
@@ -51,9 +51,9 @@ class KLinearBase(ABC):
         print(KLinearBase.__mro__)
         # super().__init__(key, gguf_loader, config, orig_module, device, **kwargs)
         # nn.Module().__init__()
-        ABC().__init__()
-        # super().__init__()
-        # nn.Module.__setattr__(self, "orig_module", orig_module)
+        # ABC().__init__()
+        super().__init__()
+        nn.Module.__setattr__(self, "orig_module", orig_module)
         self.key = key
         self.gguf_loader = gguf_loader
         self.device = device
@@ -573,14 +573,7 @@ class KTransformersLinear(BaseInjectedModule, KLinearBase):
             y = self.prefill_linear.forward(x)
         else:
             assert self.generate_linear is not None, "gpu linear is not initialized"
-            # TODO: A violence way to solve the weight=None, for Lora inference Test, need modify it later
-            try:
-                y = self.generate_linear.forward(x)
-            except TypeError as e:
-                Warning("A Dange way to avoid the none weight, Need to check it later in KTransformersLinear forward!!")
-                self.generate_linear.weight = self.orig_module.generate_linear.weight
-                self.weight = self.orig_module.generate_linear.weight
-                y = self.generate_linear.forward(x)
+            y = self.generate_linear.forward(x)
         
         return y
 

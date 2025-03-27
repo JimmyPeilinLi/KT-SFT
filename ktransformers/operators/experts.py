@@ -27,7 +27,7 @@ import cpuinfer_ext
 from cpuinfer_ext.moe import MOEConfig, MOE
 import ctypes
 from ktransformers.util.custom_gguf import GGUFLoader
-from ktransformers.util.utils import InferenceState
+from ktransformers.util.inference_state import InferenceState
 from ktransformers.server.config.config import Config
 from transformers.activations import ACT2FN
 from transformers.configuration_utils import PretrainedConfig

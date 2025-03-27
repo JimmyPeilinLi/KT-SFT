@@ -56,7 +56,8 @@ from ktransformers.models.modeling_deepseek import (
 from transformers.models.qwen2_moe.configuration_qwen2_moe import Qwen2MoeConfig
 from ktransformers.models.configuration_llama import LlamaConfig
 from ktransformers.operators.base_operator import BaseInjectedModule
-from ktransformers.util.utils import InferenceState, get_compute_capability
+from ktransformers.util.inference_state import InferenceState
+from ktransformers.util.utils import get_compute_capability
 from ktransformers.util.custom_gguf import GGUFLoader
 from transformers.configuration_utils import PretrainedConfig
 from ktransformers.models.modeling_llama import (

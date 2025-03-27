@@ -11,7 +11,8 @@ from torch import nn
 import itertools
 import time
 import enum
-from ktransformers.util.custom_gguf import translate_name_to_gguf
+from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
+from ktransformers.util.custom_gguf import translate_name_to_gguf, translate_adapter_name_to_gguf
 from ktransformers.util.custom_gguf import GGUFLoader
 from ktransformers.operators import base_operator
 from ktransformers.models.custom_cache import StaticCache
@@ -70,7 +71,7 @@ def get_all_used_cuda_device(device_map:dict):
     all_device_list = list(all_device_list)
     return all_device_list
 
-def load_cur_state_dict(module: nn.Module, gguf_loader: GGUFLoader, prefix: str = ""):
+def load_cur_state_dict(module: nn.Module, gguf_loader: GGUFLoader, prefix: str = "", adapter_gguf: bool = False):
     prefix = prefix.replace("orig_module.", "")
     persistent_buffers = {k: v for k, v in module._buffers.items() if k not in module._non_persistent_buffers_set}
     local_name_params = itertools.chain(module._parameters.items(), persistent_buffers.items())
@@ -78,7 +79,9 @@ def load_cur_state_dict(module: nn.Module, gguf_loader: GGUFLoader, prefix: str 
     for name, param in local_state.items():
         key = prefix + name
         translated_key = translate_name_to_gguf(key)
-        
+        if adapter_gguf == True:
+            translated_adapter_key = translate_adapter_name_to_gguf(key)
+
         # TODO: Merge all loader.
         # I know this is ugly but lets do it for now.
         if gguf_loader.safetensor_loader is not None:
@@ -87,7 +90,8 @@ def load_cur_state_dict(module: nn.Module, gguf_loader: GGUFLoader, prefix: str 
         else:
             load_dequantized_tensor = gguf_loader.load_gguf_tensor
             tensor_file_map = gguf_loader.tensor_file_map
-        
+        # print(f"tensor_file_map:{tensor_file_map}")
+        # We allow some key not be used in GGUF
         if translated_key in tensor_file_map:
             target_dtype = torch.get_default_dtype()
             device = get_device(translated_key[:translated_key.rfind(".")], gguf_loader.tensor_device_map)
@@ -97,17 +101,36 @@ def load_cur_state_dict(module: nn.Module, gguf_loader: GGUFLoader, prefix: str 
             set_param(module, name, weights)
             del weights
         else:
-            #print(load_config.tensor_file_map.keys())
-            raise Exception(f"can't find {translated_key} in GGUF file!")
+            if adapter_gguf == True: # Not all module should be reload in lora adapter
+                for single_tensor_file_map in tensor_file_map:
+                    if translated_adapter_key in single_tensor_file_map:
+                        target_dtype = torch.get_default_dtype()
+                        device = get_device(single_tensor_file_map[:single_tensor_file_map.rfind(".")], gguf_loader.tensor_device_map)
+                        print(f"loading {single_tensor_file_map} to {device}")
+                        torch.cuda.empty_cache()
+                        weights = load_dequantized_tensor(single_tensor_file_map, device=device).to(dtype=target_dtype)
+                        set_param(module, name, weights)
+                        del weights
+
+            else:
+                #print(load_config.tensor_file_map.keys())
+                raise Exception(f"can't find {translated_key} in GGUF file!")
         
-def load_weights(module:nn.Module, gguf_loader:GGUFLoader, prefix=''):
+def load_weights(module:nn.Module, gguf_loader:GGUFLoader, prefix='', adapter_gguf=False):
     #print(f"recursively loading weights {prefix}")
-    if not isinstance(module, base_operator.BaseInjectedModule):
-        load_cur_state_dict(module, gguf_loader, prefix)
+    if (not isinstance(module, base_operator.BaseInjectedModule)) or isinstance(module, KTransformersLinearLora):
+        load_cur_state_dict(module, gguf_loader, prefix, adapter_gguf=adapter_gguf)
         for name, child in module._modules.items():
-            load_weights(child, gguf_loader, prefix+name+".")
+            load_weights(child, gguf_loader, prefix+name+".", adapter_gguf=adapter_gguf)
     else:
-        module.load()
+        if adapter_gguf == True:
+            # TODO: This is not the best choice, because we should change the value of gguf_loader in BaseInjectModule, but up to now, it can still work
+            try: # for other class inherit from BaseInjectModule, but not inherit from KTLinear
+                module.load(gguf_loader=gguf_loader, adapter_gguf=adapter_gguf)
+            except: # for only KTLinear up to now
+                module.load()
+        else:
+            module.load()
 
 def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cuda_graph: bool = True,
                          mode = 'normal', force_think: bool = False, chunk_prefill_size = 16384, use_flashinfer_mla = False,
@@ -274,9 +297,3 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     print(f"eval rate:            {tokens_per_second} tokens/s")
 
     return tokens
-
-class InferenceState(enum.Enum):
-    UNLOAD = 0
-    PREFILL = 1
-    GENERATE = 2
-    RESTORE = 3

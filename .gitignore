@@ -6,8 +6,9 @@ graphviz/
 compute_graph*
 graphviz*
 third_party/
-demo_adapter/
+demo_adapter*/
 *.whl
 *.svg
 base_graph
 KTLinear_graph
+tmp_package.txt

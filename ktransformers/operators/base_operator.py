@@ -60,6 +60,9 @@ class BaseInjectedModule(nn.Module):
     def forward(self, *args, **kwargs):
         return self.orig_module.forward(*args, **kwargs)
     
-    def load(self):
+    def load(self, gguf_loader=None, adapter_gguf : bool = False):
         for name, child in self._modules.items():
-            utils.load_weights(child, self.gguf_loader, self.key+".")
+            if gguf_loader==None:
+                utils.load_weights(child, self.gguf_loader, self.key+".", adapter_gguf=adapter_gguf)
+            else:
+                utils.load_weights(child, gguf_loader, self.key+".", adapter_gguf=adapter_gguf)

@@ -148,13 +148,11 @@ def local_chat(
             # 加载适配器权重到现有模型结构
             adapter_gguf_loader = GGUFLoader(use_adapter_path)
             # 获取模型当前设备信息
-            current_device = next(model.parameters()).device
+            # current_device = next(model.parameters()).device
             # 直接加载权重到模型的适配器部分（假设适配器层的名称与GGUF键名匹配）
-            load_weights(model, adapter_gguf_loader)
+            load_weights(model, adapter_gguf_loader, adapter_gguf=True)
             # 确保模型回到训练模式（适配器可能需要梯度）
             model.train()
-            # 将模型移回原设备（GGUF加载可能改变设备）
-            model.to(current_device)
         else:
             raise NotImplementedError("Currently only GGUF format adapters are supported. Please provide a .gguf file.")
 
@@ -241,4 +239,4 @@ if __name__ == "__main__":
     sft_data_path="/home/yj/ktransformers/train_data.json",
     save_adapter_path="/home/yj/ktransformers/ktransformers/sft/adapter",
     use_adapter=True,
-    use_adapter_path="/home/yj/ktransformers/demo_adapter/lora.gguf")
+    use_adapter_path="/home/yj/ktransformers/demo_adapter_target_module/lora.gguf")

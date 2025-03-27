@@ -15,7 +15,7 @@ from peft.tuners.lora.config import LoraConfig
 
 from ktransformers.operators.linear import KTransformersLinear, KLinearTorch, KLinearBase
 from ktransformers.operators.base_operator import BaseInjectedModule
-from ktransformers.util.utils import InferenceState
+from ktransformers.util.inference_state import InferenceState
 
 def dispatch_default(
     target: torch.nn.Module,
@@ -763,24 +763,9 @@ class Linear(nn.Module, LoraLayer):
                 scaling = self.scaling[active_adapter]
                 x = x.to(lora_A.weight.dtype)
 
-                if not self.use_dora[active_adapter]:
-                    result = result + lora_B(lora_A(dropout(x))) * scaling
-                else:
-                    if isinstance(dropout, nn.Identity) or not self.training:
-                        base_result = result
-                    else:
-                        x = dropout(x)
-                        base_result = None
-
-                    result = result + self.lora_magnitude_vector[active_adapter](
-                        x,
-                        lora_A=lora_A,
-                        lora_B=lora_B,
-                        scaling=scaling,
-                        orig_module=self.get_orig_module(),
-                        base_result=base_result,
-                    )
-
+                # TODO: Remove dora method up to now.
+                result = result + lora_B(lora_A(dropout(x))) * scaling
+                
             result = result.to(torch_result_dtype)
 
         return result
