@@ -1,3 +1,5 @@
 {
+    "editor.fontFamily": "JetBrains Mono",
+    "editor.fontLigatures": true,
     "debugpy.debugJustMyCode": false
 }

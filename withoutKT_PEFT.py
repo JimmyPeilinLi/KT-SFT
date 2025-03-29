@@ -77,13 +77,37 @@ lora_config = LoraConfig(
 model = get_peft_model(model, lora_config)
 # model = inject_adapter_in_model(lora_config, model)
 
-print(model)
+for name, parms in model.named_parameters():	
+        print('-->name:', name)
+        print('-->para:', parms)
+        print('-->grad_requirs:',parms.requires_grad)
+        print('-->grad_fn:',parms.grad_fn)
+        print('-->grad_value:',parms.grad)
+        print("===")
 
+# print(model)
 
-output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32))
+model.train()
+
+# for name, parms in model.named_parameters():	
+#         print('-->name:', name)
+#         print('-->para:', parms)
+#         print('-->grad_requirs:',parms.requires_grad)
+#         print('-->grad_fn:',parms.grad_fn)
+#         print('-->grad_value:',parms.grad)
+#         print("===")
+
+model.to(device='cuda')
+x = torch.tensor([[1,2,3]], dtype=torch.int32).to("cuda")
+output = model(x)
 loss = output.logits.mean()
-# print_grad_fn(loss.grad_fn)
-# 生成计算图
+print(f"output:{output}")
+print(f"loss:{loss}")
+
+# output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32))
+# loss = output.logits.mean()
+# # print_grad_fn(loss.grad_fn)
+# # 生成计算图
 dot = make_dot(loss, params=dict(model.named_parameters()))
 dot.render("compute_graph", format="svg")  # 保存为SVG格式的文件
 
@@ -124,7 +148,7 @@ trainer = ModifiedTrainer(
         fp16=True,
         logging_steps=10,
         save_steps=200,
-        output_dir="/data/user23202791/lpl/KT_PEFT/result"
+        output_dir="/home/yj/ktransformers/tmp"
     ),
     data_collator=DataCollatorForSeq2Seq(
         tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
@@ -141,3 +165,11 @@ trainer.train()
 # model = model.merge_and_unload()
 
 # print_model_with_params(model, prefix="合并后模型")
+
+for name, parms in model.named_parameters():	
+        print('-->name:', name)
+        print('-->para:', parms)
+        print('-->grad_requirs:',parms.requires_grad)
+        print('-->grad_fn:',parms.grad_fn)
+        print('-->grad_value:',parms.grad)
+        print("===")

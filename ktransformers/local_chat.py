@@ -21,6 +21,7 @@ from transformers import (
     TextStreamer,
 )
 import json
+from torchviz import make_dot
 import fire
 from ktransformers.optimize.optimize import optimize_and_load_gguf
 from ktransformers.models.modeling_deepseek import DeepseekV2ForCausalLM
@@ -35,6 +36,13 @@ from ktransformers.sft.lora import inject_lora_layer, lora_and_load_adapter
 from ktransformers.util.custom_gguf import GGUFLoader
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
+# for debug
+def print_module_tree(module, indent=0):
+    print(" " + f"{module.__class__.__name__}(training={module.training})")
+    for name, child in module.named_children():
+        print(" " + f"└─{name}: ", end="")
+        print_module_tree(child, indent + 4)
 
 # for debug
 def write_to_file(content, file_path: str = '/home/yj/ktransformers/mark_content.txt', mode: str = 'a', encoding: str = 'utf-8') -> None:
@@ -86,7 +94,7 @@ def local_chat(
     use_adapter_path: str | None = None,
 ):
 
-    torch.set_grad_enabled(False)
+    # torch.set_grad_enabled(False)
 
     Config().cpu_infer = cpu_infer
 
@@ -130,7 +138,9 @@ def local_chat(
             "please input the path of your gguf file(gguf file in the dir containing input gguf file must all belong to current model):"
         )
     optimize_and_load_gguf(model, optimize_config_path, gguf_path, config)
-    
+
+    # print_module_tree(model)  # 观察输出是否有重复模块或循环
+
     model.train()
 
     if is_sft == True:
@@ -235,8 +245,8 @@ if __name__ == "__main__":
     max_new_tokens=1000,
     force_think=True,
     optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-use-adapter.yaml",
-    is_sft=False,
+    is_sft=True,
     sft_data_path="/home/yj/ktransformers/train_data.json",
     save_adapter_path="/home/yj/ktransformers/ktransformers/sft/adapter",
-    use_adapter=True,
+    use_adapter=False,
     use_adapter_path="/home/yj/ktransformers/demo_adapter_target_module/lora.gguf")

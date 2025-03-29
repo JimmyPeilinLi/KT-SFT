@@ -11,7 +11,8 @@ from torch import nn
 import itertools
 import time
 import enum
-from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
+from torchviz import make_dot
+# from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
 from ktransformers.util.custom_gguf import translate_name_to_gguf, translate_adapter_name_to_gguf
 from ktransformers.util.custom_gguf import GGUFLoader
 from ktransformers.operators import base_operator
@@ -50,7 +51,8 @@ def set_module(model, submodule_key, module):
 
 def set_param(module: nn.Module, name: str, weights: torch.Tensor):
     
-    param=nn.parameter.Parameter(weights, requires_grad=False)
+    # TODO: 目前先把requires_grad直接设为True了，后面看看要不要改（因为load_cur_state_dict加载参数起来太麻烦了）
+    param=nn.parameter.Parameter(weights, requires_grad=True)
     if isinstance(module, nn.Linear) and len(weights.shape)==1:
         param.unsqueeze_(0)
     setattr(module, name, param)
@@ -118,7 +120,9 @@ def load_cur_state_dict(module: nn.Module, gguf_loader: GGUFLoader, prefix: str 
         
 def load_weights(module:nn.Module, gguf_loader:GGUFLoader, prefix='', adapter_gguf=False):
     #print(f"recursively loading weights {prefix}")
-    if (not isinstance(module, base_operator.BaseInjectedModule)) or isinstance(module, KTransformersLinearLora):
+    # EMETODO
+    # if (not isinstance(module, base_operator.BaseInjectedModule)) or isinstance(module, KTransformersLinearLora):
+    if (not isinstance(module, base_operator.BaseInjectedModule)):
         load_cur_state_dict(module, gguf_loader, prefix, adapter_gguf=adapter_gguf)
         for name, child in module._modules.items():
             load_weights(child, gguf_loader, prefix+name+".", adapter_gguf=adapter_gguf)
@@ -162,6 +166,10 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                         cache_position=cache_position,
                         past_key_values=past_key_values,
                         return_dict=False, use_cache=True)[0]
+            
+            # loss = logits.mean()
+            # dot = make_dot(loss, params=dict(model.named_parameters()))
+            # dot.render("KT_compute_graph", format="svg")
         if past_key_values != None:
             past_key_values.change_seq_length(1)
         for device in all_cuda_device:
@@ -192,7 +200,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         return logits
     
     torch.cuda.set_device(torch_device)
-    with torch.no_grad():
+    with torch.no_grad(): # 目前看上去应该可以暂时保留，不过如果要测试整体的计算图的话就需要去掉了
         
         stream = TextStreamer(tokenizer)
         if mode != 'long_context':

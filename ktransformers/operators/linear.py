@@ -37,7 +37,7 @@ from ktransformers.operators.cpuinfer import CPUInfer
 from ktransformers.server.config.config import Config
 
 #class KLinearBase(BaseInjectedModule, ABC):
-class KLinearBase(ABC):
+class KLinearBase(nn.Module, ABC):
 # class KLinearBase(ABC):
     def __init__(
         self,
@@ -48,11 +48,11 @@ class KLinearBase(ABC):
         device: str = "cuda",
         **kwargs,
     ):
-        print(KLinearBase.__mro__)
+        # print(KLinearBase.__mro__)
         # super().__init__(key, gguf_loader, config, orig_module, device, **kwargs)
         # nn.Module().__init__()
-        ABC().__init__()
-        # super().__init__()
+        # ABC().__init__()
+        super().__init__()
         # nn.Module.__setattr__(self, "orig_module", orig_module)
         self.key = key
         self.gguf_loader = gguf_loader
@@ -545,6 +545,7 @@ class KTransformersLinear(BaseInjectedModule, KLinearBase):
         prefill_op: str| None = "KLinearTorch",
         **kwargs,
     ):
+        # print(f"KTLinear.mro: {KTransformersLinear.__mro__}")
         # KTransformersLinear(
         # (orig_module): Linear(in_features...))
         BaseInjectedModule.__init__(self, key, gguf_loader, config, orig_module, prefill_device, generate_device, **kwargs)

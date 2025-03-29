@@ -190,9 +190,9 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         target_modules=[
-            "q_proj"
-            # "kv_a_proj_with_mqa",
-            # "kv_b_proj",
+            # "q_proj"
+            "kv_a_proj_with_mqa",
+            "kv_b_proj",
             # "o_proj"
         ],
         r=8,
@@ -222,6 +222,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     #     module.register_forward_hook(forward_hook)
 
     # for name, parms in model.named_parameters():	
+    #     # parms.requires_grad = True
     #     print('-->name:', name)
     #     print('-->para:', parms)
     #     print('-->grad_requirs:',parms.requires_grad)
@@ -232,13 +233,9 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     # 选择特定层的输入输出
     output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
     loss = output.logits.mean()
-    # print_grad_fn(loss.grad_fn)
-    # 生成计算图
+
     dot = make_dot(loss, params=dict(model.named_parameters()))
-    # dot_str = dot.source
-    # with open("compute_graph.dot", "w") as f:
-    #     f.write(dot_str)
-    dot.render("compute_graph", format="svg")
+    dot.render("KT_compute_graph", format="svg")
 
     # inspect_device(model, '/home/yj/ktransformers/device2.txt')
     # with open('/home/yj/ktransformers/device2.txt', 'a') as file:

@@ -31,7 +31,7 @@ class TestModelLora(nn.Module):
     def __init__(self):
         super().__init__()
 
-        random_linear_layer = nn.Linear(in_features=2048, out_features=3072, bias=False)
+        random_linear_layer = nn.Linear(in_features=3072, out_features=2048, bias=False)
         
         # 模拟原始线性层
         orig_linear = KTransformersLinear(
@@ -124,8 +124,48 @@ class TestModelTorch(nn.Module):
 # MyConvNet_graph.theme=hl.graph.THEMES['blue'].copy()
 # MyConvNet_graph.save(path='./base_graph.png',format='png')
 
-# 对 LoRA 模型
-model = TestModelLora()
-x = torch.randn(2048, 3072, requires_grad=True)
-out = model(x)
-make_dot(out, params=dict(model.named_parameters())).render("lora_graph")
+# # 对 LoRA 模型
+# model = TestModelLora()
+# x = torch.randn(2048, 3072, requires_grad=True)
+# out = model(x)
+# make_dot(out, params=dict(model.named_parameters())).render("lora_graph", format="svg")
+
+
+from peft import LoraConfig, get_peft_model
+
+class BaseModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(3072, 2048, bias=False)
+    
+    def forward(self, x):
+        return self.linear(x)
+
+# 初始化模型并移动到GPU
+model = BaseModel().to("cuda")
+
+# 配置LoRA参数
+lora_config = LoraConfig(
+    r=8,  # LoRA秩
+    lora_alpha=16,
+    target_modules=["linear"],  # 指定要注入LoRA的模块
+    lora_dropout=0.0,
+    bias="none",
+)
+
+# 应用LoRA适配器
+peft_model = get_peft_model(model, lora_config)
+print(peft_model)  # 查看模型结构，确认LoRA注入
+
+# 生成测试输入
+x = torch.randn(2048, 3072, requires_grad=True).to("cuda")
+
+# 前向传播
+out = peft_model(x)
+
+# 生成计算图（注意捕捉所有参数）
+dot = make_dot(out, 
+             params=dict(peft_model.named_parameters()))
+
+# 保存为SVG文件
+dot.render("origin_lora_graph", format="svg")

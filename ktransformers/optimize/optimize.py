@@ -52,6 +52,22 @@ def del_meta(module:nn.Module):
     for name, child in module._modules.items():
         del_meta(child)
 
+# def del_meta(module: nn.Module):
+#     visited = set()
+#     stack = [module]
+#     while stack:
+#         current = stack.pop()
+#         if id(current) in visited:
+#             continue
+#         visited.add(id(current))
+#         persistent_buffers = {k: v for k, v in current._buffers.items() if k not in current._non_persistent_buffers_set}
+#         local_name_params = itertools.chain(current._parameters.items(), persistent_buffers.items())
+#         local_state = {k: v for k, v in local_name_params if v is not None}
+#         for name, param in local_state.items():
+#             if param.device == "meta":
+#                 current.__delattr__(name)
+#         stack.extend(current._modules.values())
+
 def gen_optimize_config(module: nn.Module, out_data: Mapping, rule_list: List, prefix: str="", default_device: str = "cuda:0"):
     module_name = prefix[:-1]
     translated_name = translate_name_to_gguf(prefix)[:-1]
