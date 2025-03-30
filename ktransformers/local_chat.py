@@ -247,6 +247,6 @@ if __name__ == "__main__":
     optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-use-adapter.yaml",
     is_sft=True,
     sft_data_path="/home/yj/ktransformers/test_adapter/sft_translation.json",
-    save_adapter_path="/home/yj/ktransformers/test_adapter/demo_adapter_KT_target_module",
+    save_adapter_path="/home/yj/ktransformers/test_adapter/demo_adapter_KT_target_kv",
     use_adapter=False,
     use_adapter_path="/home/yj/ktransformers/demo_adapter_target_module/lora.gguf")

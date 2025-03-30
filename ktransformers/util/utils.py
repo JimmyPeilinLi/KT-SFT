@@ -187,8 +187,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     def chunk_prefill(inputs, cache_position, past_key_values):
         if mode == "long_context":
             inputs_embeds = model.model.embed_tokens(inputs.to("cpu"))
-        else:
-            inputs_embeds = model.model.embed_tokens(inputs.to("cpu")).to(torch_device)
+        else: # TODO: not verify the inputs.to(xxx), origin is 'cpu', but not on same device for lora model.
+            inputs_embeds = model.model.embed_tokens(inputs.to(model.model.embed_tokens.weight.device)).to(torch_device)
         if use_flashinfer_mla:
             MLAWrapperSingleton.update_buffer(past_key_values.max_pages)
             MLAWrapperSingleton.need_plan_all()

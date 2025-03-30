@@ -6,11 +6,27 @@ import torch
 from torch.utils.data import DataLoader
 from datasets import Dataset
 from peft import LoraConfig, TaskType
+import os
+from torchviz import make_dot
+from torch.profiler import profile, record_function, ProfilerActivity
+from transformers import TrainerCallback
+import gc
+
 from ktransformers.sft.peft_utils.mapping import inject_adapter_in_model, get_peft_model
 from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
 # from ktransformers.sft.load_lora import get_custom_peft_model
-import os
-from torchviz import make_dot
+
+# FOR: not A or H GPU
+os.environ["NCCL_P2P_DISABLE"]  = "1"
+os.environ["NCCL_IB_DISABLE"]  = "1"
+
+# 自定义回调，手动控制Profiler，避免transformer库版本太低
+class ProfilerCallback(TrainerCallback):
+    def __init__(self, profiler):
+        self.profiler = profiler
+
+    def on_step_end(self, args, state, control, **kwargs):
+        self.profiler.step()
 
 def preprocess_function(examples, tokenizer):
     inputs = examples["input"]
@@ -160,7 +176,7 @@ def forward_hook(module, inputs, output):
 
 
 
-def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
+def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is_profiler=False):
 
     torch.autograd.set_detect_anomaly(True) # 在反向传播出错时，PyTorch 会提供更详细的堆栈信息
     
@@ -168,7 +184,6 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
 
     dataset = Dataset.from_json(sft_data_path)
 
-    # processed_dataset = dataset.map(preprocess_function, batched=True)
     processed_dataset = dataset.map(lambda  examples: preprocess_function(examples, tokenizer), batched=True)
     split_dataset = processed_dataset.train_test_split(test_size=0.1)
 
@@ -178,15 +193,6 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     # train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=True)
     # val_dataloader = DataLoader(val_dataset, batch_size=8)
 
-    # print(f"LoRA前:{model}")
-
-    # for name, module in model.named_modules():
-    #     if "q_proj" in name or "kv_a_proj" in name or "o_proj" in name:
-    #         print(name)
-
-    # print_model_params(model)
-
-    # 配置 LoRA
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         target_modules=[
@@ -199,10 +205,102 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
         lora_alpha=32,
         lora_dropout=0.1,
     )
+
+    training_args = TrainingArguments(
+        output_dir=save_adapter_path,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=16,
+        num_train_epochs=3,
+        max_steps=4, # TODO: FOR TEST, will override any value given in num_train_epochs
+        learning_rate=3e-4,
+        fp16=False,
+        logging_steps=10,
+        save_steps=1000,
+        dataloader_drop_last=True,
+        ddp_find_unused_parameters=False,
+    )
     
     # model = inject_adapter_in_model(lora_config, model)
     model = get_peft_model(model, lora_config)
     # model = get_custom_peft_model(model, lora_config)
+
+    model.config.use_cache = False
+
+    model.print_trainable_parameters() 
+
+    if is_profiler:
+        profiler = profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=torch.profiler.schedule(
+                wait=1,        # 跳过第1步
+                warmup=1,      # 预热第2步
+                active=1,      # 仅记录接下来3步（减少显存占用）
+                repeat=1       # 不重复
+            ),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler('./logs'),
+            record_shapes=False,
+            profile_memory=False, # 关闭内存分析，避免占用大量内存（目前这个服务器CPU内存不是很大）
+            with_stack=False
+        )
+
+        # transformer版本低不支持，不能直接在TrainingArguments里面写profiler_args
+        # profiler_args = {
+        #     "activities": [ProfilerActivity.CPU, ProfilerActivity.CUDA],  # 同时监控CPU和CUDA
+        #     "record_shapes": True,         # 记录张量形状
+        #     "profile_memory": True,        # 记录内存消耗
+        #     "with_stack": True,            # 记录调用栈信息
+        #     "on_trace_ready": torch.profiler.tensorboard_trace_handler('./logs'),  # 自动保存到TensorBoard
+        #     "schedule": torch.profiler.schedule(
+        #         wait=1,        # 跳过前1步
+        #         warmup=1,      # 预热1步
+        #         active=100,     # 记录接下来100步（覆盖全部训练步）
+        #         repeat=1       # 不重复
+        #     )
+        # }
+
+        trainer = ModifiedTrainer(
+            model=model,
+            train_dataset=train_dataset,
+            args=training_args,            # 使用修改后的参数
+            data_collator=DataCollatorForSeq2Seq(
+                tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
+            ),
+            callbacks=[ProfilerCallback(profiler)]
+        )
+
+        with profiler:
+            trainer.train()
+
+        print("Training finished. Exporting profiler data...")
+        with open("profiler_output.txt", "w") as f:
+            f.write(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+
+    else:
+        trainer = ModifiedTrainer(
+            model=model,
+            train_dataset=train_dataset,
+            args=training_args,            # 使用修改后的参数
+            data_collator=DataCollatorForSeq2Seq(
+                tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
+            )
+        )
+
+        trainer.train()
+
+    # profiler.export_chrome_trace("trace.json")
+
+    # model.save_pretrained(save_adapter_path)
+
+    '''
+    ----------------------- START: Lora Test -----------------------
+    
+    # print(f"LoRA前:{model}")
+
+    # for name, module in model.named_modules():
+    #     if "q_proj" in name or "kv_a_proj" in name or "o_proj" in name:
+    #         print(name)
+
+    # print_model_params(model)
 
     # model = KTransformersLinearLora()
 
@@ -216,7 +314,6 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     # print(f"LoRA后:{model}")
 
     # model = model.to('cuda')
-    model.config.use_cache = False
 
     # for name, module in model.named_modules():
     #     module.register_forward_hook(forward_hook)
@@ -243,47 +340,41 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
         # file.write(f"LoRA adapter device: {model.lora_config['target_modules'].device}\n")
     # print(f"Base model device: {model.base_model.device}") 
     # print(f"LoRA adapter device: {model.lora_config['target_modules'].device}") 
-    
-    os.environ["NCCL_P2P_DISABLE"]  = "1"
-    os.environ["NCCL_IB_DISABLE"]  = "1"
 
     # print_lora_params(model)
 
-    trainer = ModifiedTrainer(
-        model=model,
-        train_dataset=train_dataset,
-        args=transformers.TrainingArguments(
-            output_dir=save_adapter_path,
-            per_device_train_batch_size=1,
-            gradient_accumulation_steps=16,
-            num_train_epochs=10,
-            learning_rate=3e-4,
-            fp16=False,
-            logging_steps=10,
-            save_steps=200,
-            # 可额外添加分布式训练优化参数 
-            dataloader_drop_last=True,
-            ddp_find_unused_parameters=False 
-        ),
-        data_collator=DataCollatorForSeq2Seq(
-            tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
-        ),
-    )
-    
-    model.print_trainable_parameters() 
-
-    trainer.train()
-
+    # 被带profile的Trainer替代
+    # trainer = ModifiedTrainer(
+    #     model=model,
+    #     train_dataset=train_dataset,
+    #     args=transformers.TrainingArguments(
+    #         output_dir=save_adapter_path,
+    #         per_device_train_batch_size=1,
+    #         gradient_accumulation_steps=16,
+    #         num_train_epochs=10,
+    #         learning_rate=3e-4,
+    #         fp16=False,
+    #         logging_steps=10,
+    #         save_steps=200,
+    #         # 可额外添加分布式训练优化参数 
+    #         dataloader_drop_last=True,
+    #         ddp_find_unused_parameters=False 
+    #     ),
+    #     data_collator=DataCollatorForSeq2Seq(
+    #         tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
+    #     ),
+    # )
 
     # model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
 
-    model.save_pretrained(save_adapter_path)
-
+    # trainer.train()
 
     # print_lora_params(model)
 
     # model = model.merge_and_unload()
+    ----------------------- END: Lora Test -----------------------
 
+    '''
 
 def inject_lora_layer(model):
 

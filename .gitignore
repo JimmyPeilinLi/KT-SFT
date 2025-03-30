@@ -11,3 +11,4 @@ test_adapter/demo_adapter*
 *.svg
 *_graph
 tmp_package.txt
+logs/

@@ -15,7 +15,7 @@
             "program": "/home/yj/ktransformers/ktransformers/local_chat.py",
             "justMyCode": false,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "1"
+                "CUDA_VISIBLE_DEVICES": "2"
             }
            
         }
