@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Optional, Union
 
 import packaging.version
+from peft import __version__
 import torch
 import transformers
 from accelerate import dispatch_model, infer_auto_device_map, init_empty_weights
@@ -1313,7 +1314,10 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
 
         card.data["library_name"] = "peft"
 
-        model_config = BaseTuner.get_model_config(self)
+        model_config = getattr(self, "config", DUMMY_MODEL_CONFIG)
+        if hasattr(model_config, "to_dict"):
+            model_config = model_config.to_dict()
+            
         model_config = None if model_config == DUMMY_MODEL_CONFIG else model_config
         if model_config is not None and "_name_or_path" in model_config:
             card.data["base_model"] = model_config["_name_or_path"]

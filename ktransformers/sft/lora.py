@@ -230,12 +230,12 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     #     print('-->grad_value:',parms.grad)
     #     print("===")
 
-    # 选择特定层的输入输出
-    output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
-    loss = output.logits.mean()
+    # # 选择特定层的输入输出
+    # output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
+    # loss = output.logits.mean()
 
-    dot = make_dot(loss, params=dict(model.named_parameters()))
-    dot.render("KT_compute_graph", format="svg")
+    # dot = make_dot(loss, params=dict(model.named_parameters()))
+    # dot.render("KT_compute_graph", format="svg")
 
     # inspect_device(model, '/home/yj/ktransformers/device2.txt')
     # with open('/home/yj/ktransformers/device2.txt', 'a') as file:
@@ -272,7 +272,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     
     model.print_trainable_parameters() 
 
-    # trainer.train()
+    trainer.train()
 
 
     # model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
@@ -280,7 +280,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path):
     model.save_pretrained(save_adapter_path)
 
 
-    print_lora_params(model)
+    # print_lora_params(model)
 
     # model = model.merge_and_unload()
 

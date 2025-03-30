@@ -6,7 +6,7 @@ graphviz/
 compute_graph*
 graphviz*
 third_party/
-demo_adapter*/
+test_adapter/demo_adapter*
 *.whl
 *.svg
 *_graph
