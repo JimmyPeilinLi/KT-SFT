@@ -9,6 +9,7 @@ from peft import LoraConfig, TaskType
 import os
 from torchviz import make_dot
 from torch.profiler import profile, record_function, ProfilerActivity
+import torch.nn.functional as F
 from transformers import TrainerCallback
 import gc
 
@@ -19,6 +20,24 @@ from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
 # FOR: not A or H GPU
 os.environ["NCCL_P2P_DISABLE"]  = "1"
 os.environ["NCCL_IB_DISABLE"]  = "1"
+
+layer_data = {}  # 存储各层输入输出数据
+
+def record_layer_io(module, input, output, layer_name):
+    layer_data[layer_name] = {
+        'input': input[0].detach().clone(),
+        'output': output.detach().clone()
+    }
+
+# 注册钩子
+hooks = []
+target_layers = [
+    'base_model.model.model.orig_module.layers.0.self_attn.kv_a_proj_with_mqa',
+    'base_model.model.model.orig_module.layers.0.self_attn.kv_b_proj',
+    # 'base_model.model.model.orig_module.layers.1.self_attn.kv_a_proj_with_mqa',
+    # 'base_model.model.model.orig_module.layers.1.self_attn.kv_b_proj'
+]
+
 
 # 自定义回调，手动控制Profiler，避免transformer库版本太低
 class ProfilerCallback(TrainerCallback):
@@ -174,7 +193,64 @@ def forward_hook(module, inputs, output):
     else:
         print(f"{module.__class__.__name__}: requires_grad={output.requires_grad}, grad_fn={output.grad_fn}")
 
+def check_moe_gradients(model):
+    moe_layer = model.base_model.model.model.orig_module.layers[1].mlp.orig_module
+    for name, param in moe_layer.named_parameters():
+        if param.requires_grad and param.grad is not None:
+            grad_norm = torch.norm(param.grad)
+            print(f"MoE参数 {name} 梯度范数: {grad_norm}")
+        else:
+            print(f"MoE参数 {name} 无梯度")
 
+def disable_all_dropout(module):
+        for name, child in module.named_children():
+            if isinstance(child, torch.nn.Dropout):
+                child.p = 0  # 直接修改概率参数
+                child.inplace = False  # 确保不影响原始数据
+            disable_all_dropout(child)  # 递归处理子模块
+
+def verify_lora_layers(model):
+    for layer_path in target_layers:
+        # 获取模块实例
+        module = model.get_submodule(layer_path)
+        orig_module = module.orig_module
+        
+        # 提取参数
+        W = orig_module.weight.data  # [576, 2048] -> [2048, 576]
+        lora_A = module.lora_A['default'].weight.data  # [8, 2048]
+        lora_B = module.lora_B['default'].weight.data  # [576, 8]
+        alpha_over_r = 32/8  # alpha=32, r=8
+        
+        # 获取记录的数据（保持batch维度）
+        input_tensor = layer_data[layer_path]['input']  # [1, 512, 2048]
+        
+        # 手动计算流程
+        # 原始部分计算
+        try:
+            original_output = torch.matmul(input_tensor, W)  # [1,512,2048] @ [2048,576] => [1,512,576]
+        except:
+            original_output = torch.matmul(input_tensor, W.T)  # [1,512,2048] @ [2048,576] => [1,512,576]
+        
+        # LoRA部分计算
+        lora_effect = torch.matmul(
+            torch.matmul(input_tensor, lora_A.T),  # [1,512,2048] @ [2048,8] => [1,512,8]
+            lora_B.T  # [1,512,8] @ [8,576] => [1,512,576]
+        ) * alpha_over_r
+        
+        # 合并结果
+        manual_output = original_output + lora_effect  # [1,512,576]
+        
+        # 获取模型输出
+        model_output = layer_data[layer_path]['output']
+
+        print(f"manual_output:{manual_output}")
+        print(f"model_output:{model_output}")
+        
+        # 数值比较
+        if torch.allclose(manual_output, model_output, atol=1e-5):
+            print(f"{layer_path} 验证通过")
+        else:
+            print(f"{layer_path} 验证失败！最大误差：{torch.max(torch.abs(manual_output - model_output))}")
 
 def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is_profiler=False):
 
@@ -203,7 +279,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
         ],
         r=8,
         lora_alpha=32,
-        lora_dropout=0.1,
+        lora_dropout=0, # TODO: FOR consist TEST, origin=0.1
     )
 
     training_args = TrainingArguments(
@@ -224,9 +300,34 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     model = get_peft_model(model, lora_config)
     # model = get_custom_peft_model(model, lora_config)
 
+    
+    # output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
+    # loss = output.logits.mean()
+
+    # dot = make_dot(loss, params=dict(model.named_parameters()))
+    # dot.render("KT_compute_one_layer_model_graph", format="svg")
+
     model.config.use_cache = False
 
     model.print_trainable_parameters() 
+
+    disable_all_dropout(model)
+
+    def print_dropout_status(module, prefix=""):
+        for name, child in module.named_children():
+            if isinstance(child, torch.nn.Dropout):
+                print(f"{prefix}{name}: p={child.p}, training={child.training}")
+            print_dropout_status(child, prefix + name + ".")
+    
+    print("Dropout层状态验证：") # 空输出或者p=0就是成功验证
+    print_dropout_status(model)
+
+    for layer_path in target_layers:
+        module = model.get_submodule(layer_path)
+        hook = module.register_forward_hook(
+            lambda m, i, o, ln=layer_path: record_layer_io(m, i, o, ln)
+        )
+        hooks.append(hook)
 
     if is_profiler:
         profiler = profile(
@@ -286,6 +387,10 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
         )
 
         trainer.train()
+
+        # check_moe_gradients(model) # 调试结果：无梯度
+
+        verify_lora_layers(model)
 
     # profiler.export_chrome_trace("trace.json")
 

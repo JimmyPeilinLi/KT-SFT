@@ -87,7 +87,7 @@ def local_chat(
     mode: str = "normal",
     force_think: bool = False,
     chunk_prefill_size: int = 8192,
-    is_sft: bool = True,
+    is_sft: bool = False,
     sft_data_path: str | None = None,
     save_adapter_path: str | None = None,
     use_adapter: bool = False,

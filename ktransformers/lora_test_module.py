@@ -64,7 +64,6 @@ class TestModelBase(nn.Module):
             generate_op="KLinearTorch"
         )
         # self.layer.generate_linear.weight = torch.randn(3072, 2048).to("cuda")
-        # TODO: load function not being well.
         weight = torch.randn(3072, 2048, device="cuda")
         self.layer.load(w=nn.Parameter(weight), mode = InferenceState.GENERATE) # 这里不存在矩阵转置，所以没有TBackward也很合理
         # self.layer.generate_linear.weight = nn.Parameter(torch.randn(3072, 2048).to("cuda"))

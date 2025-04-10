@@ -14,7 +14,7 @@ from torchviz import make_dot
 tokenizer = AutoTokenizer.from_pretrained('/home/yj/ktransformers/DeepSeek-V2-Lite-Chat', trust_remote_code=True)
 # tokenizer = AutoTokenizer.from_pretrained('/data/model/Qwen2.5-7B-Instruct', trust_remote_code=True)
 save_path = '/home/yj/ktransformers/tmp/Qwen_Lora_model'
-data_file = '/home/yj/ktransformers/train_data.json'
+data_file = '/home/yj/ktransformers/test_adapter/sft_translation.json'
 
 dataset = Dataset.from_json(data_file)
 
@@ -65,14 +65,17 @@ print_model_with_params(model, prefix="原始模型")
 
 # 配置 LoRA
 lora_config = LoraConfig(
-    task_type=TaskType.CAUSAL_LM,  # 任务类型：因果语言模型
-    inference_mode=False,          # 推理模式关闭，以进行训练
-    r=8,                           # 低秩值 r
-    lora_alpha=32,                 # LoRA 的缩放因子
-    lora_dropout=0.1,              # Dropout 概率
-    # target_modules=["embed_tokens", "q_proj", "kv_a_proj_with_mqa", "kv_b_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "lm_head"], 
-    target_modules=["0.self_attn.q_proj"],  # 目标模块
-)
+        task_type=TaskType.CAUSAL_LM,
+        target_modules=[
+            # "q_proj"
+            "kv_a_proj_with_mqa",
+            "kv_b_proj",
+            # "o_proj"
+        ],
+        r=8,
+        lora_alpha=32,
+        lora_dropout=0.1,
+    )
 
 model = get_peft_model(model, lora_config)
 # model = inject_adapter_in_model(lora_config, model)
@@ -109,7 +112,7 @@ print(f"loss:{loss}")
 # # print_grad_fn(loss.grad_fn)
 # # 生成计算图
 dot = make_dot(loss, params=dict(model.named_parameters()))
-dot.render("compute_graph", format="svg")  # 保存为SVG格式的文件
+dot.render("PEFT_compute_one_layer_model_graph", format="svg")  # 保存为SVG格式的文件
 
 # 暂时先不训练
 # model = model.to('cuda')
@@ -148,7 +151,7 @@ trainer = ModifiedTrainer(
         fp16=True,
         logging_steps=10,
         save_steps=200,
-        output_dir="/home/yj/ktransformers/tmp"
+        output_dir=save_path
     ),
     data_collator=DataCollatorForSeq2Seq(
         tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
