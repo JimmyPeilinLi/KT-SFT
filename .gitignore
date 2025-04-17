@@ -12,3 +12,12 @@ test_adapter/demo_adapter*
 *_graph
 tmp_package.txt
 logs/
+
+# MakeFiles for kt_ext
+build/
+ktransformers/ktransformers_ext/bin
+ktransformers/ktransformers_ext/CMakeFiles
+ktransformers/ktransformers_ext/cmake_install.cmake
+ktransformers/ktransformers_ext/CMakeCache.txt
+ktransformers/ktransformers_ext/compile_commands.json
+ktransformers/ktransformers_ext/Makefile

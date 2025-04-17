@@ -300,16 +300,15 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     model = get_peft_model(model, lora_config)
     # model = get_custom_peft_model(model, lora_config)
 
-    
-    # output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
-    # loss = output.logits.mean()
-
-    # dot = make_dot(loss, params=dict(model.named_parameters()))
-    # dot.render("KT_compute_one_layer_model_graph", format="svg")
-
     model.config.use_cache = False
 
     model.print_trainable_parameters() 
+    
+    output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
+    loss = output.logits.mean()
+
+    dot = make_dot(loss, params=dict(model.named_parameters()))
+    dot.render("draw_KT_compute_two_layer_cpu_moe_model_graph", format="svg")
 
     disable_all_dropout(model)
 

@@ -1,5 +1,6 @@
 {
     "editor.fontFamily": "JetBrains Mono",
     "editor.fontLigatures": true,
-    "debugpy.debugJustMyCode": false
+    "debugpy.debugJustMyCode": false,
+    "cmake.sourceDirectory": "/home/yj/ktransformers/ktransformers/ktransformers_ext"
 }

@@ -244,7 +244,7 @@ if __name__ == "__main__":
     cpu_infer=32,
     max_new_tokens=1000,
     force_think=True,
-    optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-use-adapter.yaml",
+    optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft.yaml",
     is_sft=True,
     sft_data_path="/home/yj/ktransformers/test_adapter/sft_translation.json",
     save_adapter_path="/home/yj/ktransformers/test_adapter/demo_adapter_KT_target_kv",
