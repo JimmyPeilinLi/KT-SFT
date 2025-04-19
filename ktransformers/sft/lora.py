@@ -279,7 +279,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
         ],
         r=8,
         lora_alpha=32,
-        lora_dropout=0, # TODO: FOR consist TEST, origin=0.1
+        lora_dropout=0.1, # TODO: FOR consist TEST, origin=0.1
     )
 
     training_args = TrainingArguments(
@@ -304,29 +304,29 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
 
     model.print_trainable_parameters() 
     
-    output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
-    loss = output.logits.mean()
+    # output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
+    # loss = output.logits.mean()
 
-    dot = make_dot(loss, params=dict(model.named_parameters()))
-    dot.render("draw_KT_compute_two_layer_cpu_moe_model_graph", format="svg")
+    # dot = make_dot(loss, params=dict(model.named_parameters()))
+    # dot.render("KT_compute_torch_cpu_moe_model_graph", format="svg")
 
-    disable_all_dropout(model)
+    # disable_all_dropout(model)
 
-    def print_dropout_status(module, prefix=""):
-        for name, child in module.named_children():
-            if isinstance(child, torch.nn.Dropout):
-                print(f"{prefix}{name}: p={child.p}, training={child.training}")
-            print_dropout_status(child, prefix + name + ".")
+    # def print_dropout_status(module, prefix=""):
+    #     for name, child in module.named_children():
+    #         if isinstance(child, torch.nn.Dropout):
+    #             print(f"{prefix}{name}: p={child.p}, training={child.training}")
+    #         print_dropout_status(child, prefix + name + ".")
     
-    print("Dropout层状态验证：") # 空输出或者p=0就是成功验证
-    print_dropout_status(model)
+    # print("Dropout层状态验证：") # 空输出或者p=0就是成功验证
+    # print_dropout_status(model)
 
-    for layer_path in target_layers:
-        module = model.get_submodule(layer_path)
-        hook = module.register_forward_hook(
-            lambda m, i, o, ln=layer_path: record_layer_io(m, i, o, ln)
-        )
-        hooks.append(hook)
+    # for layer_path in target_layers:
+    #     module = model.get_submodule(layer_path)
+    #     hook = module.register_forward_hook(
+    #         lambda m, i, o, ln=layer_path: record_layer_io(m, i, o, ln)
+    #     )
+    #     hooks.append(hook)
 
     if is_profiler:
         profiler = profile(
@@ -384,6 +384,8 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
                 tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
             )
         )
+
+        print("-------------------------START TRAINING!!!-------------------------")
 
         trainer.train()
 
