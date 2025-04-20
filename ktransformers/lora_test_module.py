@@ -13,7 +13,7 @@ from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     GenerationConfig,
-    TextStreamer, 
+    TextStreamer,
 )
 
 from ktransformers.operators.linear import KLinearTorch, KTransformersLinear
