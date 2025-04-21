@@ -3,10 +3,20 @@ project(cpuinfer_ext VERSION 0.1.0)
 
 
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -ffast-math")
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -ffast-math")
+set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -fno-finite-math-only")
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-finite-math-only")
+add_compile_options(
+        -O3                 # Release 优化；Debug 由用户自己决定
+        -fno-finite-math-only  # 覆盖 fast‑math 隐式选项
+)
 set(CMAKE_BUILD_TYPE "Release")
 include(CheckCXXCompilerFlag)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+option(KTRANSFORMERS_ENABLE_FAST_MATH "use -ffast-math (will break ggml)" OFF)
+if (KTRANSFORMERS_ENABLE_FAST_MATH)
+    add_compile_options(-ffast-math)
+endif()
 
 
 option(LLAMA_NATIVE                     "llama: enable -march=native flag"                      ON)
@@ -202,6 +212,7 @@ endif()
 
 add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${ARCH_FLAGS}>")
 add_compile_options("$<$<COMPILE_LANGUAGE:C>:${ARCH_FLAGS}>")
+add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:${ARCH_FLAGS}>")
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/pybind11 ${CMAKE_CURRENT_BINARY_DIR}/third_party/pybind11)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/llama.cpp ${CMAKE_CURRENT_BINARY_DIR}/third_party/llama.cpp)

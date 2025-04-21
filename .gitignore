@@ -21,3 +21,4 @@ ktransformers/ktransformers_ext/cmake_install.cmake
 ktransformers/ktransformers_ext/CMakeCache.txt
 ktransformers/ktransformers_ext/compile_commands.json
 ktransformers/ktransformers_ext/Makefile
+*.egg-info*
