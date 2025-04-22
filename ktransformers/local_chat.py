@@ -11,6 +11,7 @@ import sys
 
 project_dir = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, project_dir)
+import argparse
 import torch
 import logging
 from transformers import (
@@ -78,6 +79,7 @@ default_optimize_rules = {
 
 def local_chat(
     model_path: str | None = None,
+	model_config_path: str | None = None,
     optimize_config_path: str = None,
     gguf_path: str | None = None,
     max_new_tokens: int = 300,
@@ -99,7 +101,10 @@ def local_chat(
     Config().cpu_infer = cpu_infer
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    if model_config_path == None:
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    else:
+	    config = AutoConfig.from_pretrained(model_config_path, trust_remote_code=True)
     if mode == 'long_context':
         assert config.architectures[0] == "LlamaForCausalLM", "only LlamaForCausalLM support long_context mode"
         torch.set_default_dtype(torch.float16)
@@ -238,15 +243,34 @@ def local_chat(
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--model_path", required=True)
+    parser.add_argument("--model_config_path", default=None)
+    parser.add_argument("--gguf_path", required=True)
+    parser.add_argument("--cpu_infer", type=int, default=32)
+    parser.add_argument("--max_new_tokens", type=int, default=1000)
+    parser.add_argument("--force_think", action="store_true")
+    parser.add_argument("--optimize_config_path", required=True)
+    parser.add_argument("--is_sft", type=lambda x: x.lower() == "true", default=False)
+    parser.add_argument("--sft_data_path", default=None)
+    parser.add_argument("--save_adapter_path", default=None)
+    parser.add_argument("--use_adapter", action="store_true")
+    parser.add_argument("--use_adapter_path", default=None)
+
+    args = parser.parse_args()
+
     local_chat(
-    model_path="/home/yj/ktransformers/DeepSeek-V2-Lite-Chat",
-    gguf_path="/home/yj/ktransformers/GGUF-DeepSeek-V2-Lite-Chat",
-    cpu_infer=32,
-    max_new_tokens=1000,
-    force_think=True,
-    optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft.yaml",
-    is_sft=True,
-    sft_data_path="/home/yj/ktransformers/test_adapter/sft_translation.json",
-    save_adapter_path="/home/yj/ktransformers/test_adapter/demo_adapter_KT_target_kv",
-    use_adapter=False,
-    use_adapter_path="/home/yj/ktransformers/demo_adapter_target_module/lora.gguf")
+        model_path=args.model_path,
+        model_config_path=args.model_config_path,
+        gguf_path=args.gguf_path,
+        cpu_infer=args.cpu_infer,
+        max_new_tokens=args.max_new_tokens,
+        force_think=args.force_think,
+        optimize_config_path=args.optimize_config_path,
+        is_sft=args.is_sft,
+        sft_data_path=args.sft_data_path,
+        save_adapter_path=args.save_adapter_path,
+        use_adapter=args.use_adapter,
+        use_adapter_path=args.use_adapter_path
+    )
