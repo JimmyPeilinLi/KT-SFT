@@ -46,7 +46,7 @@ def print_module_tree(module, indent=0):
         print_module_tree(child, indent + 4)
 
 # for debug
-def write_to_file(content, file_path: str = '/home/yj/ktransformers/mark_content.txt', mode: str = 'a', encoding: str = 'utf-8') -> None:
+def write_to_file(content, file_path: str = 'ktransformers/mark_content.txt', mode: str = 'a', encoding: str = 'utf-8') -> None:
     """
     将字符串写入指定文件 
     :param content: 要写入的字符串内容 
@@ -84,7 +84,7 @@ def local_chat(
     gguf_path: str | None = None,
     max_new_tokens: int = 300,
     cpu_infer: int = Config().cpu_infer,
-    use_cuda_graph: bool = True,
+    use_cuda_graph: bool = False,
     prompt_file : str | None = None,
     mode: str = "normal",
     force_think: bool = False,

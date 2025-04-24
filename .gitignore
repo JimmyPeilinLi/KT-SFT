@@ -13,6 +13,13 @@ test_adapter/demo_adapter*
 tmp_package.txt
 logs/
 
+.vscode/
+
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
 # MakeFiles for kt_ext
 build/
 ktransformers/ktransformers_ext/bin
