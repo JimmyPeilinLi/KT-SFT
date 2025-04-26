@@ -145,6 +145,20 @@ class KExpertsCPU(KExpertsBase):
         self.n_routed_experts = n_routed_experts
         self.out_device = out_device
 
+        # 统计相关属性
+        self.call_count = 0
+        self.flops_per_call = []
+        self.times = []
+        # 详细FLOPs记录格式: [{'gate': flops, 'act': ...}, ...]
+        self.expert_flops_details = []  
+        self.total_flops = 0
+        
+        # 参数量计算
+        h = self.config.hidden_size
+        m = self.config.moe_intermediate_size
+        self.params_per_expert = 3 * h * m
+        self.total_params = 64 * self.params_per_expert
+
     def load(self, w: dict | nn.Parameter | tuple | None = None, device:str|None = None, warmup:bool = False):
         if device:
             assert device.lower() == "cpu", "KExpertsCPU can only be loaded on CPU, Parameter \"device\" can be cpu or None."
@@ -212,6 +226,7 @@ class KExpertsCPU(KExpertsBase):
     def forward(self, input_tensor, expert_ids, weights):
         # generate, capture and run cuda graph
         # print(expert_ids)
+        start_time = time.time()
         if input_tensor.size(0)==1 and torch.cuda.is_current_stream_capturing():
             # TODO: this branch is unreachable, but the shape of input_tensor([1,hidden_size]) and input_tensor_cpu([hidden_size]) is not compatible
             #print("capturing experts")
@@ -229,6 +244,50 @@ class KExpertsCPU(KExpertsBase):
             output = torch.empty_like(input_tensor).contiguous()
             self.cpu_infer.submit(self.moe.forward(expert_ids.size(0), expert_ids.size(1), expert_ids.data_ptr(), weights.data_ptr(), input_tensor.data_ptr(), output.data_ptr()))
             self.cpu_infer.sync()
+
+            # 初始化统计变量
+            call_flops = 0
+            expert_details = []
+            
+            for expert_idx in range(64):
+                t_e = 6
+                if t_e == 0:
+                    expert_details.append({'gate':0, 'act':0, 'up':0, 
+                                        'element':0, 'down':0, 'routing':0})
+                    continue
+                    
+                h = self.config.hidden_size
+                m = self.config.moe_intermediate_size
+                
+                # 分项FLOPs计算
+                flops_gate = 2 * t_e * h * m
+                flops_act = t_e * m
+                flops_up = 2 * t_e * h * m
+                flops_element = t_e * m
+                flops_down = 2 * t_e * m * h
+                flops_routing = t_e * h
+                
+                # 累计总FLOPs
+                total_expert = sum([flops_gate, flops_act, flops_up, 
+                                flops_element, flops_down, flops_routing])
+                call_flops += total_expert
+                
+                # 记录详细数据
+                expert_details.append({
+                    'gate': flops_gate,
+                    'act': flops_act,
+                    'up': flops_up,
+                    'element': flops_element,
+                    'down': flops_down,
+                    'routing': flops_routing
+                })
+            
+            # 记录本次调用信息
+            self.call_count += 1
+            self.flops_per_call.append(call_flops)
+            self.total_flops += call_flops
+            self.expert_flops_details.append(expert_details)
+            self.times.append(time.time() - start_time)
             return output.to(device=object.__getattribute__(self, "out_device"))
     
     def unload(self):
@@ -441,6 +500,20 @@ class KExpertsTorch(KExpertsBase):
         self.down = [None for _ in range(self.expert_num)]
         self.dtype = torch.get_default_dtype()
 
+        # 统计相关属性
+        self.call_count = 0
+        self.flops_per_call = []
+        self.times = []
+        # 详细FLOPs记录格式: [{'gate': flops, 'act': ...}, ...]
+        self.expert_flops_details = []  
+        self.total_flops = 0
+        
+        # 参数量计算
+        h = self.config.hidden_size
+        m = self.config.moe_intermediate_size
+        self.params_per_expert = 3 * h * m
+        self.total_params = self.expert_num * self.params_per_expert
+
     def load(self, w: dict | nn.Parameter | tuple | None = None, device: str | None = None, warmup: bool = False):
         if device is None: device = self.device
         if w is None:
@@ -464,6 +537,9 @@ class KExpertsTorch(KExpertsBase):
                     self.up[i] = w["up"][i, ...].to(device=device, dtype=self.dtype)
                     self.down[i] = w["down"][i, ...].to(device=device, dtype=self.dtype)
         
+        # self.up = torch.stack(self.up, dim=0)
+        # self.gate = torch.stack(self.gate, dim=0)
+        # self.down = torch.stack(self.down, dim=0)
         self.up = nn.Parameter(torch.stack(self.up, dim=0))
         self.gate = nn.Parameter(torch.stack(self.gate, dim=0))
         self.down = nn.Parameter(torch.stack(self.down, dim=0))
@@ -494,168 +570,214 @@ class KExpertsTorch(KExpertsBase):
             res = {"gate": gate, "up": up, "down": down}
         return res
 
-    # def forward(self, hidden_states_cpu: torch.Tensor, selected_experts_cpu: torch.Tensor, routing_weights_cpu: torch.Tensor) -> torch.Tensor:
-
-    #     org_device = hidden_states_cpu.device
-    #     hidden_states_cpu = hidden_states_cpu.to(self.device)
-    #     selected_experts_cpu = selected_experts_cpu.to(self.device)
-    #     routing_weights_cpu = routing_weights_cpu.to(self.device)
-        
-    #     batch_sequence_length, hidden_dim = hidden_states_cpu.size()
-
-    #     final_hidden_states = torch.zeros(
-    #         (batch_sequence_length, hidden_dim), dtype=self.gate.dtype, device=hidden_states_cpu.device
-    #     )
-    #     org_dtype = hidden_states_cpu.dtype
-    #     hidden_states_cpu = hidden_states_cpu.to(self.gate.dtype)
-    #     routing_weights_cpu = routing_weights_cpu.to(self.gate.dtype)
-    #     # One hot encode the selected experts to create an expert mask
-    #     # this will be used to easily index which expert is going to be sollicitated
-    #     expert_mask = torch.nn.functional.one_hot(selected_experts_cpu, num_classes=self.expert_num).permute(2, 1, 0)
-
-    #     # Loop over all available experts in the model and perform the computation on each expert
-    #     for expert_idx in range(self.expert_num):
-    #         idx, top_x = torch.where(expert_mask[expert_idx])
-    #         # Index the correct hidden states and compute the expert hidden state for
-    #         # the current expert. We need to make sure to multiply the output hidden
-    #         # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
-    #         current_state = hidden_states_cpu[None, top_x].reshape(-1, hidden_dim)
-    #         G = current_state @ self.gate[expert_idx,...].T
-    #         A = self.act_fn(G)
-    #         U = current_state @ self.up[expert_idx,...].T
-    #         H = A * U  # Element-wise multiplication
-    #         current_hidden_states = H @ self.down[expert_idx,...].T * routing_weights_cpu[top_x, idx, None]
-    #         # However `index_add_` only support torch tensors for indexing so we'll use
-    #         # the `top_x` tensor here.
-    #         final_hidden_states.index_add_(0, top_x, current_hidden_states)
-
-    #   return final_hidden_states.to(dtype=org_dtype, device=org_device)
-
     def forward(self, hidden_states_cpu: torch.Tensor, selected_experts_cpu: torch.Tensor, routing_weights_cpu: torch.Tensor) -> torch.Tensor:
-        print("Enter the forward function!")
-        # 记录两次调用之间的时间间隔
-        current_call_start = time.perf_counter()
-        if hasattr(self, 'last_call_end_time') and self.last_call_end_time is not None:
-            inter_call_interval = current_call_start - self.last_call_end_time
-            print(f"\n[Forward Call Interval] Time since last forward call: {inter_call_interval:.6f} seconds")
-            logging.info(f"\n[Forward Call Interval] Time since last forward call: {inter_call_interval:.6f} seconds")
-        else:
-            inter_call_interval = 0.0
+        start_time = time.time()
 
-        # 初始化各阶段计时变量
-        data_transfer_time = 0.0
-        tensor_init_time = 0.0
-        expert_mask_time = 0.0
-        expert_loop_total = 0.0
-        gate_time_total = 0.0
-        up_time_total = 0.0
-        elementwise_time_total = 0.0
-        down_time_total = 0.0
-        index_add_time_total = 0.0
-        cast_back_time = 0.0
-
-        # ====================== 数据迁移阶段 ======================
-        start = time.perf_counter()
         org_device = hidden_states_cpu.device
         hidden_states_cpu = hidden_states_cpu.to(self.device)
         selected_experts_cpu = selected_experts_cpu.to(self.device)
         routing_weights_cpu = routing_weights_cpu.to(self.device)
-        data_transfer_time = time.perf_counter() - start
-
-        # ==================== 张量初始化与类型转换 ==================
-        start = time.perf_counter()
+        
         batch_sequence_length, hidden_dim = hidden_states_cpu.size()
+
         final_hidden_states = torch.zeros(
             (batch_sequence_length, hidden_dim), dtype=self.gate.dtype, device=hidden_states_cpu.device
         )
         org_dtype = hidden_states_cpu.dtype
         hidden_states_cpu = hidden_states_cpu.to(self.gate.dtype)
         routing_weights_cpu = routing_weights_cpu.to(self.gate.dtype)
-        tensor_init_time = time.perf_counter() - start
-
-        # ==================== Expert Mask生成阶段 ==================
-        start = time.perf_counter()
+        # One hot encode the selected experts to create an expert mask
+        # this will be used to easily index which expert is going to be sollicitated
         expert_mask = torch.nn.functional.one_hot(selected_experts_cpu, num_classes=self.expert_num).permute(2, 1, 0)
-        expert_mask_time = time.perf_counter() - start
 
-        # ==================== 专家循环处理阶段 ======================
-        expert_loop_start = time.perf_counter()
-        # for expert_idx in range(self.expert_num):
-        for expert_idx in tqdm(range(self.expert_num), 
-                       desc="Loading experts",     # 进度条左侧提示语
-                       unit="expert"):             # 计量单位（可选）
+        # Loop over all available experts in the model and perform the computation on each expert
+        for expert_idx in range(self.expert_num):
             idx, top_x = torch.where(expert_mask[expert_idx])
-            
-            # ---- 当前专家数据准备 ----
+            # Index the correct hidden states and compute the expert hidden state for
+            # the current expert. We need to make sure to multiply the output hidden
+            # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
             current_state = hidden_states_cpu[None, top_x].reshape(-1, hidden_dim)
-
-            # ---- Gate计算阶段 ----
-            gate_start = time.perf_counter()
             G = current_state @ self.gate[expert_idx,...].T
             A = self.act_fn(G)
-            gate_time_total += time.perf_counter() - gate_start
-
-            # ---- Up投影计算阶段 ----
-            up_start = time.perf_counter()
             U = current_state @ self.up[expert_idx,...].T
-            up_time_total += time.perf_counter() - up_start
-
-            # ---- 元素乘操作阶段 ----
-            element_start = time.perf_counter()
             H = A * U  # Element-wise multiplication
-            elementwise_time_total += time.perf_counter() - element_start
-
-            # ---- Down投影计算阶段 ----
-            down_start = time.perf_counter()
             current_hidden_states = H @ self.down[expert_idx,...].T * routing_weights_cpu[top_x, idx, None]
-            down_time_total += time.perf_counter() - down_start
-
-            # ---- Index Add操作阶段 ----
-            index_start = time.perf_counter()
+            # However `index_add_` only support torch tensors for indexing so we'll use
+            # the `top_x` tensor here.
             final_hidden_states.index_add_(0, top_x, current_hidden_states)
-            index_add_time_total += time.perf_counter() - index_start
 
-        expert_loop_total = time.perf_counter() - expert_loop_start
-        # ==================== 结果转换回原设备 ======================
-        start = time.perf_counter()
-        final_hidden_states = final_hidden_states.to(dtype=org_dtype, device=org_device)
-        cast_back_time = time.perf_counter() - start
+        # 初始化统计变量
+        call_flops = 0
+        expert_details = []
+        
+        for expert_idx in range(self.expert_num):
+            idx, top_x = torch.where(expert_mask[expert_idx])
+            t_e = len(top_x)
+            if t_e == 0:
+                expert_details.append({'gate':0, 'act':0, 'up':0, 
+                                      'element':0, 'down':0, 'routing':0})
+                continue
+                
+            h = self.config.hidden_size
+            m = self.config.moe_intermediate_size
+            
+            # 分项FLOPs计算
+            flops_gate = 2 * t_e * h * m
+            flops_act = t_e * m
+            flops_up = 2 * t_e * h * m
+            flops_element = t_e * m
+            flops_down = 2 * t_e * m * h
+            flops_routing = t_e * h
+            
+            # 累计总FLOPs
+            total_expert = sum([flops_gate, flops_act, flops_up, 
+                               flops_element, flops_down, flops_routing])
+            call_flops += total_expert
+            
+            # 记录详细数据
+            expert_details.append({
+                'gate': flops_gate,
+                'act': flops_act,
+                'up': flops_up,
+                'element': flops_element,
+                'down': flops_down,
+                'routing': flops_routing
+            })
+        
+        # 记录本次调用信息
+        self.call_count += 1
+        self.flops_per_call.append(call_flops)
+        self.total_flops += call_flops
+        self.expert_flops_details.append(expert_details)
+        self.times.append(time.time() - start_time)
 
-        # ==================== 记录所有计时结果 ======================
-        total_time = time.perf_counter() - current_call_start
-        print(f"""
-    [Timing Breakdown]
-        Data Transfer:          {data_transfer_time:.6f}s
-        Tensor Initialization:  {tensor_init_time:.6f}s
-        Expert Mask Creation:   {expert_mask_time:.6f}s
-        Expert Loop Total:      {expert_loop_total:.6f}s
-            -> Gate Computations:   {gate_time_total:.6f}s
-            -> Up Projections:      {up_time_total:.6f}s
-            -> Elementwise Mult:    {elementwise_time_total:.6f}s
-            -> Down Projections:    {down_time_total:.6f}s
-            -> Index Add Ops:       {index_add_time_total:.6f}s
-        Cast Back to Original:  {cast_back_time:.6f}s
-        Total Forward Time:     {total_time:.6f}s
-        """)
-        logging.info(f"""
-    [Timing Breakdown]
-        Data Transfer:          {data_transfer_time:.6f}s
-        Tensor Initialization:  {tensor_init_time:.6f}s
-        Expert Mask Creation:   {expert_mask_time:.6f}s
-        Expert Loop Total:      {expert_loop_total:.6f}s
-            -> Gate Computations:   {gate_time_total:.6f}s
-            -> Up Projections:      {up_time_total:.6f}s
-            -> Elementwise Mult:    {elementwise_time_total:.6f}s
-            -> Down Projections:    {down_time_total:.6f}s
-            -> Index Add Ops:       {index_add_time_total:.6f}s
-        Cast Back to Original:  {cast_back_time:.6f}s
-        Total Forward Time:     {total_time:.6f}s
-        """)
+        return final_hidden_states.to(dtype=org_dtype, device=org_device)
 
-        # 更新最后一次调用时间戳
-        self.last_call_end_time = time.perf_counter()
+    # def forward(self, hidden_states_cpu: torch.Tensor, selected_experts_cpu: torch.Tensor, routing_weights_cpu: torch.Tensor) -> torch.Tensor:
+    #     print("Enter the forward function!")
+    #     # 记录两次调用之间的时间间隔
+    #     current_call_start = time.perf_counter()
+    #     if hasattr(self, 'last_call_end_time') and self.last_call_end_time is not None:
+    #         inter_call_interval = current_call_start - self.last_call_end_time
+    #         # print(f"\n[Forward Call Interval] Time since last forward call: {inter_call_interval:.6f} seconds")
+    #         logging.info(f"\n[Forward Call Interval] Time since last forward call: {inter_call_interval:.6f} seconds")
+    #     else:
+    #         inter_call_interval = 0.0
 
-        return final_hidden_states
+    #     # 初始化各阶段计时变量
+    #     data_transfer_time = 0.0
+    #     tensor_init_time = 0.0
+    #     expert_mask_time = 0.0
+    #     expert_loop_total = 0.0
+    #     gate_time_total = 0.0
+    #     up_time_total = 0.0
+    #     elementwise_time_total = 0.0
+    #     down_time_total = 0.0
+    #     index_add_time_total = 0.0
+    #     cast_back_time = 0.0
+
+    #     # ====================== 数据迁移阶段 ======================
+    #     start = time.perf_counter()
+    #     org_device = hidden_states_cpu.device
+    #     hidden_states_cpu = hidden_states_cpu.to(self.device)
+    #     selected_experts_cpu = selected_experts_cpu.to(self.device)
+    #     routing_weights_cpu = routing_weights_cpu.to(self.device)
+    #     data_transfer_time = time.perf_counter() - start
+
+    #     # ==================== 张量初始化与类型转换 ==================
+    #     start = time.perf_counter()
+    #     batch_sequence_length, hidden_dim = hidden_states_cpu.size()
+    #     final_hidden_states = torch.zeros(
+    #         (batch_sequence_length, hidden_dim), dtype=self.gate.dtype, device=hidden_states_cpu.device
+    #     )
+    #     org_dtype = hidden_states_cpu.dtype
+    #     hidden_states_cpu = hidden_states_cpu.to(self.gate.dtype)
+    #     routing_weights_cpu = routing_weights_cpu.to(self.gate.dtype)
+    #     tensor_init_time = time.perf_counter() - start
+
+    #     # ==================== Expert Mask生成阶段 ==================
+    #     start = time.perf_counter()
+    #     expert_mask = torch.nn.functional.one_hot(selected_experts_cpu, num_classes=self.expert_num).permute(2, 1, 0)
+    #     expert_mask_time = time.perf_counter() - start
+
+    #     # ==================== 专家循环处理阶段 ======================
+    #     expert_loop_start = time.perf_counter()
+    #     # for expert_idx in range(self.expert_num):
+    #     for expert_idx in tqdm(range(self.expert_num), 
+    #                    desc="Loading experts",     # 进度条左侧提示语
+    #                    unit="expert"):             # 计量单位（可选）
+    #         idx, top_x = torch.where(expert_mask[expert_idx])
+            
+    #         # ---- 当前专家数据准备 ----
+    #         current_state = hidden_states_cpu[None, top_x].reshape(-1, hidden_dim)
+
+    #         # ---- Gate计算阶段 ----
+    #         gate_start = time.perf_counter()
+    #         G = current_state @ self.gate[expert_idx,...].T
+    #         A = self.act_fn(G)
+    #         gate_time_total += time.perf_counter() - gate_start
+
+    #         # ---- Up投影计算阶段 ----
+    #         up_start = time.perf_counter()
+    #         U = current_state @ self.up[expert_idx,...].T
+    #         up_time_total += time.perf_counter() - up_start
+
+    #         # ---- 元素乘操作阶段 ----
+    #         element_start = time.perf_counter()
+    #         H = A * U  # Element-wise multiplication
+    #         elementwise_time_total += time.perf_counter() - element_start
+
+    #         # ---- Down投影计算阶段 ----
+    #         down_start = time.perf_counter()
+    #         current_hidden_states = H @ self.down[expert_idx,...].T * routing_weights_cpu[top_x, idx, None]
+    #         down_time_total += time.perf_counter() - down_start
+
+    #         # ---- Index Add操作阶段 ----
+    #         index_start = time.perf_counter()
+    #         final_hidden_states.index_add_(0, top_x, current_hidden_states)
+    #         index_add_time_total += time.perf_counter() - index_start
+
+    #     expert_loop_total = time.perf_counter() - expert_loop_start
+    #     # ==================== 结果转换回原设备 ======================
+    #     start = time.perf_counter()
+    #     final_hidden_states = final_hidden_states.to(dtype=org_dtype, device=org_device)
+    #     cast_back_time = time.perf_counter() - start
+
+    #     # ==================== 记录所有计时结果 ======================
+    #     total_time = time.perf_counter() - current_call_start
+    #     print(f"""
+    # [Timing Breakdown]
+    #     Data Transfer:          {data_transfer_time:.6f}s
+    #     Tensor Initialization:  {tensor_init_time:.6f}s
+    #     Expert Mask Creation:   {expert_mask_time:.6f}s
+    #     Expert Loop Total:      {expert_loop_total:.6f}s
+    #         -> Gate Computations:   {gate_time_total:.6f}s
+    #         -> Up Projections:      {up_time_total:.6f}s
+    #         -> Elementwise Mult:    {elementwise_time_total:.6f}s
+    #         -> Down Projections:    {down_time_total:.6f}s
+    #         -> Index Add Ops:       {index_add_time_total:.6f}s
+    #     Cast Back to Original:  {cast_back_time:.6f}s
+    #     Total Forward Time:     {total_time:.6f}s
+    #     """)
+    #     logging.info(f"""
+    # [Timing Breakdown]
+    #     Data Transfer:          {data_transfer_time:.6f}s
+    #     Tensor Initialization:  {tensor_init_time:.6f}s
+    #     Expert Mask Creation:   {expert_mask_time:.6f}s
+    #     Expert Loop Total:      {expert_loop_total:.6f}s
+    #         -> Gate Computations:   {gate_time_total:.6f}s
+    #         -> Up Projections:      {up_time_total:.6f}s
+    #         -> Elementwise Mult:    {elementwise_time_total:.6f}s
+    #         -> Down Projections:    {down_time_total:.6f}s
+    #         -> Index Add Ops:       {index_add_time_total:.6f}s
+    #     Cast Back to Original:  {cast_back_time:.6f}s
+    #     Total Forward Time:     {total_time:.6f}s
+    #     """)
+
+    #     # 更新最后一次调用时间戳
+    #     self.last_call_end_time = time.perf_counter()
+
+    #     return final_hidden_states
 
 
 EXPERTS_MAP = {

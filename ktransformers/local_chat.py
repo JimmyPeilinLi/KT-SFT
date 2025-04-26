@@ -36,7 +36,7 @@ from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled
 from ktransformers.sft.lora import inject_lora_layer, lora_and_load_adapter
 from ktransformers.util.custom_gguf import GGUFLoader
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 # for debug
 def print_module_tree(module, indent=0):
@@ -79,7 +79,7 @@ default_optimize_rules = {
 
 def local_chat(
     model_path: str | None = None,
-	model_config_path: str | None = None,
+    model_config_path: str | None = None,
     optimize_config_path: str = None,
     gguf_path: str | None = None,
     max_new_tokens: int = 300,
@@ -104,7 +104,7 @@ def local_chat(
     if model_config_path == None:
         config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     else:
-	    config = AutoConfig.from_pretrained(model_config_path, trust_remote_code=True)
+        config = AutoConfig.from_pretrained(model_config_path, trust_remote_code=True)
     if mode == 'long_context':
         assert config.architectures[0] == "LlamaForCausalLM", "only LlamaForCausalLM support long_context mode"
         torch.set_default_dtype(torch.float16)
@@ -243,34 +243,53 @@ def local_chat(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    IS_DEBUG = True
 
-    parser.add_argument("--model_path", required=True)
-    parser.add_argument("--model_config_path", default=None)
-    parser.add_argument("--gguf_path", required=True)
-    parser.add_argument("--cpu_infer", type=int, default=32)
-    parser.add_argument("--max_new_tokens", type=int, default=1000)
-    parser.add_argument("--force_think", action="store_true")
-    parser.add_argument("--optimize_config_path", required=True)
-    parser.add_argument("--is_sft", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--sft_data_path", default=None)
-    parser.add_argument("--save_adapter_path", default=None)
-    parser.add_argument("--use_adapter", action="store_true")
-    parser.add_argument("--use_adapter_path", default=None)
+    if IS_DEBUG == False:
+        parser = argparse.ArgumentParser()
 
-    args = parser.parse_args()
+        parser.add_argument("--model_path", required=True)
+        parser.add_argument("--model_config_path", default=None)
+        parser.add_argument("--gguf_path", required=True)
+        parser.add_argument("--cpu_infer", type=int, default=32)
+        parser.add_argument("--max_new_tokens", type=int, default=1000)
+        parser.add_argument("--force_think", action="store_true")
+        parser.add_argument("--optimize_config_path", required=True)
+        parser.add_argument("--is_sft", type=lambda x: x.lower() == "true", default=False)
+        parser.add_argument("--sft_data_path", default=None)
+        parser.add_argument("--save_adapter_path", default=None)
+        parser.add_argument("--use_adapter", default=False)
+        parser.add_argument("--use_adapter_path", default=None)
 
-    local_chat(
-        model_path=args.model_path,
-        model_config_path=args.model_config_path,
-        gguf_path=args.gguf_path,
-        cpu_infer=args.cpu_infer,
-        max_new_tokens=args.max_new_tokens,
-        force_think=args.force_think,
-        optimize_config_path=args.optimize_config_path,
-        is_sft=args.is_sft,
-        sft_data_path=args.sft_data_path,
-        save_adapter_path=args.save_adapter_path,
-        use_adapter=args.use_adapter,
-        use_adapter_path=args.use_adapter_path
-    )
+        args = parser.parse_args()
+
+        local_chat(
+            model_path=args.model_path,
+            model_config_path=args.model_config_path,
+            gguf_path=args.gguf_path,
+            cpu_infer=args.cpu_infer,
+            max_new_tokens=args.max_new_tokens,
+            force_think=args.force_think,
+            optimize_config_path=args.optimize_config_path,
+            is_sft=args.is_sft,
+            sft_data_path=args.sft_data_path,
+            save_adapter_path=args.save_adapter_path,
+            use_adapter=args.use_adapter,
+            use_adapter_path=args.use_adapter_path
+        )
+
+    else:
+        local_chat(
+            model_path="/mnt/data/models/DeepSeek-V2-Lite-Chat",
+            model_config_path="/home/lpl/KT-SFT/ktransformers/configs/model_config",
+            gguf_path="/mnt/data/models/DeepSeek-V2-Lite-Chat-GGUF-Q6_K",
+            cpu_infer=32,
+            max_new_tokens=1000,
+            force_think=True,
+            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft.yaml",
+            is_sft=True,
+            sft_data_path="/home/lpl/KT-SFT/test_adapter/sft_translation.json",
+            save_adapter_path="/home/lpl/KT-SFT/test_adapter/demo_adapter_KT_target_kv",
+            use_adapter=False,
+            use_adapter_path="/home/lpl/KT-SFT/test_adapter/demo_adapter_origin_target_kv"
+        )

@@ -12,9 +12,13 @@ from torch.profiler import profile, record_function, ProfilerActivity
 import torch.nn.functional as F
 from transformers import TrainerCallback
 import gc
+from tqdm import tqdm
 
 from ktransformers.sft.peft_utils.mapping import inject_adapter_in_model, get_peft_model
 from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
+from ktransformers.util.utils import simple_prefill_and_generate_for_test
+from ktransformers.sft.flops_utils.custom_profile import custom_profile
+from ktransformers.operators.experts import KExpertsTorch, KTransformersExperts
 # from ktransformers.sft.load_lora import get_custom_peft_model
 
 # FOR: not A or H GPU
@@ -252,6 +256,39 @@ def verify_lora_layers(model):
         else:
             print(f"{layer_path} 验证失败！最大误差：{torch.max(torch.abs(manual_output - model_output))}")
 
+def print_moe_stats(moe_layer: KExpertsTorch):
+    print(f"Total Params: {moe_layer.total_params/1e6:.2f}M")
+    
+    total_time = sum(moe_layer.times)
+    gflops = (moe_layer.total_flops / 1e9) / total_time if total_time !=0 else 0
+    
+    print(f"Total Calls: {moe_layer.call_count}")
+    # print(f"Avg GFLOPS per Call: {gflops/moe_layer.call_count:.2f}")
+    print(f"Overall GFLOPS: {gflops:.2f}")
+    
+    # 打印单次调用示例
+    if moe_layer.call_count > 0:
+        last_flops = moe_layer.flops_per_call[-1]
+        last_time = moe_layer.times[-1]
+        print(f"\nLast Call - FLOPs: {last_flops/1e9:.2f}G  Time: {last_time*1000:.2f}ms  "
+              f"GFLOPS: {(last_flops/1e9)/last_time:.2f}")
+        
+def recursive_traverse(model, parent_name=''):
+    """
+    递归遍历模型，查找MoE层并调用print_moe_stats。
+    """
+    # 遍历模型中的所有子模块
+    for name, module in model.named_children():
+        full_name = f"{parent_name}.{name}" if parent_name else name
+        
+        # 如果是 MoE 层，调用 print_moe_stats
+        if isinstance(module, KTransformersExperts):  # 检查是否为 MoE 层
+            print(f"Found MoE layer: {full_name}")
+            print_moe_stats(module.generate_experts)
+        
+        # 递归处理子模块
+        recursive_traverse(module, full_name)
+
 def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is_profiler=False):
 
     torch.autograd.set_detect_anomaly(True) # 在反向传播出错时，PyTorch 会提供更详细的堆栈信息
@@ -266,7 +303,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     train_dataset = split_dataset["train"]
     val_dataset = split_dataset["test"]
 
-    # train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=False)
     # val_dataloader = DataLoader(val_dataset, batch_size=8)
 
     lora_config = LoraConfig(
@@ -286,8 +323,8 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
         output_dir=save_adapter_path,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=16,
-        num_train_epochs=3,
-        max_steps=4, # TODO: FOR TEST, will override any value given in num_train_epochs
+        num_train_epochs=1,
+        # max_steps=4, # TODO: FOR TEST, will override any value given in num_train_epochs
         learning_rate=3e-4,
         fp16=False,
         logging_steps=10,
@@ -304,12 +341,76 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
 
     model.print_trainable_parameters() 
     
+    
+    # -----------------模型输入数据测试-----------------
+    # total_length = 0
+    # valid_count = 0
+    # for batch in tqdm(train_dataloader):
+    #     input_ids = batch['input_ids']
+    #     # print(f"Token count per sample: {[len(ids) for ids in input_ids]}")
+    #     for ids in input_ids:
+    #         if not torch.equal(ids, torch.tensor([100001])):
+    #             total_length += len(ids)
+    #     valid_count += 1
+    #     # print(f"Input tensor: {input_ids}")
+    #     # print(f"total_length:{total_length}")
+    #     # break
+
+    # if valid_count > 0:
+    #     average_length = total_length / valid_count
+    #     print(f"平均长度: {average_length}")
+    # else:
+    #     print("没有有效的 input_ids 元素。")
+
+    # print(xx)
+    # -----------------模型输入数据测试-----------------
+    
+    # -----------------模型FLOPS测试（THOP方法）-----------------
+    # 没有继续使用这种方式进行测试，原因在于需要对每个第三方模块进行添加（方法本身不认）。
+    # 需要的话可以参考：https://github.com/ultralytics/thop里面的Define Custom Rules for Third-Party Modules
+    # from ktransformers.sft.flops_utils.custom_profile import custom_profile
+
+    # for module in model.modules():
+    #     if not hasattr(module, 'total_ops'):
+    #         module.register_buffer('total_ops', torch.zeros(1, dtype=torch.float64))
+    #     if not hasattr(module, 'total_params'):
+    #         module.register_buffer('total_params', torch.zeros(1, dtype=torch.float64))
+            
+    # # print(f"input:{input}")
+    for inputs in tqdm(train_dataloader):
+        # input_ids = batch['input_ids']
+        # del inputs['instruction']
+        # del inputs['input']
+        # del inputs['output']
+        # output = model(**inputs)
+        model.eval()
+        content = inputs['instruction'][0] + inputs['input'][0]
+        # flops,params = custom_profile(model, inputs=inputs, content=content, tokenizer=tokenizer, custom_ops={YourModule: count_your_model})
+        # print('FLOPs = ' + str(flops / 1000 ** 3) + 'G')
+        # print('Params = ' + str(params / 1000 ** 2) + 'M')
+
+        messages = [{"role": "user", "content": content}]
+        input_tensor = tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, return_tensors="pt"
+        )
+        with torch.no_grad():
+            # model(*inputs)
+            # TODO: model.model to deal with the PeftModelForCaualLM temp
+            simple_prefill_and_generate_for_test(
+                model.model, tokenizer, input_tensor.cuda(), max_new_tokens=1000, use_cuda_graph=False, mode = 'normal', force_think = False, chunk_prefill_size = 8192,
+            )
+        recursive_traverse(model)
+    # -----------------模型FLOPS测试（THOP方法）-----------------
+    
+    # -----------------计算图测试-----------------
     # output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
     # loss = output.logits.mean()
 
     # dot = make_dot(loss, params=dict(model.named_parameters()))
     # dot.render("KT_compute_torch_cpu_moe_model_graph", format="svg")
-
+    # -----------------计算图测试-----------------
+    
+    # -----------------模型层确定性梯度测试-----------------
     # disable_all_dropout(model)
 
     # def print_dropout_status(module, prefix=""):
@@ -327,7 +428,10 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     #         lambda m, i, o, ln=layer_path: record_layer_io(m, i, o, ln)
     #     )
     #     hooks.append(hook)
+    # -----------------模型层确定性梯度测试-----------------
 
+    
+    # -----------------模型层性能初步测试-----------------
     if is_profiler:
         profiler = profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
@@ -374,6 +478,9 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
         print("Training finished. Exporting profiler data...")
         with open("profiler_output.txt", "w") as f:
             f.write(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+    
+    # -----------------模型层性能初步测试-----------------
+
 
     else:
         trainer = ModifiedTrainer(
