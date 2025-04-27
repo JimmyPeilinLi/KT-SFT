@@ -226,7 +226,6 @@ class KExpertsCPU(KExpertsBase):
     def forward(self, input_tensor, expert_ids, weights):
         # generate, capture and run cuda graph
         # print(expert_ids)
-        start_time = time.time()
         if input_tensor.size(0)==1 and torch.cuda.is_current_stream_capturing():
             # TODO: this branch is unreachable, but the shape of input_tensor([1,hidden_size]) and input_tensor_cpu([hidden_size]) is not compatible
             #print("capturing experts")
@@ -245,50 +244,43 @@ class KExpertsCPU(KExpertsBase):
             self.cpu_infer.submit(self.moe.forward(expert_ids.size(0), expert_ids.size(1), expert_ids.data_ptr(), weights.data_ptr(), input_tensor.data_ptr(), output.data_ptr()))
             self.cpu_infer.sync()
 
-            # 初始化统计变量
-            call_flops = 0
-            expert_details = []
-            
-            for expert_idx in range(64):
-                t_e = 6
-                if t_e == 0:
-                    expert_details.append({'gate':0, 'act':0, 'up':0, 
-                                        'element':0, 'down':0, 'routing':0})
-                    continue
-                    
-                h = self.config.hidden_size
-                m = self.config.moe_intermediate_size
-                
-                # 分项FLOPs计算
-                flops_gate = 2 * t_e * h * m
-                flops_act = t_e * m
-                flops_up = 2 * t_e * h * m
-                flops_element = t_e * m
-                flops_down = 2 * t_e * m * h
-                flops_routing = t_e * h
-                
-                # 累计总FLOPs
-                total_expert = sum([flops_gate, flops_act, flops_up, 
-                                flops_element, flops_down, flops_routing])
-                call_flops += total_expert
-                
-                # 记录详细数据
-                expert_details.append({
-                    'gate': flops_gate,
-                    'act': flops_act,
-                    'up': flops_up,
-                    'element': flops_element,
-                    'down': flops_down,
-                    'routing': flops_routing
-                })
-            
-            # 记录本次调用信息
-            self.call_count += 1
-            self.flops_per_call.append(call_flops)
-            self.total_flops += call_flops
-            self.expert_flops_details.append(expert_details)
-            self.times.append(time.time() - start_time)
+            # FIXME: 前向传播需要保留的中间结果，感觉这里面没处理数据在设备间传递的问题，需要考虑一下这个placement
+            self.saved_for_backward = (
+                input_tensor.clone(),
+                expert_ids.clone(),
+                weights.clone(),
+                output.clone()
+            )
+
             return output.to(device=object.__getattribute__(self, "out_device"))
+        
+    # FIXME: expert backward for python
+    def backward(self, grad_output, expert_ids, weights):
+        grad_output = grad_output.contiguous().cpu()
+        expert_ids = expert_ids.contiguous().cpu()
+        weights = weights.contiguous().to(torch.float32).cpu()
+        grad_input = torch.empty_like(grad_output).contiguous()
+        
+        # 调用C++后端
+        self.cpu_infer.submit(
+            self.moe.backward(
+                grad_output.size(0),  # qlen
+                expert_ids.size(1),   # k
+                expert_ids.data_ptr(),
+                weights.data_ptr(),
+                grad_output.data_ptr(),
+                grad_input.data_ptr()
+            )
+        )
+        self.cpu_infer.sync()
+        
+        return grad_input.to(device=self.out_device)
+
+    # FIXME: 按照网上的说法，需要forward和backward注册成静态函数才能传进计算图，不过forward好像也没静态，所以可能这个说法也不太对？但是暂且保留
+    @staticmethod
+    def backward(ctx, grad_output):
+        input_tensor, expert_ids, weights, output = ctx.saved_tensors
+        return KExpertsCPU.backward(grad_output, expert_ids, weights), None, None, None
     
     def unload(self):
         return

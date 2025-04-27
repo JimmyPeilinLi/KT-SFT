@@ -54,6 +54,8 @@ class MOE {
     void forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
     void forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
     void forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
+	void backward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* grad_output, void* grad_input, 
+    Backend* backend); // FIXME: expert backward definition for C++
 
    private:
     MOEConfig config_;
