@@ -43,7 +43,7 @@
       prefill_device: "cpu"
       prefill_op: "KExpertsTorch"
       generate_device: "cpu"
-      generate_op: "KExpertsTorch"
+      generate_op: "KExpertsCPU"
       out_device: "cuda"
   recursive: False # don't recursively inject submodules of this module
 - match:

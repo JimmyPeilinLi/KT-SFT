@@ -377,37 +377,37 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     #         module.register_buffer('total_params', torch.zeros(1, dtype=torch.float64))
             
     # # print(f"input:{input}")
-    for inputs in tqdm(train_dataloader):
-        # input_ids = batch['input_ids']
-        # del inputs['instruction']
-        # del inputs['input']
-        # del inputs['output']
-        # output = model(**inputs)
-        model.eval()
-        content = inputs['instruction'][0] + inputs['input'][0]
-        # flops,params = custom_profile(model, inputs=inputs, content=content, tokenizer=tokenizer, custom_ops={YourModule: count_your_model})
-        # print('FLOPs = ' + str(flops / 1000 ** 3) + 'G')
-        # print('Params = ' + str(params / 1000 ** 2) + 'M')
+    # for inputs in tqdm(train_dataloader):
+    #     # input_ids = batch['input_ids']
+    #     # del inputs['instruction']
+    #     # del inputs['input']
+    #     # del inputs['output']
+    #     # output = model(**inputs)
+    #     model.eval()
+    #     content = inputs['instruction'][0] + inputs['input'][0]
+    #     # flops,params = custom_profile(model, inputs=inputs, content=content, tokenizer=tokenizer, custom_ops={YourModule: count_your_model})
+    #     # print('FLOPs = ' + str(flops / 1000 ** 3) + 'G')
+    #     # print('Params = ' + str(params / 1000 ** 2) + 'M')
 
-        messages = [{"role": "user", "content": content}]
-        input_tensor = tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt"
-        )
-        with torch.no_grad():
-            # model(*inputs)
-            # TODO: model.model to deal with the PeftModelForCaualLM temp
-            simple_prefill_and_generate_for_test(
-                model.model, tokenizer, input_tensor.cuda(), max_new_tokens=1000, use_cuda_graph=False, mode = 'normal', force_think = False, chunk_prefill_size = 8192,
-            )
-        recursive_traverse(model)
+    #     messages = [{"role": "user", "content": content}]
+    #     input_tensor = tokenizer.apply_chat_template(
+    #         messages, add_generation_prompt=True, return_tensors="pt"
+    #     )
+    #     with torch.no_grad():
+    #         # model(*inputs)
+    #         # TODO: model.model to deal with the PeftModelForCaualLM temp
+    #         simple_prefill_and_generate_for_test(
+    #             model.model, tokenizer, input_tensor.cuda(), max_new_tokens=1000, use_cuda_graph=False, mode = 'normal', force_think = False, chunk_prefill_size = 8192,
+    #         )
+    #     recursive_traverse(model)
     # -----------------模型FLOPS测试（THOP方法）-----------------
     
     # -----------------计算图测试-----------------
-    # output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
-    # loss = output.logits.mean()
+    output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
+    loss = output.logits.mean()
 
-    # dot = make_dot(loss, params=dict(model.named_parameters()))
-    # dot.render("KT_compute_torch_cpu_moe_model_graph", format="svg")
+    dot = make_dot(loss, params=dict(model.named_parameters()))
+    dot.render("KT_compute_cpuinfer_moe_model_graph", format="svg")
     # -----------------计算图测试-----------------
     
     # -----------------模型层确定性梯度测试-----------------
