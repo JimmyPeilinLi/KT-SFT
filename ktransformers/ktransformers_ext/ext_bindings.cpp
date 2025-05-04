@@ -557,39 +557,45 @@ class MOEBindings {
             return std::make_pair((intptr_t)&inner, (intptr_t)args);
         }
     };
+	// FIXME: need fit the args setting with the backward of MoE
 	class BackwardBindings {
     public:
-        struct Args {
-            CPUInfer* cpuinfer;
-            MOE* moe;
-            int qlen;
-            int k;
-            const uint64_t* expert_ids;
-            const float* weights;
-            const void* grad_output;
-            void* grad_input;
-        };
+		struct Args {
+			CPUInfer* cpuinfer;
+			MOE* moe;
+			int qlen;
+			int k;
+			const uint64_t* expert_ids;
+			const float* weights;
+			const void* input;
+			const void* grad_output;
+			void* grad_input;
+		};
 
         static void inner(void* args) {
             Args* args_ = static_cast<Args*>(args);
             args_->cpuinfer->enqueue(&MOE::backward, args_->moe, 
                 args_->qlen, args_->k,
                 args_->expert_ids, args_->weights,
-                args_->grad_output, args_->grad_input);
+				args_->input,
+				args_->grad_output,
+				args_->grad_input);
         }
 
         static std::pair<intptr_t, intptr_t> cpuinfer_interface(
             MOE& moe, int qlen, int k, 
             intptr_t expert_ids, intptr_t weights,
+    		intptr_t input,
             intptr_t grad_output, intptr_t grad_input) {
             
             Args* args = new Args{
-                nullptr, &moe, qlen, k,
-                reinterpret_cast<const uint64_t*>(expert_ids),
-                reinterpret_cast<const float*>(weights),
-                reinterpret_cast<const void*>(grad_output),
-                reinterpret_cast<void*>(grad_input)
-            };
+				nullptr, &moe, qlen, k,
+				reinterpret_cast<const uint64_t*>(expert_ids),
+				reinterpret_cast<const float*>(weights),
+				reinterpret_cast<const void*>(input), 
+				reinterpret_cast<const void*>(grad_output),
+				reinterpret_cast<void*>(grad_input)
+			};
             return std::make_pair(
                 reinterpret_cast<intptr_t>(&inner),
                 reinterpret_cast<intptr_t>(args));
@@ -653,7 +659,7 @@ PYBIND11_MODULE(cpuinfer_ext, m) {
     py::class_<MOE>(moe_module, "MOE")
         .def(py::init<MOEConfig>())
         .def("warm_up", &MOEBindings::WarmUpBindinds::cpuinfer_interface)
-        .def("forward", &MOEBindings::ForwardBindings::cpuinfer_interface);
+        .def("forward", &MOEBindings::ForwardBindings::cpuinfer_interface)
 		.def("backward", &MOEBindings::BackwardBindings::cpuinfer_interface);
 
     auto kvcache_module = m.def_submodule("kvcache");
