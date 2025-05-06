@@ -45,7 +45,7 @@ from ktransformers.operators.cpuinfer import CPUInfer
 class KExpertsBase(ABC):
     def __init__(self, key: str, gguf_loader: GGUFLoader, config: PretrainedConfig, orig_module: nn.Module, device: str = "cuda", **kwargs):
         # super().__init__(key, gguf_loader, config, orig_module, device, **kwargs)
-        # super().__init__() # TODO: FOR TEST, including nn.Module for test
+        # super().__init__()
         self.key = key
         self.gguf_loader = gguf_loader
         self.config = config
@@ -244,14 +244,6 @@ class KExpertsCPU(KExpertsBase):
             self.cpu_infer.submit(self.moe.forward(expert_ids.size(0), expert_ids.size(1), expert_ids.data_ptr(), weights.data_ptr(), input_tensor.data_ptr(), output.data_ptr()))
             self.cpu_infer.sync()
 
-            # FIXME: 前向传播需要保留的中间结果，感觉这里面没处理数据在设备间传递的问题，需要考虑一下这个placement
-            self.saved_for_backward = (
-                input_tensor.clone(),
-                expert_ids.clone(),
-                weights.clone(),
-                output.clone()
-            )
-
             return output.to(device=object.__getattribute__(self, "out_device"))
         
     # FIXME: expert backward for python
@@ -340,6 +332,240 @@ class KExpertsCPU(KExpertsBase):
             res = {key:{"gate": gate, "up": up, "down": down, "gate_type": gate_type, "up_type": up_type, "down_type": down_type}}
         return res
     
+class KSFTExpertsCPU(torch.autograd.Function):
+    input_tensor_cpu:Tensor = None
+    expert_ids_cpu:Tensor = None
+    weights_cpu:Tensor = None
+    output_cpu:Tensor = None
+    output_gpu_map:dict = {} # Manage output tensor buffer on different gpu
+    #stream_map:dict = {} # Manage cuda stream on different gpu
+    #gguf_loader:GGUFLoader = None
+    CPU_INFER = CPUInfer(Config().cpu_infer)
+    def __init__(
+        self,
+        key: str,
+        gguf_loader: GGUFLoader,
+        config: PretrainedConfig,
+        n_routed_experts: int,
+        orig_module: nn.Module = None,
+        device: str = "cpu",
+        out_device: str = "cuda", # this device mean which device the output should on. TODO: support cpu.
+        **kwargs
+    ):
+        super().__init__(key, gguf_loader, config, orig_module, device, **kwargs)
+        #if KExpertsCPU.gguf_loader is None:
+        #    KExpertsCPU.gguf_loader = GGUFLoader("/mnt/data/model/DeepseekV3-q4km-gguf")
+        self.gguf_loader = gguf_loader
+        assert device.lower() == "cpu", "KExpertsCPU can only be loaded on CPU"
+        self.n_routed_experts = n_routed_experts
+        self.out_device = out_device
+
+        self.key = key
+        self.config = config
+        self.device = device
+
+        # 统计相关属性
+        self.call_count = 0
+        self.flops_per_call = []
+        self.times = []
+        # 详细FLOPs记录格式: [{'gate': flops, 'act': ...}, ...]
+        self.expert_flops_details = []  
+        self.total_flops = 0
+        
+        # 参数量计算
+        h = self.config.hidden_size
+        m = self.config.moe_intermediate_size
+        self.params_per_expert = 3 * h * m
+        self.total_params = 64 * self.params_per_expert
+
+    def load(self, w: dict | nn.Parameter | tuple | None = None, device:str|None = None, warmup:bool = False):
+        if device:
+            assert device.lower() == "cpu", "KSFTExpertsCPU can only be loaded on CPU, Parameter \"device\" can be cpu or None."
+        if w is None: w = self.load_weights()[self.key]
+        self.gate = w["gate"]
+        self.up = w["up"]
+        self.down = w["down"]
+        self.gate_type = w["gate_type"]
+        self.up_type = w["up_type"]
+        self.down_type = w["down_type"]
+        gate_ptr = ctypes.addressof(
+            ctypes.cast(self.gate.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents
+        )
+        up_ptr = ctypes.addressof(
+            ctypes.cast(self.up.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents
+        )
+        down_ptr = ctypes.addressof(
+            ctypes.cast(self.down.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents
+        )
+        #print(self.gate_type, self.up_type, self.down_type)
+        n_routed_experts = self.n_routed_experts
+        # n_routed_experts = len(self.orig_module)
+        moe_config = MOEConfig(
+            n_routed_experts,
+            self.config.num_experts_per_tok,
+            self.config.hidden_size,
+            self.config.moe_intermediate_size,
+            64,
+            10,
+            1024,
+            gate_ptr,
+            up_ptr,
+            down_ptr,
+            self.gate_type,
+            self.up_type,
+            self.down_type,
+            30, # TODO: get from model.dtype
+        )
+        # print(n_routed_experts, hidden_size, moe_intermediate_size)
+        num_experts_per_tok = self.config.num_experts_per_tok
+        self.moe = MOE(moe_config)
+        self.cpu_infer = KSFTExpertsCPU.CPU_INFER
+        if warmup:
+            self.cpu_infer.submit(self.moe.warm_up())
+            self.cpu_infer.sync()
+        if self.out_device not in KSFTExpertsCPU.output_gpu_map:
+            KSFTExpertsCPU.output_gpu_map[self.out_device] = torch.zeros((self.config.hidden_size), device=self.out_device)
+        if KSFTExpertsCPU.input_tensor_cpu == None:
+            KSFTExpertsCPU.input_tensor_cpu = torch.zeros((self.config.hidden_size), device="cpu", pin_memory=True)
+            KSFTExpertsCPU.expert_ids_cpu = torch.zeros((num_experts_per_tok), device="cpu", dtype=torch.long, pin_memory=True)
+            KSFTExpertsCPU.weights_cpu = torch.zeros((num_experts_per_tok), device="cpu", dtype=torch.float32, pin_memory=True)
+            KSFTExpertsCPU.output_cpu = torch.zeros((self.config.hidden_size), device="cpu", pin_memory=True, dtype=torch.bfloat16)
+            
+    def submit_for_one_decode(self, input_tensor, expert_ids, weights):
+        KSFTExpertsCPU.input_tensor_cpu.copy_(input_tensor, non_blocking=True)
+        KSFTExpertsCPU.expert_ids_cpu.copy_(expert_ids, non_blocking=True)
+        KSFTExpertsCPU.weights_cpu.copy_(weights, non_blocking=True)
+        self.cpu_infer.submit_with_cuda_stream(torch.cuda.current_stream(self.out_device).cuda_stream, self.moe.forward(1, expert_ids.size(0), KSFTExpertsCPU.expert_ids_cpu.data_ptr(), KSFTExpertsCPU.weights_cpu.data_ptr(), KSFTExpertsCPU.input_tensor_cpu.data_ptr(), KSFTExpertsCPU.output_cpu.data_ptr()))
+        
+    def sync_for_one_decode(self):
+        self.cpu_infer.sync_with_cuda_stream(torch.cuda.current_stream(self.out_device).cuda_stream)
+        KSFTExpertsCPU.output_gpu_map[self.out_device].copy_(KSFTExpertsCPU.output_cpu, non_blocking=True)
+        return KSFTExpertsCPU.output_gpu_map[self.out_device]
+
+    @staticmethod
+    def forward(ctx, input_tensor, expert_ids, weights, cpu_infer, moe, out_device):
+        # generate, capture and run cuda graph
+        # print(expert_ids)
+        if input_tensor.size(0)==1 and torch.cuda.is_current_stream_capturing():
+            # TODO: this branch is unreachable, but the shape of input_tensor([1,hidden_size]) and input_tensor_cpu([hidden_size]) is not compatible
+            #print("capturing experts")
+            KSFTExpertsCPU.input_tensor_cpu.copy_(input_tensor, non_blocking=True)
+            KSFTExpertsCPU.expert_ids_cpu.copy_(expert_ids, non_blocking=True)
+            KSFTExpertsCPU.weights_cpu.copy_(weights, non_blocking=True)
+            cpu_infer.submit_with_cuda_stream(torch.cuda.current_stream().cuda_stream, moe.forward(1, expert_ids.size(1), KSFTExpertsCPU.expert_ids_cpu.data_ptr(), KSFTExpertsCPU.weights_cpu.data_ptr(), KSFTExpertsCPU.input_tensor_cpu.data_ptr(), KSFTExpertsCPU.output_cpu.data_ptr()))
+            cpu_infer.sync_with_cuda_stream(torch.cuda.current_stream().cuda_stream)
+            KSFTExpertsCPU.output_gpu_map[out_device].copy_(KSFTExpertsCPU.output_cpu, non_blocking=True)
+            result = KSFTExpertsCPU.output_gpu_map[out_device]
+        else:
+            input_tensor = input_tensor.contiguous().cpu()
+            expert_ids = expert_ids.contiguous().cpu()
+            weights = weights.contiguous().to(torch.float32).cpu()
+            output = torch.empty_like(input_tensor).contiguous()
+            cpu_infer.submit(
+                moe.forward(
+                    expert_ids.size(0), 
+                    expert_ids.size(1), 
+                    expert_ids.data_ptr(), 
+                    weights.data_ptr(), 
+                    input_tensor.data_ptr(), 
+                    output.data_ptr()
+                )
+            )
+            cpu_infer.sync()
+
+            result = output.to(device=out_device)
+
+        ctx.save_for_backward(input_tensor, expert_ids, weights)
+        return result
+        
+    # FIXME: expert backward for python
+    @staticmethod
+    def backward(ctx, grad_output, cpu_infer, moe, out_device):
+        grad_output = grad_output.contiguous().cpu()
+
+        input_tensor, expert_ids, weights = ctx.saved_tensors
+        grad_input = torch.empty_like(input_tensor).contiguous()
+        
+        # 调用C++后端
+        cpu_infer.submit(
+            moe.backward(
+                grad_output.size(0),  # qlen
+                expert_ids.size(1),   # k
+                expert_ids.data_ptr(),
+                weights.data_ptr(),
+                input_tensor.data_ptr(), 
+                grad_output.data_ptr(),
+                grad_input.data_ptr()
+            )
+        )
+        cpu_infer.sync()
+        
+        return grad_input.to(device=out_device)
+    
+    def unload(self):
+        return
+
+    def load_weights(self, override_key: str | None = None, device: str = "cpu"):
+        # TODO: support Bias
+        res = {}
+        if override_key is not None:
+            keys = override_key
+        else:
+            keys = [self.key]
+
+        gate = None
+        up = None
+        down = None
+        gate_type = None
+        up_type = None
+        down_type = None
+
+        for key in keys:
+            if self.gguf_loader.safetensor_loader is not None:
+                # using a temp ugly way to temprary load the tensor
+                gate = self.gguf_loader.safetensor_loader.load_tensor(key + ".ffn_gate_exps.weight").numpy()
+                up = self.gguf_loader.safetensor_loader.load_tensor(key + ".ffn_up_exps.weight").numpy()
+                down = self.gguf_loader.safetensor_loader.load_tensor(key + ".ffn_down_exps.weight").numpy()
+                gate_type = self.gguf_loader.safetensor_loader.load_tensor(key + ".ffn_gate_exps.ggml_type").item()
+                up_type = self.gguf_loader.safetensor_loader.load_tensor(key + ".ffn_up_exps.ggml_type").item()
+                down_type = self.gguf_loader.safetensor_loader.load_tensor(key + ".ffn_down_exps.ggml_type").item()
+            
+            elif key + ".ffn_gate_exps.weight" in self.gguf_loader.tensor_info:
+                gate = self.gguf_loader.get_mmap_tensor(key + ".ffn_gate_exps.weight")
+                up = self.gguf_loader.get_mmap_tensor(key + ".ffn_up_exps.weight")
+                down = self.gguf_loader.get_mmap_tensor(key + ".ffn_down_exps.weight")
+                gate_type = self.gguf_loader.tensor_info[key + ".ffn_gate_exps.weight"]["ggml_type"]
+                up_type = self.gguf_loader.tensor_info[key + ".ffn_up_exps.weight"]["ggml_type"]
+                down_type = self.gguf_loader.tensor_info[key + ".ffn_down_exps.weight"]["ggml_type"]
+            elif key + ".ffn_down.0.weight" in self.gguf_loader.tensor_info:
+                # for supporting  Mixtral-8x7B-Instuct  
+                gate = []
+                up = []
+                down = []
+                for i in range(8):
+                    gate_it = self.gguf_loader.get_mmap_tensor(f"{key}.ffn_gate.{i}.weight")
+                    up_it = self.gguf_loader.get_mmap_tensor(f"{key}.ffn_up.{i}.weight")
+                    down_it = self.gguf_loader.get_mmap_tensor(f"{key}.ffn_down.{i}.weight")
+                    gate.append(gate_it)
+                    up.append(up_it)
+                    down.append(down_it)
+                gate = np.stack(gate)
+                up = np.stack(up)
+                down = np.stack(down)
+                gate_type = self.gguf_loader.tensor_info[key + ".ffn_gate.0.weight"]["ggml_type"]
+                up_type = self.gguf_loader.tensor_info[key + ".ffn_up.0.weight"]["ggml_type"]
+                down_type = self.gguf_loader.tensor_info[key + ".ffn_down.0.weight"]["ggml_type"]
+            else:
+                raise ValueError(f"Experts {key} not found in gguf_loader")
+            res = {key:{"gate": gate, "up": up, "down": down, "gate_type": gate_type, "up_type": up_type, "down_type": down_type}}
+        return res
+    
+    def load_multi(self, key: str, keys: list[str], device: str = "cpu"):
+        tensors = {}
+        for k in keys:
+            tensors[k] = self.gguf_loader.load_gguf_tensor(key + k, device=device)
+        return tensors
+
 class KExpertsMarlin(KExpertsBase):
     expert_num: int
     loaded_experts_idx: list[int]
@@ -774,6 +1000,7 @@ class KExpertsTorch(KExpertsBase):
 
 EXPERTS_MAP = {
     "KExpertsCPU": KExpertsCPU,
+    "KSFTExpertsCPU": KSFTExpertsCPU,
     "KExpertsTorch": KExpertsTorch,
     "KExpertsMarlin": KExpertsMarlin,
 }
@@ -834,7 +1061,10 @@ class KTransformersExperts(BaseInjectedModule, KExpertsBase):
     def forward(self, input_tensor, expert_ids, weights):
         if self.mode == InferenceState.GENERATE:
             assert self.generate_experts is not None, "generate_experts is None"
-            return self.generate_experts.forward(input_tensor, expert_ids, weights)
+            if type(self.generate_experts) == KSFTExpertsCPU:
+                return self.generate_experts.apply(input_tensor, expert_ids, weights, self.generate_experts.cpu_infer, self.generate_experts.moe, self.generate_experts.out_device)
+            else:
+                return self.generate_experts.forward(input_tensor, expert_ids, weights)
         elif self.mode == InferenceState.PREFILL:
             assert self.prefill_experts is not None, "prefill_experts is None"
             return self.prefill_experts.forward(input_tensor, expert_ids, weights)
