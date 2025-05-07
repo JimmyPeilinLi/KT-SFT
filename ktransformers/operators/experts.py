@@ -444,6 +444,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, input_tensor, expert_ids, weights, cpu_infer, moe, out_device):
+        print("Go into the forward")
         # generate, capture and run cuda graph
         # print(expert_ids)
         if input_tensor.size(0)==1 and torch.cuda.is_current_stream_capturing():
@@ -476,19 +477,29 @@ class KSFTExpertsCPU(torch.autograd.Function):
             result = output.to(device=out_device)
 
         ctx.save_for_backward(input_tensor, expert_ids, weights)
+        ctx.cpu_infer  = cpu_infer
+        ctx.moe        = moe
+        ctx.out_device = out_device
         return result
         
     # FIXME: expert backward for python
     @staticmethod
-    def backward(ctx, grad_output, cpu_infer, moe, out_device):
-        grad_output = grad_output.contiguous().cpu()
-
-        input_tensor, expert_ids, weights = ctx.saved_tensors
-        grad_input = torch.empty_like(input_tensor).contiguous()
+    def backward(ctx, grad_output):
+        print("Go into the backward!!")
         
+		# Pick back the middle results
+        input_tensor, expert_ids, weights = ctx.saved_tensors
+        # cpu_infer  = ctx.cpu_infer
+        # moe        = ctx.moe
+        # out_device = ctx.out_device
+
+		# ready for computing gradient
+        grad_output = grad_output.contiguous().cpu()
+        grad_input = torch.empty_like(input_tensor).contiguous()
+        print(dir(cpuinfer_ext.moe.MOE))
         # 调用C++后端
-        cpu_infer.submit(
-            moe.backward(
+        ctx.cpu_infer.submit(
+            ctx.moe.backward(
                 grad_output.size(0),  # qlen
                 expert_ids.size(1),   # k
                 expert_ids.data_ptr(),
@@ -498,9 +509,9 @@ class KSFTExpertsCPU(torch.autograd.Function):
                 grad_input.data_ptr()
             )
         )
-        cpu_infer.sync()
+        ctx.cpu_infer.sync()
         
-        return grad_input.to(device=out_device)
+        return grad_input.to(device=ctx.out_device)
     
     def unload(self):
         return

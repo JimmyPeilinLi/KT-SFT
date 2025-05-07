@@ -20,7 +20,7 @@ test_adapter/demo_adapter*
 tmp_package.txt
 logs/
 
-.vscode/
+*.vscode/
 
 __pycache__/
 *.py[cod]

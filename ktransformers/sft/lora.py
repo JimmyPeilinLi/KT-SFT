@@ -13,6 +13,8 @@ import torch.nn.functional as F
 from transformers import TrainerCallback
 import gc
 from tqdm import tqdm
+import os, torch, json, tempfile
+from pathlib import Path
 
 from ktransformers.sft.peft_utils.mapping import inject_adapter_in_model, get_peft_model
 from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
@@ -289,6 +291,66 @@ def recursive_traverse(model, parent_name=''):
         # 递归处理子模块
         recursive_traverse(module, full_name)
 
+def log_step_state(
+    step: int,
+    inputs: dict,
+    loss: torch.Tensor,
+    model: torch.nn.Module,
+    log_dir: str = "train_logs",
+):
+    """
+    把当前 step 的输入 / loss / grad / param 保存到 log_dir/step_{step}.pt
+    """
+    Path(log_dir).mkdir(parents=True, exist_ok=True)
+
+    # ① 处理输入：只保存张量，且先搬到 CPU，避免 GPU 进程间序列化问题
+    logged_inputs = {
+        k: v.detach().cpu()
+        for k, v in inputs.items()
+        if isinstance(v, torch.Tensor)
+    }
+
+    # ② loss 一般是标量 Tensor
+    loss_val = loss.detach().cpu()
+
+    # ③ 参数与梯度
+    params, grads = {}, {}
+    for name, p in model.named_parameters():
+        params[name] = p.detach().cpu()
+        grads[name] = p.grad.detach().cpu() if p.grad is not None else None
+
+    torch.save(
+        {
+            "step": step,
+            "inputs": logged_inputs,
+            "loss": loss_val,
+            "params": params,
+            "grads": grads,
+        },
+        f"{log_dir}/step_{step:08d}.pt",
+    )
+
+def collect_gradients(model, input_ids):
+    # 确保可复现性
+    torch.manual_seed(42)
+    
+    output = model(input_ids=input_ids)
+    
+    logits = output.logits
+    loss = logits.mean()
+    
+    # 反向传播
+    model.zero_grad()
+    loss.backward()
+    
+    # 收集梯度信息
+    grads = []
+    for name, param in model.named_parameters():
+        if param.requires_grad and param.grad is not None:
+            grads.append(f"{name}: {param.grad.norm().item():.6f}")
+    
+    return grads
+
 def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is_profiler=False):
 
     torch.autograd.set_detect_anomaly(True) # 在反向传播出错时，PyTorch 会提供更详细的堆栈信息
@@ -340,7 +402,13 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     model.config.use_cache = False
 
     model.print_trainable_parameters() 
+
+    # input_ids = torch.randint(0, 1000, (32, 128), device="cuda:0")
+    # gradients = collect_gradients(model, input_ids)
     
+    # with open(f"/home/lpl/KT-SFT/tmp/KSFTExpertsCPU_grads.txt", "w") as f:
+    #     f.write("\n".join(gradients))
+    # print(xx)
     
     # -----------------模型输入数据测试-----------------
     # total_length = 0
@@ -367,7 +435,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     
     # -----------------模型FLOPS测试（THOP方法）-----------------
     # 没有继续使用这种方式进行测试，原因在于需要对每个第三方模块进行添加（方法本身不认）。
-    # 需要的话可以参考：https://github.com/ultralytics/thop里面的Define Custom Rules for Third-Party Modules
+    # 需要的话可以参考：https://github.com/ultralytics/thop 里面的Define Custom Rules for Third-Party Modules
     # from ktransformers.sft.flops_utils.custom_profile import custom_profile
 
     # for module in model.modules():
@@ -395,7 +463,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     #     )
     #     with torch.no_grad():
     #         # model(*inputs)
-    #         # TODO: model.model to deal with the PeftModelForCaualLM temp
+    #         # model.model to deal with the PeftModelForCaualLM temp
     #         simple_prefill_and_generate_for_test(
     #             model.model, tokenizer, input_tensor.cuda(), max_new_tokens=1000, use_cuda_graph=False, mode = 'normal', force_think = False, chunk_prefill_size = 8192,
     #         )
@@ -405,10 +473,18 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     # -----------------计算图测试-----------------
     output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
     loss = output.logits.mean()
-
+        
     dot = make_dot(loss, params=dict(model.named_parameters()))
     dot.render("KT_compute_cpuinfer_moe_model_graph", format="svg")
     # -----------------计算图测试-----------------
+
+    # -----------------KSFT前向测试-----------------
+    # with open("tmp/output_loss_KCPU.txt", "w") as file:
+    #     file.write("Output (logits):\n")
+    #     file.write(str(output.logits.cpu().detach().numpy()))  # 这里将张量转换为 numpy 数组后写入
+    #     file.write("\n\nLoss:\n")
+    #     file.write(str(loss.item()))  # 这里将 loss 的值转成字符串
+    # -----------------KSFT前向测试-----------------
     
     # -----------------模型层确定性梯度测试-----------------
     # disable_all_dropout(model)
@@ -432,75 +508,73 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
 
     
     # -----------------模型层性能初步测试-----------------
-    if is_profiler:
-        profiler = profile(
-            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-            schedule=torch.profiler.schedule(
-                wait=1,        # 跳过第1步
-                warmup=1,      # 预热第2步
-                active=1,      # 仅记录接下来3步（减少显存占用）
-                repeat=1       # 不重复
-            ),
-            on_trace_ready=torch.profiler.tensorboard_trace_handler('./logs'),
-            record_shapes=False,
-            profile_memory=False, # 关闭内存分析，避免占用大量内存（目前这个服务器CPU内存不是很大）
-            with_stack=False
-        )
+    # if is_profiler:
+    #     profiler = profile(
+    #         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+    #         schedule=torch.profiler.schedule(
+    #             wait=1,        # 跳过第1步
+    #             warmup=1,      # 预热第2步
+    #             active=1,      # 仅记录接下来3步（减少显存占用）
+    #             repeat=1       # 不重复
+    #         ),
+    #         on_trace_ready=torch.profiler.tensorboard_trace_handler('./logs'),
+    #         record_shapes=False,
+    #         profile_memory=False, # 关闭内存分析，避免占用大量内存（目前这个服务器CPU内存不是很大）
+    #         with_stack=False
+    #     )
 
-        # transformer版本低不支持，不能直接在TrainingArguments里面写profiler_args
-        # profiler_args = {
-        #     "activities": [ProfilerActivity.CPU, ProfilerActivity.CUDA],  # 同时监控CPU和CUDA
-        #     "record_shapes": True,         # 记录张量形状
-        #     "profile_memory": True,        # 记录内存消耗
-        #     "with_stack": True,            # 记录调用栈信息
-        #     "on_trace_ready": torch.profiler.tensorboard_trace_handler('./logs'),  # 自动保存到TensorBoard
-        #     "schedule": torch.profiler.schedule(
-        #         wait=1,        # 跳过前1步
-        #         warmup=1,      # 预热1步
-        #         active=100,     # 记录接下来100步（覆盖全部训练步）
-        #         repeat=1       # 不重复
-        #     )
-        # }
+    #     # transformer版本低不支持，不能直接在TrainingArguments里面写profiler_args
+    #     # profiler_args = {
+    #     #     "activities": [ProfilerActivity.CPU, ProfilerActivity.CUDA],  # 同时监控CPU和CUDA
+    #     #     "record_shapes": True,         # 记录张量形状
+    #     #     "profile_memory": True,        # 记录内存消耗
+    #     #     "with_stack": True,            # 记录调用栈信息
+    #     #     "on_trace_ready": torch.profiler.tensorboard_trace_handler('./logs'),  # 自动保存到TensorBoard
+    #     #     "schedule": torch.profiler.schedule(
+    #     #         wait=1,        # 跳过前1步
+    #     #         warmup=1,      # 预热1步
+    #     #         active=100,     # 记录接下来100步（覆盖全部训练步）
+    #     #         repeat=1       # 不重复
+    #     #     )
+    #     # }
 
-        trainer = ModifiedTrainer(
-            model=model,
-            train_dataset=train_dataset,
-            args=training_args,            # 使用修改后的参数
-            data_collator=DataCollatorForSeq2Seq(
-                tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
-            ),
-            callbacks=[ProfilerCallback(profiler)]
-        )
+    #     trainer = ModifiedTrainer(
+    #         model=model,
+    #         train_dataset=train_dataset,
+    #         args=training_args,            # 使用修改后的参数
+    #         data_collator=DataCollatorForSeq2Seq(
+    #             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
+    #         ),
+    #         callbacks=[ProfilerCallback(profiler)]
+    #     )
 
-        with profiler:
-            trainer.train()
+    #     with profiler:
+    #         trainer.train()
 
-        print("Training finished. Exporting profiler data...")
-        with open("profiler_output.txt", "w") as f:
-            f.write(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+    #     print("Training finished. Exporting profiler data...")
+    #     with open("profiler_output.txt", "w") as f:
+    #         f.write(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+    
+    #   profiler.export_chrome_trace("trace.json")
+    
+    #   check_moe_gradients(model) # 调试结果：无梯度
     
     # -----------------模型层性能初步测试-----------------
 
-
-    else:
-        trainer = ModifiedTrainer(
-            model=model,
-            train_dataset=train_dataset,
-            args=training_args,            # 使用修改后的参数
-            data_collator=DataCollatorForSeq2Seq(
-                tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
-            )
+    trainer = ModifiedTrainer(
+        model=model,
+        train_dataset=train_dataset,
+        args=training_args,            # 使用修改后的参数
+        data_collator=DataCollatorForSeq2Seq(
+            tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         )
+    )
 
-        print("-------------------------START TRAINING!!!-------------------------")
+    print("-------------------------START TRAINING!!!-------------------------")
 
-        trainer.train()
+    trainer.train()
 
-        # check_moe_gradients(model) # 调试结果：无梯度
-
-        verify_lora_layers(model)
-
-    # profiler.export_chrome_trace("trace.json")
+    verify_lora_layers(model)
 
     # model.save_pretrained(save_adapter_path)
 
