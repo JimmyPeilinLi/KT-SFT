@@ -266,7 +266,7 @@ class KExpertsCPU(KExpertsBase):
         )
         self.cpu_infer.sync()
         
-        return grad_input.to(device=self.out_device)
+        return grad_input.to(device=self.out_device), None, None, None, None, None
 
     # FIXME: 按照网上的说法，需要forward和backward注册成静态函数才能传进计算图，不过forward好像也没静态，所以可能这个说法也不太对？但是暂且保留
     @staticmethod
@@ -445,6 +445,9 @@ class KSFTExpertsCPU(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_tensor, expert_ids, weights, cpu_infer, moe, out_device):
         print("Go into the forward")
+        # 记录开始时间
+        start_time = time.time()
+        
         # generate, capture and run cuda graph
         # print(expert_ids)
         if input_tensor.size(0)==1 and torch.cuda.is_current_stream_capturing():
@@ -480,12 +483,18 @@ class KSFTExpertsCPU(torch.autograd.Function):
         ctx.cpu_infer  = cpu_infer
         ctx.moe        = moe
         ctx.out_device = out_device
+        
+        # 计算并打印执行时间
+        end_time = time.time()
+        print(f"KSFTExpertsCPU.forward execution time: {(end_time - start_time) * 1000:.2f} ms")
+        
         return result
         
     # FIXME: expert backward for python
     @staticmethod
     def backward(ctx, grad_output):
         print("Go into the backward!!")
+        start_time = time.time()
         
 		# Pick back the middle results
         input_tensor, expert_ids, weights = ctx.saved_tensors
@@ -510,8 +519,11 @@ class KSFTExpertsCPU(torch.autograd.Function):
             )
         )
         ctx.cpu_infer.sync()
+
+        end_time = time.time()
+        print(f"KSFTExpertsCPU.backward execution time: {(end_time - start_time) * 1000:.2f} ms")
         
-        return grad_input.to(device=ctx.out_device)
+        return grad_input.to(device=ctx.out_device), None, None, None, None, None
     
     def unload(self):
         return
