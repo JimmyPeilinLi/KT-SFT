@@ -17,24 +17,30 @@ import os
 import sys
 import re
 import ast
+from collections import deque
 import subprocess
+import select
+import time
 import platform
 import shutil
+from typing import List, Optional, Literal
 import http.client
 import urllib.request
 import urllib.error
 from pathlib import Path
 from packaging.version import parse
+import torch
 import torch.version
 from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 from setuptools import setup, Extension
-from cpufeature.extension import CPUFeature
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME, ROCM_HOME
 try:
     from torch_musa.utils.simple_porting import SimplePorting
     from torch_musa.utils.musa_extension import BuildExtension, MUSAExtension, MUSA_HOME
 except ImportError:
     MUSA_HOME=None
+    
+with_balance = os.environ.get("USE_BALANCE_SERVE", "0") == "1"
 
 class CpuInstructInfo:
     CPU_INSTRUCT = os.getenv("CPU_INSTRUCT", "NATIVE")
@@ -63,6 +69,70 @@ class VersionInfo:
         bare_metal_version = parse(output[release_idx].split(",")[0])
         musa_version = f"{bare_metal_version.major}{bare_metal_version.minor}"
         return musa_version
+
+    def get_rocm_bare_metal_version(self, rocm_dir):
+        """
+        Get the ROCm version from the ROCm installation directory.
+
+        Args:
+            rocm_dir: Path to the ROCm installation directory
+
+        Returns:
+            A string representation of the ROCm version (e.g., "63" for ROCm 6.3)
+        """
+        try:
+            # Try using rocm_agent_enumerator to get version info
+            raw_output = subprocess.check_output(
+                [rocm_dir + "/bin/rocminfo", "--version"],
+                universal_newlines=True,
+                stderr=subprocess.STDOUT)
+            # Extract version number from output
+            match = re.search(r'(\d+\.\d+)', raw_output)
+            if match:
+                version_str = match.group(1)
+                version = parse(version_str)
+                rocm_version = f"{version.major}{version.minor}"
+                return rocm_version
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            # If rocminfo --version fails, try alternative methods
+            pass
+
+        try:
+            # Try reading version from release file
+            with open(os.path.join(rocm_dir, "share/doc/hip/version.txt"), "r") as f:
+                version_str = f.read().strip()
+                version = parse(version_str)
+                rocm_version = f"{version.major}{version.minor}"
+                return rocm_version
+        except (FileNotFoundError, IOError):
+            pass
+
+        # If all else fails, try to extract from directory name
+        dir_name = os.path.basename(os.path.normpath(rocm_dir))
+        match = re.search(r'rocm-(\d+\.\d+)', dir_name)
+        if match:
+            version_str = match.group(1)
+            version = parse(version_str)
+            rocm_version = f"{version.major}{version.minor}"
+            return rocm_version
+
+        # Fallback to extracting from hipcc version
+        try:
+            raw_output = subprocess.check_output(
+                [rocm_dir + "/bin/hipcc", "--version"],
+                universal_newlines=True,
+                stderr=subprocess.STDOUT)
+            match = re.search(r'HIP version: (\d+\.\d+)', raw_output)
+            if match:
+                version_str = match.group(1)
+                version = parse(version_str)
+                rocm_version = f"{version.major}{version.minor}"
+                return rocm_version
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+
+        # If we still can't determine the version, raise an error
+        raise ValueError(f"Could not determine ROCm version from directory: {rocm_dir}")
 
     def get_cuda_bare_metal_version(self, cuda_dir):
         raw_output = subprocess.check_output(
@@ -117,6 +187,8 @@ class VersionInfo:
             raise ValueError(
                 "Unsupported cpu Instructions: {}".format(flags_line))
         elif sys.platform == "win32":
+            from cpufeature.extension import CPUFeature
+
             if CPUFeature.get("AVX512bw", False):
                 return 'fancy'
             if CPUFeature.get("AVX512f", False):
@@ -151,8 +223,10 @@ class VersionInfo:
             backend_version = f"cu{self.get_cuda_bare_metal_version(CUDA_HOME)}"
         elif MUSA_HOME is not None:
             backend_version = f"mu{self.get_musa_bare_metal_version(MUSA_HOME)}"
+        elif ROCM_HOME is not None:
+            backend_version = f"rocm{self.get_rocm_bare_metal_version(ROCM_HOME)}"
         else:
-            raise ValueError("Unsupported backend: CUDA_HOME and MUSA_HOME are not set.")
+            raise ValueError("Unsupported backend: CUDA_HOME MUSA_HOME ROCM_HOME all not set.")
         package_version = f"{flash_version}+{backend_version}torch{torch_version}{cpu_instruct}"
         if full_version:
             return package_version
@@ -198,6 +272,172 @@ class BuildWheelsCommand(_bdist_wheel):
             super().run()
 
 
+ANSI_ESCAPE = re.compile(
+    r'\033[@-Z\\-_\[\]P]|\033\[[0-?]*[ -/]*[@-~]|\033][^\007\033]*\007|[\000-\037]'
+)
+
+def colored(text, color=None, bold=False):
+    fmt = []
+    if color== 'red':
+        fmt.append('31')
+    elif color == 'green':
+        fmt.append('32')
+    if bold:
+        fmt.append('1')
+
+    return f"\033[{';'.join(fmt)}m{text}\033[0m"
+
+
+def split_line(text: str) -> List[str]:
+    """Split text into lines based on terminal width."""
+    term_width = shutil.get_terminal_size().columns or 80
+    if not text.strip():
+        return []
+    # Split by explicit newlines and wrap long lines
+    lines = []
+    for line in text.split('\n'):
+        while len(line) > term_width:
+            lines.append(line[:term_width])
+            line = line[term_width:]
+        if line:
+            lines.append(line)
+    return lines
+
+
+
+ANSI_ESCAPE = re.compile(
+    r'\033[@-Z\\-_\[\]P]|\033\[[0-?]*[ -/]*[@-~]|\033][^\007\033]*\007|[\000-\037]'
+)
+
+def colored(text, color=None, bold=False):
+    fmt = []
+    if color== 'red':
+        fmt.append('31')
+    elif color == 'green':
+        fmt.append('32')
+    if bold:
+        fmt.append('1')
+
+    return f"\033[{';'.join(fmt)}m{text}\033[0m"
+
+
+def split_line(text: str) -> List[str]:
+    """Split text into lines based on terminal width."""
+    term_width = shutil.get_terminal_size().columns or 80
+    if not text.strip():
+        return []
+    # Split by explicit newlines and wrap long lines
+    lines = []
+    for line in text.split('\n'):
+        while len(line) > term_width:
+            lines.append(line[:term_width])
+            line = line[term_width:]
+        if line:
+            lines.append(line)
+    return lines
+
+
+def run_command_with_live_tail(ext: str, command: List[str], output_lines: int = 20,
+                               refresh_rate: float = 0.1, cwd: Optional[str] = None):
+    """
+    Execute a script-like command with real-time output of the last `output_lines` lines.
+
+    - during execution: displays the last `output_lines` lines of output in real-time.
+    - On success: Clears the displayed output.
+    - On failure: Prints the full command output.
+
+    Args:
+        ext (str): the name of the native extension currently building.
+        command (List[str]): The command to execute, as a list of arguments.
+        output_lines (int, optional): Number of terminal lines to display during live output. Defaults to 20.
+        refresh_rate (float, optional): Time in seconds between output refreshes. Defaults to 0.1.
+        cwd (Optional[str], optional): Working directory to run the command in. Defaults to current directory.
+    """
+    # Dump all subprocess output without any buffering if stdout is not a terminal
+    if not sys.stdout.isatty():
+        return subprocess.run(command, cwd=cwd, check=True)
+    # Start time for elapsed time calculation
+    start = time.time()
+    # Buffer for all output
+    all_output = []
+    write_buffer = deque(maxlen=output_lines)
+    # Current number of lines from sub process displayed
+    current_lines = 0
+
+    # ANSI escape codes for terminal control
+    CLEAR_LINE = '\033[K'
+    MOVE_UP = '\033[1A'
+    SAVE_CURSOR = '\0337'
+    RESTORE_CURSOR = '\0338'
+    CLEAR_REMAINING = '\033[J'
+
+    def write_progress(status: Literal['RUNNING', 'SUCCEED', 'FAILED'] = 'RUNNING',
+                       new_line: Optional[str] = None):
+        """Update terminal display with latest output"""
+        nonlocal current_lines, process
+        sys.stdout.write(SAVE_CURSOR)
+        sys.stdout.write(MOVE_UP * current_lines)
+        banner = f"ext={ext} pid={process.pid} status={status.upper()} elapsed=({time.time()-start:.2f}S)\n"
+        if status != 'FAILED':
+            banner = colored(banner, 'green', bold=True)
+        else:
+            banner = colored(banner, 'red', bold=True)
+        sys.stdout.write(CLEAR_LINE + banner)
+        if new_line is not None:
+            all_output.append(new_line)
+            write_buffer.extend(split_line(ANSI_ESCAPE.sub('', new_line).rstrip()))
+        elif status == 'RUNNING':
+            sys.stdout.write(RESTORE_CURSOR)
+            sys.stdout.flush()
+            return
+
+        sys.stdout.write(CLEAR_REMAINING)
+        if status == 'RUNNING':
+            current_lines = 1 + len(write_buffer)
+            for text in write_buffer:
+                sys.stdout.write(text + '\n')
+        elif status == 'FAILED':
+            for text in all_output:
+                sys.stdout.write(text)
+        sys.stdout.flush()
+
+    # Start subprocess
+    sys.stdout.write(colored(f'ext={ext} command={" ".join(str(c) for c in command)}\n', bold=True))
+    sys.stdout.flush()
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=cwd,
+        text=True,
+        bufsize=1
+    )
+
+    try:
+        write_progress()
+        poll_obj = select.poll()
+        poll_obj.register(process.stdout, select.POLLIN)
+        while process.poll() is None:
+            poll_result = poll_obj.poll(refresh_rate * 1000)
+            if poll_result:
+                write_progress(new_line=process.stdout.readline())
+            else:
+                write_progress()
+
+        # Get any remaining output
+        while True:
+            line = process.stdout.readline()
+            if not line:
+                break
+            write_progress(new_line=line)
+    except BaseException as e:
+        process.terminate()
+        raise e
+    finally:
+        exit_code = process.wait()
+        write_progress(status='SUCCEED' if exit_code == 0 else 'FAILED')
+
+
 # Convert distutils Windows platform specifiers to CMake -A arguments
 PLAT_TO_CMAKE = {
     "win32": "Win32",
@@ -208,11 +448,17 @@ PLAT_TO_CMAKE = {
 
 
 class CMakeExtension(Extension):
-    def __init__(self, name: str, sourcedir: str = "") -> None:
+    def __init__(self, name: str, sourcedir: str) -> None:
         super().__init__(name, sources=[])
-        self.sourcedir = os.fspath(
-            Path(sourcedir).resolve() / "ktransformers" / "ktransformers_ext")
+        print(name, sourcedir)
+        self.sourcedir = sourcedir
 
+def get_cmake_abi_args(cmake_args):
+    if torch.compiled_with_cxx11_abi():
+        cmake_args.append("-D_GLIBCXX_USE_CXX11_ABI=1")
+    else:
+        cmake_args.append("-D_GLIBCXX_USE_CXX11_ABI=0")
+    return cmake_args
 
 class CMakeBuild(BuildExtension):
 
@@ -247,8 +493,14 @@ class CMakeBuild(BuildExtension):
             cmake_args += ["-DKTRANSFORMERS_USE_CUDA=ON"]
         elif MUSA_HOME is not None:
             cmake_args += ["-DKTRANSFORMERS_USE_MUSA=ON"]
+        elif ROCM_HOME is not None:
+            cmake_args += ["-DKTRANSFORMERS_USE_ROCM=ON"]
         else:
-            raise ValueError("Unsupported backend: CUDA_HOME and MUSA_HOME are not set.")
+            raise ValueError("Unsupported backend: CUDA_HOME, MUSA_HOME, and ROCM_HOME are not set.")
+        
+        cmake_args = get_cmake_abi_args(cmake_args)
+        # log cmake_args
+        print("CMake args:", cmake_args)
 
         build_args = []
         if "CMAKE_ARGS" in os.environ:
@@ -272,16 +524,17 @@ class CMakeBuild(BuildExtension):
             f"-DEXAMPLE_VERSION_INFO={self.distribution.get_version()}"]
         if self.compiler.compiler_type != "msvc":
             if not cmake_generator or cmake_generator == "Ninja":
-                try:
-                    import ninja
+                pass
+                # try:
+                #     import ninja
 
-                    ninja_executable_path = Path(ninja.BIN_DIR) / "ninja"
-                    cmake_args += [
-                        "-GNinja",
-                        f"-DCMAKE_MAKE_PROGRAM:FILEPATH={ninja_executable_path}",
-                    ]
-                except ImportError:
-                    pass
+                #     ninja_executable_path = Path(ninja.BIN_DIR) / "ninja"
+                #     cmake_args += [
+                #         "-GNinja",
+                #         f"-DCMAKE_MAKE_PROGRAM:FILEPATH={ninja_executable_path}",
+                #     ]
+                # except ImportError:
+                #     pass
 
         else:
             # Single config generators are handled "normally"
@@ -317,35 +570,35 @@ class CMakeBuild(BuildExtension):
                 build_args += [f"--parallel={cpu_count}"]
         print("CMake args:", cmake_args)
         build_temp = Path(ext.sourcedir) / "build"
+        print("build_temp:", build_temp)
+
         if not build_temp.exists():
             build_temp.mkdir(parents=True)
-        result = subprocess.run(
-            ["cmake", ext.sourcedir, *cmake_args], cwd=build_temp, check=True , capture_output=True
+        run_command_with_live_tail(ext.name,
+            ["cmake", ext.sourcedir, *cmake_args], cwd=build_temp
         )
-        print("Standard output:", result.stdout)
-        print("Standard error:", result.stderr)
-        subprocess.run(
-            ["cmake", "--build", ".", "--verbose", *build_args], cwd=build_temp, check=True
+        run_command_with_live_tail(ext.name,
+            ["cmake", "--build", build_temp, "--verbose", *build_args], cwd=build_temp
         )
 
-if CUDA_HOME is not None:
+if CUDA_HOME is not None or ROCM_HOME is not None:
     ops_module = CUDAExtension('KTransformersOps', [
-        'ktransformers/ktransformers_ext/cuda/custom_gguf/dequant.cu',
-        'ktransformers/ktransformers_ext/cuda/binding.cpp',
-        'ktransformers/ktransformers_ext/cuda/gptq_marlin/gptq_marlin.cu'
+        'csrc/ktransformers_ext/cuda/custom_gguf/dequant.cu',
+        'csrc/ktransformers_ext/cuda/binding.cpp',
+        'csrc/ktransformers_ext/cuda/gptq_marlin/gptq_marlin.cu'
     ],
     extra_compile_args={
             'cxx': ['-O3', '-DKTRANSFORMERS_USE_CUDA'],
             'nvcc': [
                 '-O3',
-                '--use_fast_math',
+                # '--use_fast_math',
                 '-Xcompiler', '-fPIC',
                 '-DKTRANSFORMERS_USE_CUDA',
             ]
         }
     )
 elif MUSA_HOME is not None:
-    SimplePorting(cuda_dir_path="ktransformers/ktransformers_ext/cuda", mapping_rule={
+    SimplePorting(cuda_dir_path="csrc/ktransformers_ext/cuda", mapping_rule={
         # Common rules
         "at::cuda": "at::musa",
         "#include <ATen/cuda/CUDAContext.h>": "#include \"torch_musa/csrc/aten/musa/MUSAContext.h\"",
@@ -353,10 +606,10 @@ elif MUSA_HOME is not None:
         "nv_bfloat16": "mt_bfloat16",
         }).run()
     ops_module = MUSAExtension('KTransformersOps', [
-        'ktransformers/ktransformers_ext/cuda_musa/custom_gguf/dequant.mu',
-        'ktransformers/ktransformers_ext/cuda_musa/binding.cpp',
+        'csrc/ktransformers_ext/cuda_musa/custom_gguf/dequant.mu',
+        'csrc/ktransformers_ext/cuda_musa/binding.cpp',
         # TODO: Add Marlin support for MUSA.
-        # 'ktransformers/ktransformers_ext/cuda_musa/gptq_marlin/gptq_marlin.mu'
+        # 'csrc/ktransformers_ext/cuda_musa/gptq_marlin/gptq_marlin.mu'
     ],
     extra_compile_args={
             'cxx': ['force_mcc'],
@@ -370,11 +623,30 @@ elif MUSA_HOME is not None:
 else:
     raise ValueError("Unsupported backend: CUDA_HOME and MUSA_HOME are not set.")
 
+ext_modules = [
+    CMakeExtension("cpuinfer_ext", os.fspath(Path("").resolve() / "csrc" / "ktransformers_ext")),
+    ops_module,
+    CUDAExtension(
+        'vLLMMarlin', [
+            'csrc/custom_marlin/binding.cpp',
+            'csrc/custom_marlin/gptq_marlin/gptq_marlin.cu',
+            'csrc/custom_marlin/gptq_marlin/gptq_marlin_repack.cu',
+        ],
+        extra_compile_args={
+            'cxx': ['-O3'],
+            'nvcc': ['-O3', '-Xcompiler', '-fPIC'],
+        },
+    )
+]
+if with_balance:
+    print("using balance_serve")
+    ext_modules.append(
+        CMakeExtension("balance_serve", os.fspath(Path("").resolve()/ "csrc"/ "balance_serve"))
+    )
+
 setup(
+    name=VersionInfo.PACKAGE_NAME,
     version=VersionInfo().get_package_version(),
     cmdclass={"bdist_wheel":BuildWheelsCommand ,"build_ext": CMakeBuild},
-    ext_modules=[
-        CMakeExtension("cpuinfer_ext"),
-        ops_module,
-    ]
+    ext_modules=ext_modules
 )
