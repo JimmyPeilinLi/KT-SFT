@@ -3,19 +3,20 @@ project(cpuinfer_ext VERSION 0.1.0)
 
 
 set(CMAKE_CXX_STANDARD 17)
-
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -ffast-math -fopenmp")
-add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=${_GLIBCXX_USE_CXX11_ABI})
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -ffast-math")
+set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -fno-finite-math-only")
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-finite-math-only")
+add_compile_options(
+        -O3                 # Release 优化；Debug 由用户自己决定
+        -fno-finite-math-only  # 覆盖 fast‑math 隐式选项
+)
 set(CMAKE_BUILD_TYPE "Release")
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -ffast-math -fopenmp")
-# set(CMAKE_BUILD_TYPE "Debug")
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_GLIBCXX_USE_CXX11_ABI=1")
-
-
 include(CheckCXXCompilerFlag)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+option(KTRANSFORMERS_ENABLE_FAST_MATH "use -ffast-math (will break ggml)" OFF)
+if (KTRANSFORMERS_ENABLE_FAST_MATH)
+    add_compile_options(-ffast-math)
+endif()
 
 
 option(LLAMA_NATIVE                     "llama: enable -march=native flag"                      ON)
@@ -39,9 +40,8 @@ if (NOT MSVC)
     option(LLAMA_F16C                        "llama: enable F16C"                               OFF)
 endif()
 option(LLAMA_AVX512_FANCY_SIMD               "llama: enable AVX512-VL, AVX512-BW, AVX512-DQ, AVX512-VNNI"                        OFF)
-option(KTRANSFORMERS_USE_CUDA                "ktransformers: use CUDA"                          ON)
+option(KTRANSFORMERS_USE_CUDA                "ktransformers: use CUDA"                          OFF)
 option(KTRANSFORMERS_USE_MUSA                "ktransformers: use MUSA"                          OFF)
-option(KTRANSFORMERS_USE_ROCM                "ktransformers: use ROCM"                          OFF)
 
 # Architecture specific
 # TODO: probably these flags need to be tweaked on some architectures
@@ -116,37 +116,6 @@ elseif (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR CMAKE_GENERATOR_PLATFORM_LW
         (NOT CMAKE_OSX_ARCHITECTURES AND NOT CMAKE_GENERATOR_PLATFORM_LWR AND
          CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|i686|AMD64)$"))
     message(STATUS "x86 detected")
-    set(HOST_IS_X86 TRUE)
-    set(HAS_AVX512 TRUE)
-    set(__HAS_AMX__ TRUE)
-    add_compile_definitions(__x86_64__)
-    # check AVX512
-    execute_process(
-        COMMAND lscpu
-        OUTPUT_VARIABLE LSCPU_OUTPUT
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
-    # message(STATUS "LSCPU_OUTPUT: ${LSCPU_OUTPUT}")
-
-    string(FIND "${LSCPU_OUTPUT}" "avx512" COMPILER_SUPPORTS_AVX512F)
-    
-    if (COMPILER_SUPPORTS_AVX512F GREATER -1)
-        message(STATUS "Compiler and CPU support AVX512F (tested by compiling a program)")
-        add_compile_definitions(__HAS_AVX512F__)
-    else()
-        message(STATUS "Compiler and/or CPU do NOT support AVX512F")
-        set(HAS_AVX512 False)
-    endif()
-
-    # check AMX
-    string(FIND "${LSCPU_OUTPUT}" "amx" COMPILER_SUPPORTS_AMX)
-    
-    if(COMPILER_SUPPORTS_AMX GREATER -1)
-        message(STATUS "Compiler supports AMX")
-        add_compile_definitions(__HAS_AMX__)
-    else()
-        message(STATUS "Compiler does NOT support AMX")
-    endif()
     if (MSVC)
         # instruction set detection for MSVC only
         if (LLAMA_NATIVE)
@@ -187,7 +156,6 @@ elseif (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR CMAKE_GENERATOR_PLATFORM_LW
         endif()
     else()
         if (LLAMA_NATIVE)
-            list(APPEND ARCH_FLAGS -mfma -mavx -mavx2)
             list(APPEND ARCH_FLAGS -march=native)
         endif()
         if (LLAMA_F16C)
@@ -213,12 +181,10 @@ elseif (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR CMAKE_GENERATOR_PLATFORM_LW
             list(APPEND ARCH_FLAGS -mavx512vnni)
         endif()
         if (LLAMA_AVX512_FANCY_SIMD)
-            message(STATUS "AVX512-VL, AVX512-BW, AVX512-DQ, AVX512-VNNI enabled")
             list(APPEND ARCH_FLAGS -mavx512vl)
             list(APPEND ARCH_FLAGS -mavx512bw)
             list(APPEND ARCH_FLAGS -mavx512dq)
             list(APPEND ARCH_FLAGS -mavx512vnni)
-            list(APPEND ARCH_FLAGS -mavx512vpopcntdq)
         endif()
         if (LLAMA_AVX512_BF16)
             list(APPEND ARCH_FLAGS -mavx512bf16)
@@ -244,33 +210,9 @@ endif()
 #     message(STATUS "Can't found CUDA lib")
 # endif()
 
-if (NOT EXISTS $ENV{ROCM_PATH})
-    if (NOT EXISTS /opt/rocm)
-        set(ROCM_PATH /usr)
-    else()
-        set(ROCM_PATH /opt/rocm)
-    endif()
-else()
-    set(ROCM_PATH $ENV{ROCM_PATH})
-endif()
-
-list(APPEND CMAKE_PREFIX_PATH  ${ROCM_PATH})
-list(APPEND CMAKE_PREFIX_PATH "${ROCM_PATH}/lib64/cmake")
-
-if (NOT EXISTS $ENV{MUSA_PATH})
-    if (NOT EXISTS /opt/musa)
-        set(MUSA_PATH /usr/local/musa)
-    else()
-        set(MUSA_PATH /opt/musa)
-    endif()
-else()
-    set(MUSA_PATH $ENV{MUSA_PATH})
-endif()
-
-list(APPEND CMAKE_MODULE_PATH "${MUSA_PATH}/cmake")
-
 add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${ARCH_FLAGS}>")
 add_compile_options("$<$<COMPILE_LANGUAGE:C>:${ARCH_FLAGS}>")
+add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:${ARCH_FLAGS}>")
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/pybind11 ${CMAKE_CURRENT_BINARY_DIR}/third_party/pybind11)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/llama.cpp ${CMAKE_CURRENT_BINARY_DIR}/third_party/llama.cpp)
@@ -280,13 +222,13 @@ if (WIN32)
     include_directories("$ENV{CUDA_PATH}/include")
     add_compile_definitions(KTRANSFORMERS_USE_CUDA=1)
 elseif (UNIX)
-    if (KTRANSFORMERS_USE_ROCM)
-        find_package(HIP REQUIRED)
-        if(HIP_FOUND)
-            include_directories("${HIP_INCLUDE_DIRS}")
-            add_compile_definitions(KTRANSFORMERS_USE_ROCM=1)
-        endif()
-    elseif (KTRANSFORMERS_USE_MUSA)
+    if (KTRANSFORMERS_USE_CUDA)
+        find_package(CUDA REQUIRED)
+        include_directories("${CUDA_INCLUDE_DIRS}")
+        add_compile_definitions(KTRANSFORMERS_USE_CUDA=1)
+    endif()
+
+    if (KTRANSFORMERS_USE_MUSA)
         if (NOT EXISTS $ENV{MUSA_PATH})
             if (NOT EXISTS /opt/musa)
                 set(MUSA_PATH /usr/local/musa)
@@ -304,20 +246,6 @@ elseif (UNIX)
             message(STATUS "MUSA Toolkit found")
             add_compile_definitions(KTRANSFORMERS_USE_MUSA=1)
         endif()
-    else()
-		cmake_policy(SET CMP0146 OLD)
-        find_package(CUDA REQUIRED)
-        include_directories("${CUDA_INCLUDE_DIRS}")
-        include(CheckLanguage)
-        check_language(CUDA)
-        if(CMAKE_CUDA_COMPILER)
-            message(STATUS "CUDA detected")
-            find_package(CUDAToolkit REQUIRED)
-            include_directories(${CUDAToolkit_INCLUDE_DIRS})
-        endif()
-        message(STATUS "enabling CUDA")
-        enable_language(CUDA)
-        add_compile_definitions(KTRANSFORMERS_USE_CUDA=1)
     endif()
 endif()
 
@@ -326,72 +254,42 @@ aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/cpu_backend SOURCE_DIR2)
 aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/operators/llamafile SOURCE_DIR3)
 aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/llamafile SOURCE_DIR4)
 aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/operators/kvcache SOURCE_DIR5)
+set(ALL_SOURCES ${SOURCE_DIR1} ${SOURCE_DIR2} ${SOURCE_DIR3} ${SOURCE_DIR4} ${SOURCE_DIR5})
+message(STATUS "ALL_SOURCES: ${ALL_SOURCES}")
 
-if (HOST_IS_X86 AND HAS_AVX512 AND __HAS_AMX__)
-    aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/operators/amx SOURCE_DIR6)
-endif()
-
-
-set(ALL_SOURCES ${SOURCE_DIR1} ${SOURCE_DIR2} ${SOURCE_DIR3} ${SOURCE_DIR4} ${SOURCE_DIR5} ${SOURCE_DIR6})
-
-file(GLOB_RECURSE FMT_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/*.hpp" "${CMAKE_CURRENT_SOURCE_DIR}/*.h")
-
-add_custom_target(
-    format
-    COMMAND clang-format
-    -i
-    -style=file
-    ${FMT_SOURCES}
-    COMMENT "Running clang-format on all source files"
-)
-
-
-add_library(llamafile STATIC ${SOURCE_DIR4})
-
-message(STATUS "CMAKE_CXX_FLAGS: ${CMAKE_CXX_FLAGS}")
-message(STATUS "ARCH_FLAGS: ${ARCH_FLAGS}")
 pybind11_add_module(${PROJECT_NAME} MODULE ${ALL_SOURCES})
 target_link_libraries(${PROJECT_NAME} PRIVATE llama)
-
-
 if(WIN32)
     target_link_libraries(${PROJECT_NAME} PRIVATE "$ENV{CUDA_PATH}/lib/x64/cudart.lib")#CUDA::cudart
 elseif(UNIX)
-    if (KTRANSFORMERS_USE_ROCM)
-        add_compile_definitions(USE_HIP=1)
-        target_link_libraries(${PROJECT_NAME} PRIVATE "${ROCM_PATH}/lib/libamdhip64.so")
-        message(STATUS "Building for HIP")
-    elseif(KTRANSFORMERS_USE_MUSA)
+    if(KTRANSFORMERS_USE_CUDA)
+        if(NOT DEFINED ENV{CUDA_HOME} OR "$ENV{CUDA_HOME}" STREQUAL "")
+            set(ENV{CUDA_HOME} "/usr/local/cuda")
+        endif()
+        target_link_libraries(${PROJECT_NAME} PRIVATE "$ENV{CUDA_HOME}/lib64/libcudart.so")
+    endif()
+    if(KTRANSFORMERS_USE_MUSA)
         target_link_libraries(${PROJECT_NAME} PRIVATE MUSA::musart)
-    else()
-        target_link_libraries(${PROJECT_NAME} PRIVATE "${CUDAToolkit_LIBRARY_DIR}/libcudart.so")
     endif()
 endif()
 
 # Define the USE_NUMA option
 option(USE_NUMA "Disable NUMA support" OFF)
-
 # Check if the USE_NUMA environment variable is set
 if(DEFINED ENV{USE_NUMA})
     set(USE_NUMA ON)
 endif()
-
-if(USE_NUMA)
+if (USE_NUMA)
     message(STATUS "NUMA support is enabled")
 else()
     message(STATUS "NUMA support is disabled")
 endif()
 
 find_library(NUMA_LIBRARY NAMES numa)
-
-if(NUMA_LIBRARY AND USE_NUMA)
+if (NUMA_LIBRARY AND USE_NUMA)
     message(STATUS "NUMA library found: ${NUMA_LIBRARY} - enabling NUMA support")
     target_link_libraries(${PROJECT_NAME} PRIVATE ${NUMA_LIBRARY})
     target_compile_definitions(${PROJECT_NAME} PRIVATE USE_NUMA)
 else()
-    if(USE_NUMA)
-        message(FATAL_ERROR "NUMA library not found - maybe sudo apt install libnuma-dev")
-    else()
-        message(STATUS "NUMA library not found or user not set USE_NUMA - disabling NUMA support")
-    endif()
+    message(STATUS "NUMA library not found or user not set USE_NUMA - disabling NUMA support")
 endif()
