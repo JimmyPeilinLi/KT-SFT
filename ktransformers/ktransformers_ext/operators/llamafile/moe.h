@@ -60,6 +60,8 @@ class MOE {
 	void backward(int qlen, int k, const uint64_t* expert_ids, const float* weights,
               const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache); // FIXME: expert backward definition for C++
 
+    void ensure_fwd_cache(int qlen, int k);
+    MoEForwardCache* fwd_cache_ptr();
 
    private:
     MOEConfig config_;
@@ -104,6 +106,8 @@ class MOE {
     std::vector<float*> m_local_intermediate_fp32_ptr_;  // [expert_num]
     std::vector<uint8_t*> m_local_down_input_ptr_;       // [expert_num]
     std::vector<float*> m_local_down_output_ptr_;        // [expert_num]
+
+	std::vector<MoEForwardCache> fw_cache_; // 持久缓存，便于backward读取到forward_cache
 };
 
 #endif

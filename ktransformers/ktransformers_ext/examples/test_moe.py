@@ -143,41 +143,51 @@ def test_forward():
             print('diff = ', diff)
             assert(diff < 0.001)
 
-# 反向传播验证
+import time
+
 def test_backward():
     # 先测试backward是否能正常调用
     print("\n===== Testing Backward Pass =====")
+
     # 创建一个单层MOE用于测试
     gate_proj = torch.randn((expert_num, intermediate_size, hidden_size), 
-                           dtype=torch.float32, requires_grad=True)
+                            dtype=torch.float32, requires_grad=True)
     up_proj = torch.randn((expert_num, intermediate_size, hidden_size), 
-                         dtype=torch.float32, requires_grad=True)
+                          dtype=torch.float32, requires_grad=True)
     down_proj = torch.randn((expert_num, hidden_size, intermediate_size), 
-                           dtype=torch.float32, requires_grad=True)
-    
+                            dtype=torch.float32, requires_grad=True)
+
     # 创建MOE实例
-    config = cpuinfer_ext.moe.MOEConfig(expert_num, n_routed_experts, hidden_size, intermediate_size, 
-                                       stride, group_min_len, group_max_len, 
-                                       gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr(), 
-                                       0, 0, 0, 0)  # 使用float32类型(0=GGML_TYPE_F32)
+    config = cpuinfer_ext.moe.MOEConfig(
+        expert_num, n_routed_experts, hidden_size, intermediate_size, 
+        stride, group_min_len, group_max_len, 
+        gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr(), 
+        0, 0, 0, 0  # 使用float32类型(0=GGML_TYPE_F32)
+    )
     moe = cpuinfer_ext.moe.MOE(config)
-    
+
     # 创建输入数据
-    expert_ids = torch.stack([torch.randperm(expert_num)[:n_routed_experts] for _ in range(qlen)]).contiguous()
+    expert_ids = torch.stack([
+        torch.randperm(expert_num)[:n_routed_experts] for _ in range(qlen)
+    ]).contiguous()
     weights = torch.rand((qlen, n_routed_experts), dtype=torch.float32).contiguous()
-    
+
     # 使用相同的输入进行torch和C++算子的计算
     input = torch.randn((qlen, hidden_size), dtype=torch.float32, requires_grad=True)
     input_cpp = input.clone().detach().requires_grad_(True)
-    
+
     # 计算PyTorch参考输出
+    start_time = time.perf_counter()
     t_output = moe_torch(input, expert_ids, weights, gate_proj, up_proj, down_proj, requires_grad=True)
-    
+    torch_forward_time = time.perf_counter() - start_time
+    print(f"PyTorch forward time: {torch_forward_time:.6f} seconds")
+
     # 计算C++算子输出
     output_cpp = torch.empty((qlen, hidden_size), dtype=torch.float32).contiguous()
     grad_input_cpp = torch.empty_like(input_cpp)
-    
+
     # 前向传播
+    start_time = time.perf_counter()
     CPUInfer.submit(
         moe.forward(
             qlen,
@@ -189,21 +199,27 @@ def test_backward():
         )
     )
     CPUInfer.sync()
-    
+    cpp_forward_time = time.perf_counter() - start_time
+    print(f"C++ forward time: {cpp_forward_time:.6f} seconds")
+
     # 验证前向传播结果
     forward_diff = torch.mean(torch.abs(output_cpp - t_output)) / torch.mean(torch.abs(t_output))
     print(f"Forward diff: {forward_diff.item()}")
-    
+
     # 创建相同的梯度输入
     grad_output = torch.randn_like(t_output)
     grad_output_cpp = grad_output.clone()
-    
-    print("-- pytorch backward --")
+
+    print("-- PyTorch backward --")
     # PyTorch反向传播
+    start_time = time.perf_counter()
     t_output.backward(grad_output, retain_graph=True)
-    
-    print("-- c++ backward --")
+    torch_backward_time = time.perf_counter() - start_time
+    print(f"PyTorch backward time: {torch_backward_time:.6f} seconds")
+
+    print("-- C++ backward --")
     # C++反向传播
+    start_time = time.perf_counter()
     CPUInfer.submit(
         moe.backward(
             qlen,
@@ -216,13 +232,16 @@ def test_backward():
         )
     )
     CPUInfer.sync()
-    
+    cpp_backward_time = time.perf_counter() - start_time
+    print(f"C++ backward time: {cpp_backward_time:.6f} seconds")
+
     # 验证梯度结果
     backward_diff = torch.mean(torch.abs(grad_input_cpp - input.grad)) / torch.mean(torch.abs(input.grad))
     print(f"Backward diff: {backward_diff.item()}")
     assert backward_diff < 0.01, f"Backward diff too large: {backward_diff.item()}"
-    
+
     print("✅ Backward pass test passed!")
+
 
 if __name__ == "__main__":
     test_backward()

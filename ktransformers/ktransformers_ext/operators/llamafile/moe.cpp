@@ -126,6 +126,7 @@ void MOE::warm_up(Backend* backend) {
     from_float(input_fp32.data(), input.data(), config_.hidden_size, config_.hidden_type);
 	/* ---------- 仅用于占位的 ForwardCache ---------- */
     MoEForwardCache dummy_cache; // 内容无用，只为满足接口
+	dummy_cache.init(/*k=*/1, config_.intermediate_size);
     for (int i = 0; i < config_.expert_num; i++) {
         uint64_t expert_ids = i;
         float weights = 0;
@@ -135,6 +136,36 @@ void MOE::warm_up(Backend* backend) {
 
 static float act_fn(float x) {
     return x / (1.0f + expf(-x));
+}
+
+void MOE::ensure_fwd_cache(int qlen, int k)
+{
+	// if ((int)fw_cache_.size() < qlen)
+	// 	fw_cache_.resize(qlen);
+	// /* 只在扩容的那部分做 init，防止重复开辟 */
+	// for (int i = 0; i < qlen; ++i)
+	// 	fw_cache_[i].init(k, config_.intermediate_size);
+
+	int old_sz = fw_cache_.size();
+    if (old_sz < qlen)
+    {
+        fw_cache_.resize(qlen);
+        for (int i = old_sz; i < qlen; ++i)  // 仅初始化新增元素
+            fw_cache_[i].init(k, config_.intermediate_size);
+    }
+
+	
+    // if ((int)fw_cache_.size() < qlen)
+    //     fw_cache_.resize(qlen);
+
+    // for (int i = 0; i < qlen; ++i)                          // 每轮都 init
+    //     fw_cache_[i].init(k, config_.intermediate_size);    // 但 无重 alloc
+
+}
+
+MoEForwardCache* MOE::fwd_cache_ptr()
+{
+	return fw_cache_.empty() ? nullptr : fw_cache_.data();
 }
 
 void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache) {
@@ -383,14 +414,14 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
 void MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache) {
     if (qlen < config_.group_min_len) {
         for (int i = 0; i < qlen; i++) {
-			fwd_cache[i].init(k, config_.intermediate_size);      // 预分配
+			// fwd_cache[i].init(k, config_.intermediate_size);      // 预分配
             forward_one(k, expert_ids + i * k, weights + i * k, (uint8_t*)input + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend, fwd_cache + i);
         }
         return;
     }
     int forward_len = std::min(config_.group_max_len, qlen);
-    for (int i = 0; i < forward_len; ++i)
-        fwd_cache[i].init(k, config_.intermediate_size);
+    // for (int i = 0; i < forward_len; ++i)
+    //     fwd_cache[i].init(k, config_.intermediate_size);
     forward_many(forward_len, k, expert_ids, weights, input, output, backend, fwd_cache);
     forward(qlen - forward_len, k, expert_ids + forward_len * k, weights + forward_len * k, (uint8_t*)input + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend, fwd_cache + forward_len);
 }

@@ -518,13 +518,18 @@ inline void moe_forward_wrapper(
         const float*     weights,
         const void*      input,
         void*            output,
-        Backend*         backend)            // ***必须最后***
+        Backend*         backend)
 {
-    /* thread_local 避免反复构造 / 锁冲突；真正业务可按需替换 */
-    thread_local std::vector<MoEForwardCache> fw_cache;
-    if ((int)fw_cache.size() < qlen) 
-		fw_cache.resize(qlen);
-	self.forward(qlen, k, expert_ids, weights, input, output, backend, fw_cache.data());
+    // /* thread_local 避免反复构造 / 锁冲突；真正业务可按需替换 */
+    // thread_local std::vector<MoEForwardCache> fw_cache;
+    // if ((int)fw_cache.size() < qlen) 
+	// 	fw_cache.resize(qlen);
+	// self.forward(qlen, k, expert_ids, weights, input, output, backend, fw_cache.data());
+	self.ensure_fwd_cache(qlen, k);                 // 复用缓存
+    self.forward(qlen, k, expert_ids, weights,
+                 input, output,
+                 backend,
+                 self.fwd_cache_ptr());             // 同一块缓存
 }
 
 inline void moe_backward_wrapper(
@@ -537,10 +542,15 @@ inline void moe_backward_wrapper(
         void*            grad_input,
         Backend*         backend) // 以backend结尾
 {
-    thread_local std::vector<MoEForwardCache> fw_cache;   // 与 forward 共享
+    // thread_local std::vector<MoEForwardCache> fw_cache;   // 与 forward 共享
+    // self.backward(qlen, k, expert_ids, weights,
+    //               input, grad_output, grad_input,
+    //               backend, fw_cache.data());
+	/* 反向直接用已存在的缓存；无需重新 init */
     self.backward(qlen, k, expert_ids, weights,
                   input, grad_output, grad_input,
-                  backend, fw_cache.data());
+                  backend,
+                  self.fwd_cache_ptr());
 }
 } // namespace
 /* ------------------------------------------------- */
@@ -583,7 +593,7 @@ class MOEBindings {
 		static void inner(void *args) {
 			Args *args_ = static_cast<Args *>(args);
 			args_->cpuinfer->enqueue(
-				&moe_forward_wrapper,   // **使用包装函数**
+				&moe_forward_wrapper,   // 使用包装函数
 				args_->moe, 
 				args_->qlen, args_->k,
 				args_->expert_ids,
@@ -633,7 +643,7 @@ class MOEBindings {
 		static void inner(void *args) {
 			Args *args_ = static_cast<Args *>(args);
 			args_->cpuinfer->enqueue(
-				&moe_backward_wrapper,  // **使用包装函数**
+				&moe_backward_wrapper,  // 使用包装函数
 				args_->moe,
 				args_->qlen, args_->k,
 				args_->expert_ids,
