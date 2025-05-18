@@ -23,6 +23,7 @@
 #include "llama.cpp/ggml.h"
 #include "llamafile/sgemm.h"
 #include "shared_mem_buffer.h"
+#include "moe_forward_cache.h"
 
 struct MOEConfig {
     int expert_num;
@@ -51,13 +52,13 @@ class MOE {
     MOE(MOEConfig);
     ~MOE();
     void warm_up(Backend* backend);
-    void forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
-    void forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
-    void forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
+    void forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache);
+    void forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache);
+    void forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache);
 	void backward_one(int k, const uint64_t* expert_ids, const float* weights,
-                  const void* input, const void* grad_output, void* grad_input, Backend* backend);
+                  const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache);
 	void backward(int qlen, int k, const uint64_t* expert_ids, const float* weights,
-              const void* input, const void* grad_output, void* grad_input, Backend* backend); // FIXME: expert backward definition for C++
+              const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache); // FIXME: expert backward definition for C++
 
 
    private:

@@ -10,6 +10,7 @@
 #include "moe.h"
 #include <iostream>
 #include <cstdint>
+#include <cstring>
 
 #ifdef USE_NUMA
 #include <numa.h>
@@ -123,10 +124,12 @@ void MOE::warm_up(Backend* backend) {
         input_fp32[i] = 0;
     }
     from_float(input_fp32.data(), input.data(), config_.hidden_size, config_.hidden_type);
+	/* ---------- 仅用于占位的 ForwardCache ---------- */
+    MoEForwardCache dummy_cache; // 内容无用，只为满足接口
     for (int i = 0; i < config_.expert_num; i++) {
         uint64_t expert_ids = i;
         float weights = 0;
-        forward_one(1, &expert_ids, &weights, input.data(), output.data(), backend);
+        forward_one(1, &expert_ids, &weights, input.data(), output.data(), backend, &dummy_cache);
     }
 }
 
@@ -134,7 +137,7 @@ static float act_fn(float x) {
     return x / (1.0f + expf(-x));
 }
 
-void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend) {
+void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache) {
     const void* gate_input_ptr;
     const void* up_input_ptr;
     if (config_.hidden_type == ggml_internal_get_type_traits(config_.gate_type).vec_dot_type && config_.hidden_type == ggml_internal_get_type_traits(config_.up_type).vec_dot_type) {
@@ -223,12 +226,25 @@ void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, c
             from_float(output_fp32_ptr, output_ptr, config_.stride, config_.hidden_type);
         }
     }, nullptr);
-    if (config_.stride % ggml_blck_size(config_.hidden_type) != 0) {
-        from_float(s_output_fp32_, output, config_.hidden_size, config_.hidden_type);
+
+	for (int e = 0; e < k; ++e) {
+        // gate_output_: float[inter_size] per expert
+        std::memcpy(fwd_cache->gate_u[e].data(),
+                    s_gate_output_[e],
+                    sizeof(float) * config_.intermediate_size);
+
+        std::memcpy(fwd_cache->up_v[e].data(),
+                    s_up_output_[e],
+                    sizeof(float) * config_.intermediate_size);
+
+        // 可选保存 z
+        // std::memcpy(fwd_cache->z[e].data(),
+        //             s_intermediate_fp32_[e],
+        //             sizeof(float) * config_.intermediate_size);
     }
 }
 
-void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend) {
+void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache) {
     for (int i = 0; i < config_.expert_num; i++) {
         m_local_num_[i] = 0;
     }
@@ -339,22 +355,48 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
         }
         from_float(m_output_fp32_[i], (uint8_t*)output + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), config_.hidden_size, config_.hidden_type);
     }, nullptr);
+
+	/* 把每个 token-expert 的行复制到各自 cache */
+    backend->do_work_stealing_job(qlen, nullptr, [&](int token_idx) {
+        auto& cache = fwd_cache[token_idx];
+        // cache 已在上层 init(k, inter_size)
+        for (int j = 0; j < k; ++j) {
+            uint64_t  eid   = expert_ids[token_idx*k + j];
+            int       row   = m_local_pos_[token_idx][j];
+            size_t    ofs   = row * config_.intermediate_size;
+            /* gate u */
+            std::memcpy(cache.gate_u[j].data(),
+                        m_local_gate_output_ptr_[eid] + ofs,
+                        sizeof(float) * config_.intermediate_size);
+            /* up v */
+            std::memcpy(cache.up_v[j].data(),
+                        m_local_up_output_ptr_[eid] + ofs,
+                        sizeof(float) * config_.intermediate_size);
+            /* 可选 z */
+            // std::memcpy(cache.z[j].data(),
+            //             m_local_intermediate_fp32_ptr_[eid] + ofs,
+            //             sizeof(float) * config_.intermediate_size);
+        }
+    }, nullptr);
 }
 
-void MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend) {
+void MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache) {
     if (qlen < config_.group_min_len) {
         for (int i = 0; i < qlen; i++) {
-            forward_one(k, expert_ids + i * k, weights + i * k, (uint8_t*)input + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend);
+			fwd_cache[i].init(k, config_.intermediate_size);      // 预分配
+            forward_one(k, expert_ids + i * k, weights + i * k, (uint8_t*)input + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend, fwd_cache + i);
         }
         return;
     }
     int forward_len = std::min(config_.group_max_len, qlen);
-    forward_many(forward_len, k, expert_ids, weights, input, output, backend);
-    forward(qlen - forward_len, k, expert_ids + forward_len * k, weights + forward_len * k, (uint8_t*)input + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend);
+    for (int i = 0; i < forward_len; ++i)
+        fwd_cache[i].init(k, config_.intermediate_size);
+    forward_many(forward_len, k, expert_ids, weights, input, output, backend, fwd_cache);
+    forward(qlen - forward_len, k, expert_ids + forward_len * k, weights + forward_len * k, (uint8_t*)input + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend, fwd_cache + forward_len);
 }
 
 void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights,
-                       const void* input, const void* grad_output, void* grad_input, Backend* backend) {
+                       const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache) {
     // 准备梯度缓冲区
     float* grad_input_fp32 = new float[config_.hidden_size];
     float* grad_down_output = new float[config_.hidden_size];
@@ -403,49 +445,9 @@ void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights,
 
         delete[] expert_grad_down;
 
-        // 前向计算中恢复 gate_output 和 up_output
-        float* gate_output = new float[config_.intermediate_size];
-        float* up_output = new float[config_.intermediate_size];
-        const void* gate_input_ptr = input;
-        const void* up_input_ptr = input;
-
-        // gate_output 计算
-        for (int i = 0; i < config_.intermediate_size; i++) {
-            gate_output[i] = 0.0f;
-            for (int j = 0; j < config_.hidden_size; j++) {
-                float gate_proj_val = 0.0f;
-                void* gate_proj_ptr = (uint8_t*)gate_proj_ +
-                    (expert_id * config_.intermediate_size * config_.hidden_size +
-                     i * config_.hidden_size + j) *
-                    ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
-                to_float(gate_proj_ptr, &gate_proj_val, 1, config_.gate_type);
-
-                float input_val = 0.0f;
-                to_float((uint8_t*)input + j * ggml_type_size(config_.hidden_type) / 
-                         ggml_blck_size(config_.hidden_type), &input_val, 1, config_.hidden_type);
-
-                gate_output[i] += gate_proj_val * input_val;
-            }
-        }
-
-        // up_output 计算
-        for (int i = 0; i < config_.intermediate_size; i++) {
-            up_output[i] = 0.0f;
-            for (int j = 0; j < config_.hidden_size; j++) {
-                float up_proj_val = 0.0f;
-                void* up_proj_ptr = (uint8_t*)up_proj_ +
-                    (expert_id * config_.intermediate_size * config_.hidden_size +
-                     i * config_.hidden_size + j) *
-                    ggml_type_size(config_.up_type) / ggml_blck_size(config_.up_type);
-                to_float(up_proj_ptr, &up_proj_val, 1, config_.up_type);
-
-                float input_val = 0.0f;
-                to_float((uint8_t*)input + j * ggml_type_size(config_.hidden_type) /
-                         ggml_blck_size(config_.hidden_type), &input_val, 1, config_.hidden_type);
-
-                up_output[i] += up_proj_val * input_val;
-            }
-        }
+		// 直接拿到 forward 的结果，目前不保存SiLU的计算中间结果（即z）
+		const float* gate_output = fwd_cache->gate_u[expert_idx].data();
+        const float* up_output   = fwd_cache->up_v [expert_idx].data();
 
         // SiLU 激活反向
         for (int i = 0; i < config_.intermediate_size; i++) {
@@ -510,7 +512,10 @@ void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights,
 }
 
 void MOE::backward(int qlen, int k, const uint64_t* expert_ids, const float* weights,
-                   const void* input, const void* grad_output, void* grad_input, Backend* backend) {
+                   const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache) {
+	std::memset(grad_input, 0, qlen * (config_.hidden_size * ggml_type_size(config_.hidden_type) /
+    ggml_blck_size(config_.hidden_type)));
+
     for (int i = 0; i < qlen * config_.hidden_size * ggml_type_size(config_.hidden_type) /
          ggml_blck_size(config_.hidden_type); i++) {
         ((uint8_t*)grad_input)[i] = 0;
@@ -523,9 +528,52 @@ void MOE::backward(int qlen, int k, const uint64_t* expert_ids, const float* wei
                      (uint8_t*)input + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type),
                      (uint8_t*)grad_output + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type),
                      (uint8_t*)grad_input + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type),
-                     backend);
+                     backend,
+					 fwd_cache + i);
     }
 }
+
+// TODO: many拓展之后的调用方式
+// void MOE::backward(int qlen, int k,
+//                    const uint64_t* expert_ids,
+//                    const float*     weights,
+//                    const void*      input,
+//                    const void*      grad_output,
+//                    void*            grad_input,
+//                    Backend*         backend,
+//                    MoEForwardCache* fwd_cache)
+// {
+//     if (qlen < config_.group_min_len) {
+//         for (int i = 0; i < qlen; ++i) {
+//             backward_one(k,
+//                          expert_ids + i * k,
+//                          weights    + i * k,
+//                          (const uint8_t*)input        + i * stride_in_bytes,
+//                          (const uint8_t*)grad_output  + i * stride_in_bytes,
+//                          (uint8_t*)grad_input         + i * stride_in_bytes,
+//                          backend,
+//                          fwd_cache + i);                // ⭐ 调用 backward_one
+//         }
+//         return;
+//     }
+
+//     int backward_len = std::min(config_.group_max_len, qlen);
+//     backward_many(backward_len, k,                        // ⭐ 调用 backward_many
+//                   expert_ids, weights,
+//                   input, grad_output, grad_input,
+//                   backend,
+//                   fwd_cache);
+
+//     backward(qlen - backward_len, k,                      // ⭐ 递归调用自己
+//              expert_ids + backward_len * k,
+//              weights    + backward_len * k,
+//              (const uint8_t*)input        + backward_len * stride_in_bytes,
+//              (const uint8_t*)grad_output  + backward_len * stride_in_bytes,
+//              (uint8_t*)grad_input         + backward_len * stride_in_bytes,
+//              backend,
+//              fwd_cache + backward_len);
+// }
+
 
 
 // FIXME: expert backward second way to implement for C++

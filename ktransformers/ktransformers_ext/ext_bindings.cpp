@@ -508,6 +508,43 @@ class MLPBindings {
     };
 };
 
+/* -------------------- 适配包装 -------------------- */
+namespace {
+
+inline void moe_forward_wrapper(
+        MOE& self,
+        int qlen, int k,
+        const uint64_t* expert_ids,
+        const float*     weights,
+        const void*      input,
+        void*            output,
+        Backend*         backend)            // ***必须最后***
+{
+    /* thread_local 避免反复构造 / 锁冲突；真正业务可按需替换 */
+    thread_local std::vector<MoEForwardCache> fw_cache;
+    if ((int)fw_cache.size() < qlen) 
+		fw_cache.resize(qlen);
+	self.forward(qlen, k, expert_ids, weights, input, output, backend, fw_cache.data());
+}
+
+inline void moe_backward_wrapper(
+        MOE& self,
+        int qlen, int k,
+        const uint64_t* expert_ids,
+        const float*     weights,
+        const void*      input,
+        const void*      grad_output,
+        void*            grad_input,
+        Backend*         backend) // 以backend结尾
+{
+    thread_local std::vector<MoEForwardCache> fw_cache;   // 与 forward 共享
+    self.backward(qlen, k, expert_ids, weights,
+                  input, grad_output, grad_input,
+                  backend, fw_cache.data());
+}
+} // namespace
+/* ------------------------------------------------- */
+
 class MOEBindings {
   public:
     class WarmUpBindinds {
@@ -537,12 +574,23 @@ class MOEBindings {
             const void *input;
             void *output;
         };
-        static void inner(void *args) {
-            Args *args_ = (Args *)args;
-            args_->cpuinfer->enqueue(
-                &MOE::forward, args_->moe, args_->qlen, args_->k,
-                args_->expert_ids, args_->weights, args_->input, args_->output);
-        }
+        // static void inner(void *args) {
+        //     Args *args_ = (Args *)args;
+        //     args_->cpuinfer->enqueue(
+        //         &MOE::forward, args_->moe, args_->qlen, args_->k,
+        //         args_->expert_ids, args_->weights, args_->input, args_->output);
+        // }
+		static void inner(void *args) {
+			Args *args_ = static_cast<Args *>(args);
+			args_->cpuinfer->enqueue(
+				&moe_forward_wrapper,   // **使用包装函数**
+				args_->moe, 
+				args_->qlen, args_->k,
+				args_->expert_ids,
+				args_->weights,
+				args_->input,
+				args_->output);
+		}
         static std::pair<intptr_t, intptr_t>
         cpuinfer_interface(MOE &moe, int qlen, int k, intptr_t expert_ids,
                            intptr_t weights, intptr_t input, intptr_t output) {
@@ -572,15 +620,28 @@ class MOEBindings {
 			void* grad_input;
 		};
 
-        static void inner(void* args) {
-            Args* args_ = static_cast<Args*>(args);
-            args_->cpuinfer->enqueue(&MOE::backward, args_->moe, 
-                args_->qlen, args_->k,
-                args_->expert_ids, args_->weights,
+        // static void inner(void* args) {
+        //     Args* args_ = static_cast<Args*>(args);
+        //     args_->cpuinfer->enqueue(&MOE::backward, args_->moe, 
+        //         args_->qlen, args_->k,
+        //         args_->expert_ids, args_->weights,
+		// 		args_->input,
+		// 		args_->grad_output,
+		// 		args_->grad_input);
+        // }
+
+		static void inner(void *args) {
+			Args *args_ = static_cast<Args *>(args);
+			args_->cpuinfer->enqueue(
+				&moe_backward_wrapper,  // **使用包装函数**
+				args_->moe,
+				args_->qlen, args_->k,
+				args_->expert_ids,
+				args_->weights,
 				args_->input,
 				args_->grad_output,
 				args_->grad_input);
-        }
+		}
 
         static std::pair<intptr_t, intptr_t> cpuinfer_interface(
             MOE& moe, int qlen, int k, 
