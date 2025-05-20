@@ -6,11 +6,33 @@ set(CMAKE_CXX_STANDARD 17)
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -ffast-math")
 set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -fno-finite-math-only")
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-finite-math-only")
+
+# set(CMAKE_BUILD_TYPE "Release")
+
+option(CPUINFER_DEBUG "build cpuinfer_ext with -g -O0 -rdynamic" ON)
+
+if (CPUINFER_DEBUG)
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "" FORCE)
+else()
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "" FORCE)
+endif()
+
 add_compile_options(
-        -O3                 # Release 优化；Debug 由用户自己决定
         -fno-finite-math-only  # 覆盖 fast‑math 隐式选项
 )
-set(CMAKE_BUILD_TYPE "Release")
+
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(STATUS ">>>>  Building cpuinfer_ext **Debug** with -g -O0 -rdynamic")
+    add_compile_options(-g -O0 -rdynamic)
+    # 取消之前加的 -O3
+    add_compile_options("$<$<CONFIG:Release>:-O3>")
+    # 链接阶段也需要 -rdynamic 让 gdb 能解析 .so 内符号
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -rdynamic")
+else()
+    message(STATUS ">>>>  Building cpuinfer_ext **Release** with -O3")
+    add_compile_options(-O3)
+endif()
+
 include(CheckCXXCompilerFlag)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(KTRANSFORMERS_ENABLE_FAST_MATH "use -ffast-math (will break ggml)" OFF)

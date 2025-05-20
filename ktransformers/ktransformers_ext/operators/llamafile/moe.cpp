@@ -491,8 +491,8 @@ void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights,
             grad_gate_output[expert_idx][i] = grad_intermediate[expert_idx][i] * up_output[i] * silu_derivative;
         }
 
-        delete[] gate_output;
-        delete[] up_output;
+        // delete[] gate_output;
+        // delete[] up_output;
 
         // input 的梯度计算
         float* grad_input_from_gate = new float[config_.hidden_size];

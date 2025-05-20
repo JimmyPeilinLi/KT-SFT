@@ -3,7 +3,7 @@
 python3 ktransformers/local_chat.py \
     --model_path "/mnt/data/models/DeepSeek-V2-Lite-Chat" \
     --model_config_path "/home/lpl/KT-SFT/ktransformers/configs/model_config" \
-    --gguf_path "/mnt/data/models/DeepSeek-V2-Lite-Chat-GGUF-Q6_K" \
+    --gguf_path "/mnt/data/models/DeepSeek-V2-Lite-Chat-GGUF-FP16/" \
     --cpu_infer 32 \
     --max_new_tokens 1000 \
     --force_think \
