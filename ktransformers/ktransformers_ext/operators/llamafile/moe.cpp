@@ -22,6 +22,8 @@ MOE::MOE(MOEConfig config) {
     gate_proj_ = config_.gate_proj;
     up_proj_ = config_.up_proj;
     down_proj_ = config_.down_proj;
+
+    transposed_ = false;
     
     #ifdef USE_NUMA
     int numa_nodes = numa_num_configured_nodes();
@@ -49,6 +51,10 @@ MOE::MOE(MOEConfig config) {
     #endif
 
     std::vector<std::pair<void**, uint64_t>> s_mem_requests;
+    s_mem_requests.push_back({(void**)&gate_proj_t_, config_.expert_num * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.grad_type)});
+    s_mem_requests.push_back({(void**)&up_proj_t_, config_.expert_num * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.grad_type)});
+    s_mem_requests.push_back({(void**)&down_proj_t_, config_.expert_num * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.grad_type)});
+
     s_mem_requests.push_back({(void**)&s_input_fp32_, sizeof(float) * config_.hidden_size});
     s_mem_requests.push_back({(void**)&s_gate_input_, config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type)});
     s_mem_requests.push_back({(void**)&s_up_input_, config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type)});
@@ -65,6 +71,25 @@ MOE::MOE(MOEConfig config) {
         s_mem_requests.push_back({(void**)&s_down_output_[i], sizeof(float) * config_.hidden_size});
     }
     s_mem_requests.push_back({(void**)&s_output_fp32_, sizeof(float) * config_.hidden_size});
+        
+    s_down_input_grad_.resize(config_.routed_expert_num);
+    s_gate_output_grad_fp32_.resize(config_.routed_expert_num);
+    s_up_output_grad_fp32_.resize(config_.routed_expert_num);
+    s_gate_output_grad_.resize(config_.routed_expert_num);
+    s_up_output_grad_.resize(config_.routed_expert_num);
+    s_gate_input_grad_.resize(config_.routed_expert_num);
+    s_up_input_grad_.resize(config_.routed_expert_num);
+    for (int i = 0; i < config_.routed_expert_num; i++) {
+        s_mem_requests.push_back({(void**)&s_down_input_grad_[i], config_.intermediate_size * sizeof(float)});
+        s_mem_requests.push_back({(void**)&s_gate_output_grad_fp32_[i], config_.intermediate_size * sizeof(float)});
+        s_mem_requests.push_back({(void**)&s_up_output_grad_fp32_[i], config_.intermediate_size * sizeof(float)});
+        s_mem_requests.push_back({(void**)&s_gate_output_grad_[i], config_.intermediate_size * ggml_type_size(config_.grad_type)});
+        s_mem_requests.push_back({(void**)&s_up_output_grad_[i], config_.intermediate_size * ggml_type_size(config_.grad_type)});
+        s_mem_requests.push_back({(void**)&s_gate_input_grad_[i], config_.hidden_size * sizeof(float)});
+        s_mem_requests.push_back({(void**)&s_up_input_grad_[i], config_.hidden_size * sizeof(float)});
+    }
+    s_mem_requests.push_back({(void**)&s_input_grad_fp32_, config_.hidden_size * sizeof(float)});
+
     shared_mem_buffer.alloc(this, s_mem_requests);
 
     std::vector<std::pair<void**, uint64_t>> m_mem_requests;
@@ -426,139 +451,115 @@ void MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weig
     forward(qlen - forward_len, k, expert_ids + forward_len * k, weights + forward_len * k, (uint8_t*)input + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend, fwd_cache + forward_len);
 }
 
-void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights,
-                       const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache) {
-    // 准备梯度缓冲区
-    float* grad_input_fp32 = new float[config_.hidden_size];
-    float* grad_down_output = new float[config_.hidden_size];
-    float** grad_intermediate = new float*[k];
-    float** grad_gate_output = new float*[k];
-    float** grad_up_output = new float*[k];
-
-    for (int expert_idx = 0; expert_idx < k; expert_idx++) {
-        grad_intermediate[expert_idx] = new float[config_.intermediate_size];
-        grad_gate_output[expert_idx] = new float[config_.intermediate_size];
-        grad_up_output[expert_idx] = new float[config_.intermediate_size];
-    }
-
-    // 初始化输入梯度为 0
-    for (int i = 0; i < config_.hidden_size; i++) {
-        grad_input_fp32[i] = 0.0f;
-    }
-
-    // 将 grad_output 转换为 float 类型
-    to_float(grad_output, grad_down_output, config_.hidden_size, config_.hidden_type);
-
-    // 对每个专家进行反向传播
-    for (int expert_idx = 0; expert_idx < k; expert_idx++) {
-        uint64_t expert_id = expert_ids[expert_idx];
-        float expert_weight = weights[expert_idx];
-
-        // 计算 down_output 的梯度
-        float* expert_grad_down = new float[config_.hidden_size];
-        for (int i = 0; i < config_.hidden_size; i++) {
-            expert_grad_down[i] = grad_down_output[i] * expert_weight;
-        }
-
-        // 计算 intermediate 的梯度
-        for (int i = 0; i < config_.intermediate_size; i++) {
-            grad_intermediate[expert_idx][i] = 0.0f;
-            for (int j = 0; j < config_.hidden_size; j++) {
-                float down_proj_val = 0.0f;
-                void* down_proj_ptr = (uint8_t*)down_proj_ +
-                    (expert_id * config_.hidden_size * config_.intermediate_size +
-                     j * config_.intermediate_size + i) *
-                    ggml_type_size(config_.down_type) / ggml_blck_size(config_.down_type);
-                to_float(down_proj_ptr, &down_proj_val, 1, config_.down_type);
-                grad_intermediate[expert_idx][i] += down_proj_val * expert_grad_down[j];
-            }
-        }
-
-        delete[] expert_grad_down;
-
-		// 直接拿到 forward 的结果，目前不保存SiLU的计算中间结果（即z）
-		const float* gate_output = fwd_cache->gate_u[expert_idx].data();
-        const float* up_output   = fwd_cache->up_v [expert_idx].data();
-
-        // SiLU 激活反向
-        for (int i = 0; i < config_.intermediate_size; i++) {
-            float x = gate_output[i];
-            float sigmoid_x = 1.0f / (1.0f + expf(-x));
-            float silu_x = x * sigmoid_x;
-            float silu_derivative = sigmoid_x + x * sigmoid_x * (1.0f - sigmoid_x);
-
-            grad_up_output[expert_idx][i] = grad_intermediate[expert_idx][i] * silu_x;
-            grad_gate_output[expert_idx][i] = grad_intermediate[expert_idx][i] * up_output[i] * silu_derivative;
-        }
-
-        // delete[] gate_output;
-        // delete[] up_output;
-
-        // input 的梯度计算
-        float* grad_input_from_gate = new float[config_.hidden_size];
-        float* grad_input_from_up = new float[config_.hidden_size];
-
-        for (int i = 0; i < config_.hidden_size; i++) {
-            grad_input_from_gate[i] = 0.0f;
-            grad_input_from_up[i] = 0.0f;
-            for (int j = 0; j < config_.intermediate_size; j++) {
-                float gate_proj_val = 0.0f;
-                void* gate_proj_ptr = (uint8_t*)gate_proj_ +
-                    (expert_id * config_.intermediate_size * config_.hidden_size +
-                     j * config_.hidden_size + i) *
-                    ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
-                to_float(gate_proj_ptr, &gate_proj_val, 1, config_.gate_type);
-                grad_input_from_gate[i] += gate_proj_val * grad_gate_output[expert_idx][j];
-
-                float up_proj_val = 0.0f;
-                void* up_proj_ptr = (uint8_t*)up_proj_ +
-                    (expert_id * config_.intermediate_size * config_.hidden_size +
-                     j * config_.hidden_size + i) *
-                    ggml_type_size(config_.up_type) / ggml_blck_size(config_.up_type);
-                to_float(up_proj_ptr, &up_proj_val, 1, config_.up_type);
-                grad_input_from_up[i] += up_proj_val * grad_up_output[expert_idx][j];
-            }
-
-            grad_input_fp32[i] += (grad_input_from_gate[i] + grad_input_from_up[i]);
-        }
-
-        delete[] grad_input_from_gate;
-        delete[] grad_input_from_up;
-    }
-
-    from_float(grad_input_fp32, grad_input, config_.hidden_size, config_.hidden_type);
-
-    delete[] grad_input_fp32;
-    delete[] grad_down_output;
-
-    for (int expert_idx = 0; expert_idx < k; expert_idx++) {
-        delete[] grad_intermediate[expert_idx];
-        delete[] grad_gate_output[expert_idx];
-        delete[] grad_up_output[expert_idx];
-    }
-
-    delete[] grad_intermediate;
-    delete[] grad_gate_output;
-    delete[] grad_up_output;
+static float act_fn_grad(float x) {
+    float sigmoid_x = 1.0f / (1.0f + expf(-x));
+    return sigmoid_x * (1. + x * (1. - sigmoid_x));
 }
 
-void MOE::backward(int qlen, int k, const uint64_t* expert_ids, const float* weights,
-                   const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache) {
-	std::memset(grad_input, 0, qlen * (config_.hidden_size * ggml_type_size(config_.hidden_type) /
-    ggml_blck_size(config_.hidden_type)));
+void transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type) {
+    float temp_fp32_val; 
+    for (int r = 0; r < R; ++r) {
+        for (int c = 0; c < C; ++c) {
+            uint8_t* src_ptr = (uint8_t*)src + (r * C + c) * ggml_type_size(src_type);
+            uint8_t* dst_ptr = (uint8_t*)dst + (c * R + r) * ggml_type_size(dst_type);
+            to_float(src_ptr, &temp_fp32_val, 1, src_type);
+            from_float(&temp_fp32_val, dst_ptr, 1, dst_type);
+        }
+    }
+}
 
-    for (int i = 0; i < qlen * config_.hidden_size * ggml_type_size(config_.hidden_type) /
-         ggml_blck_size(config_.hidden_type); i++) {
-        ((uint8_t*)grad_input)[i] = 0;
+void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const MoEForwardCache* fwd_cache) {
+    if (!transposed_) {
+        // Transpose gate_proj_
+        int R_gate = config_.intermediate_size;
+        int C_gate = config_.hidden_size;
+        size_t gate_expert_src_stride_bytes = (size_t)R_gate * C_gate * ggml_type_size(config_.gate_type);
+        size_t gate_expert_dst_t_stride_bytes = (size_t)C_gate * R_gate * ggml_type_size(config_.grad_type);
+        backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int exp_idx) {
+            void* src_expert = (uint8_t*)gate_proj_ + exp_idx * gate_expert_src_stride_bytes;
+            void* dst_expert_t = (uint8_t*)gate_proj_t_ + exp_idx * gate_expert_dst_t_stride_bytes;
+            transpose_expert_matrix(src_expert, dst_expert_t, R_gate, C_gate, config_.gate_type, config_.grad_type);
+        }, nullptr);
+
+        // Transpose up_proj_
+        int R_up = config_.intermediate_size;
+        int C_up = config_.hidden_size;
+        size_t up_expert_src_stride_bytes = (size_t)R_up * C_up * ggml_type_size(config_.up_type);
+        size_t up_expert_dst_t_stride_bytes = (size_t)C_up * R_up * ggml_type_size(config_.grad_type);
+        backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int exp_idx) {
+            void* src_expert = (uint8_t*)up_proj_ + exp_idx * up_expert_src_stride_bytes;
+            void* dst_expert_t = (uint8_t*)up_proj_t_ + exp_idx * up_expert_dst_t_stride_bytes;
+            transpose_expert_matrix(src_expert, dst_expert_t, R_up, C_up, config_.up_type, config_.grad_type);
+        }, nullptr);
+
+        // Transpose down_proj_
+        int R_down = config_.hidden_size;
+        int C_down = config_.intermediate_size;
+        size_t down_expert_src_stride_bytes = (size_t)R_down * C_down * ggml_type_size(config_.down_type);
+        size_t down_expert_dst_t_stride_bytes = (size_t)C_down * R_down * ggml_type_size(config_.grad_type);
+        backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int exp_idx) {
+            void* src_expert = (uint8_t*)down_proj_ + exp_idx * down_expert_src_stride_bytes;
+            void* dst_expert_t = (uint8_t*)down_proj_t_ + exp_idx * down_expert_dst_t_stride_bytes;
+            transpose_expert_matrix(src_expert, dst_expert_t, R_down, C_down, config_.down_type, config_.grad_type);
+        }, nullptr);
+        
+        transposed_ = true;
     }
 
+    int nth = config_.intermediate_size / config_.stride;
+    backend->do_work_stealing_job(nth * k, nullptr, [&](int task_id) {
+        int expert_idx = task_id / nth;
+        uint64_t expert_id = expert_ids[expert_idx];
+        int ith = task_id % nth;
+
+        void* down_proj_t_ptr = (uint8_t*)down_proj_t_ + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.grad_type);
+        float* down_input_grad_ptr = s_down_input_grad_[expert_idx] + ith * config_.stride;
+        llamafile_sgemm(config_.stride, 1, config_.hidden_size, down_proj_t_ptr, config_.hidden_size, output_grad, config_.hidden_size, down_input_grad_ptr, config_.stride, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.grad_type, config_.grad_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
+        
+        for (int i = ith * config_.stride; i < (ith + 1) * config_.stride; i++) {
+            s_down_input_grad_[expert_idx][i] *= weights[expert_idx];
+
+            s_gate_output_grad_fp32_[expert_idx][i] = s_down_input_grad_[expert_idx][i] * fwd_cache->up_v[expert_idx][i] * act_fn_grad(fwd_cache->gate_u[expert_idx][i]); 
+            s_up_output_grad_fp32_[expert_idx][i] = s_down_input_grad_[expert_idx][i] * act_fn(fwd_cache->gate_u[expert_idx][i]);
+        }
+        from_float(s_gate_output_grad_fp32_[expert_idx] + ith * config_.stride, s_gate_output_grad_[expert_idx] + ith * config_.stride * ggml_type_size(config_.grad_type), config_.stride, config_.grad_type);
+        from_float(s_up_output_grad_fp32_[expert_idx] + ith * config_.stride, s_up_output_grad_[expert_idx] + ith * config_.stride * ggml_type_size(config_.grad_type), config_.stride, config_.grad_type);
+    }, nullptr);
+
+    nth = config_.hidden_size / config_.stride;
+    backend->do_work_stealing_job(nth, nullptr, [&](int task_id) {
+        int ith = task_id;
+        for (int i = ith * config_.stride; i < (ith + 1) * config_.stride; i++) {
+            s_input_grad_fp32_[i] = 0;
+        }
+        for (int expert_idx = 0; expert_idx < k; expert_idx++) {
+            uint64_t expert_id = expert_ids[expert_idx];
+
+            void* gate_proj_t_ptr = (uint8_t*)gate_proj_t_ + (expert_id * config_.hidden_size + ith * config_.stride) * config_.intermediate_size * ggml_type_size(config_.grad_type);
+            float* gate_input_grad_ptr = s_gate_input_grad_[expert_idx] + ith * config_.stride;
+            llamafile_sgemm(config_.stride, 1, config_.intermediate_size, gate_proj_t_ptr, config_.intermediate_size, s_gate_output_grad_[expert_idx], config_.intermediate_size, gate_input_grad_ptr, config_.stride, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.grad_type, config_.grad_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
+
+            void* up_proj_t_ptr = (uint8_t*)up_proj_t_ + (expert_id * config_.hidden_size + ith * config_.stride) * config_.intermediate_size * ggml_type_size(config_.grad_type);
+            float* up_input_grad_ptr = s_up_input_grad_[expert_idx] + ith * config_.stride;
+            llamafile_sgemm(config_.stride, 1, config_.intermediate_size, up_proj_t_ptr, config_.intermediate_size, s_up_output_grad_[expert_idx], config_.intermediate_size, up_input_grad_ptr, config_.stride, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.grad_type, config_.grad_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
+            
+            for (int i = ith * config_.stride; i < (ith + 1) * config_.stride; i++) {
+                s_input_grad_fp32_[i] += s_gate_input_grad_[expert_idx][i] + s_up_input_grad_[expert_idx][i];
+            }
+        }
+        from_float(s_input_grad_fp32_ + ith * config_.stride, (uint8_t*)input_grad + ith * config_.stride * ggml_type_size(config_.grad_type), config_.stride, config_.grad_type);
+    }, nullptr);
+}
+
+// TODO: input参数可以删除
+void MOE::backward(int qlen, int k, const uint64_t* expert_ids, const float* weights,
+                   const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache) {
     for (int i = 0; i < qlen; i++) {
         backward_one(k,
                      expert_ids + i * k,
                      weights + i * k,
-                     (uint8_t*)input + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type),
-                     (uint8_t*)grad_output + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type),
-                     (uint8_t*)grad_input + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type),
+                     (uint8_t*)grad_output + i * config_.hidden_size * ggml_type_size(config_.grad_type),
+                     (uint8_t*)grad_input + i * config_.hidden_size * ggml_type_size(config_.grad_type),
                      backend,
 					 fwd_cache + i);
     }
@@ -603,85 +604,4 @@ void MOE::backward(int qlen, int k, const uint64_t* expert_ids, const float* wei
 //              (uint8_t*)grad_input         + backward_len * stride_in_bytes,
 //              backend,
 //              fwd_cache + backward_len);
-// }
-
-
-
-// FIXME: expert backward second way to implement for C++
-// 第二种可能的说法：
-// void MOE::backward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* grad_output, Backend* backend) {
-//     if (qlen < config_.group_min_len) {
-//         for (int i = 0; i < qlen; i++) {
-//             backward_one(k, expert_ids + i * k, weights + i * k, (uint8_t*)input + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type),
-//                          (uint8_t*)grad_output + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend);
-//         }
-//         return;
-//     }
-//     int backward_len = std::min(config_.group_max_len, qlen);
-//     backward_many(backward_len, k, expert_ids, weights, input, grad_output, backend);
-//     backward(qlen - backward_len, k, expert_ids + backward_len * k, weights + backward_len * k, (uint8_t*)input + backward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type),
-//              (uint8_t*)grad_output + backward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend);
-// }
-
-// void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* grad_output, Backend* backend) {
-//     // Step 1: Compute the gradient of the output
-//     const void* gate_input_ptr;
-//     const void* up_input_ptr;
-
-//     if (config_.hidden_type == ggml_internal_get_type_traits(config_.gate_type).vec_dot_type && config_.hidden_type == ggml_internal_get_type_traits(config_.up_type).vec_dot_type) {
-//         gate_input_ptr = up_input_ptr = input;
-//     } else {
-//         to_float(input, s_input_fp32_, config_.hidden_size, config_.hidden_type);
-//         if (ggml_internal_get_type_traits(config_.gate_type).vec_dot_type == ggml_internal_get_type_traits(config_.up_type).vec_dot_type) {
-//             from_float(s_input_fp32_, s_gate_input_, config_.hidden_size, ggml_internal_get_type_traits(config_.gate_type).vec_dot_type);
-//             gate_input_ptr = up_input_ptr = s_gate_input_;
-//         } else {
-//             if (config_.hidden_type != ggml_internal_get_type_traits(config_.gate_type).vec_dot_type) {
-//                 from_float(s_input_fp32_, s_gate_input_, config_.hidden_size, ggml_internal_get_type_traits(config_.gate_type).vec_dot_type);
-//                 gate_input_ptr = s_gate_input_;
-//             } else {
-//                 gate_input_ptr = input;
-//             }
-//             if (config_.hidden_type != ggml_internal_get_type_traits(config_.up_type).vec_dot_type) {
-//                 from_float(s_input_fp32_, s_up_input_, config_.hidden_size, ggml_internal_get_type_traits(config_.up_type).vec_dot_type);
-//                 up_input_ptr = s_up_input_;
-//             } else {
-//                 up_input_ptr = input;
-//             }
-//         }
-//     }
-
-//     // Step 2: Compute gradients for the gate and up projections
-//     int nth = config_.intermediate_size / config_.stride;
-//     backend->do_work_stealing_job(nth * k, nullptr, [&](int task_id) {
-//         int expert_idx = task_id / nth;
-//         uint64_t expert_id = expert_ids[expert_idx];
-//         int ith = task_id % nth;
-
-//         // Gradient for gate projection (backprop to weights and gate_input)
-//         #ifdef USE_NUMA
-//         void* gate_proj_ptr = (uint8_t*)gate_proj_numa_[Backend::numa_node] + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
-//         #else
-//         void* gate_proj_ptr = (uint8_t*)gate_proj_ + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
-//         #endif
-
-//         // Perform sgemm (backward pass) for gate projection
-//         float* grad_gate_output_ptr = s_grad_gate_output_[expert_idx] + ith * config_.stride;
-//         llamafile_sgemm(config_.stride, 1, config_.hidden_size / ggml_blck_size(config_.gate_type), gate_proj_ptr, config_.hidden_size / ggml_blck_size(config_.gate_type), grad_output, config_.hidden_size / ggml_blck_size(config_.gate_type), grad_gate_output_ptr, config_.stride, 1, 0, GGML_TASK_TYPE_COMPUTE, config_.gate_type, ggml_internal_get_type_traits(config_.gate_type).vec_dot_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
-
-//         // Gradient for up projection (backprop to weights and up_input)
-//         #ifdef USE_NUMA
-//         void* up_proj_ptr = (uint8_t*)up_proj_numa_[Backend::numa_node] + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.up_type) / ggml_blck_size(config_.up_type);
-//         #else
-//         void* up_proj_ptr = (uint8_t*)up_proj_ + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.up_type) / ggml_blck_size(config_.up_type);
-//         #endif
-
-//         // Perform sgemm (backward pass) for up projection
-//         float* grad_up_output_ptr = s_grad_up_output_[expert_idx] + ith * config_.stride;
-//         llamafile_sgemm(config_.stride, 1, config_.hidden_size / ggml_blck_size(config_.up_type), up_proj_ptr, config_.hidden_size / ggml_blck_size(config_.up_type), grad_gate_output_ptr, config_.hidden_size / ggml_blck_size(config_.up_type), grad_up_output_ptr, config_.stride, 1, 0, GGML_TASK_TYPE_COMPUTE, config_.up_type, ggml_internal_get_type_traits(config_.up_type).vec_dot_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
-//     }, nullptr);
-
-//     // Step 3: Compute the gradient for the down projection and propagate upstream
-//     // Use the weights and backprop the gradient to down projection
-//     // Repeat similar steps as for gate and up projections...
 // }

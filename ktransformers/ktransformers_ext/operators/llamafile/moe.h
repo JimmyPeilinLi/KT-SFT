@@ -40,6 +40,7 @@ struct MOEConfig {
     ggml_type up_type;
     ggml_type down_type;
     ggml_type hidden_type;
+    ggml_type grad_type = GGML_TYPE_F32;
 
     MOEConfig() {}
 
@@ -55,8 +56,7 @@ class MOE {
     void forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache);
     void forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache);
     void forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache);
-	void backward_one(int k, const uint64_t* expert_ids, const float* weights,
-                  const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache);
+	void backward_one(int k, const uint64_t* expert_ids, const float* weights, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache);
 	void backward(int qlen, int k, const uint64_t* expert_ids, const float* weights,
               const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache); // FIXME: expert backward definition for C++
 
@@ -68,6 +68,11 @@ class MOE {
     void* gate_proj_;  // [expert_num * intermediate_size * hidden_size ( /32 if quantized)]
     void* up_proj_;    // [expert_num * intermediate_size * hidden_size ( /32 if quantized)]
     void* down_proj_;  // [expert_num * hidden_size * intermediate_size ( /32 if quantized)]
+
+    uint8_t* gate_proj_t_;  // [expert_num * hidden_size * intermediate_size]
+    uint8_t* up_proj_t_;    // [expert_num * hidden_size * intermediate_size]
+    uint8_t* down_proj_t_;  // [expert_num * intermediate_size * hidden_size]
+    bool transposed_;
 
     #ifdef USE_NUMA
     std::vector<void*> gate_proj_numa_;  // [numa_num, expert_num * intermediate_size * hidden_size ( /32 if quantized)]
@@ -84,6 +89,15 @@ class MOE {
     std::vector<uint8_t*> s_down_input_;       // [routed_expert_num, intermediate_size * ggml_type_size(ggml_internal_get_type_traits(down_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(down_type).vec_dot_type)]
     std::vector<float*> s_down_output_;        // [routed_expert_num, hidden_size]
     float* s_output_fp32_;                     // [hidden_size]
+
+    std::vector<float*> s_down_input_grad_;        // [routed_expert_num, intermediate_size]
+    std::vector<float*> s_gate_output_grad_fp32_;  // [routed_expert_num, intermediate_size]
+    std::vector<float*> s_up_output_grad_fp32_;    // [routed_expert_num, intermediate_size]
+    std::vector<uint8_t*> s_gate_output_grad_;     // [routed_expert_num, intermediate_size * ggml_type_size(grad_type)]
+    std::vector<uint8_t*> s_up_output_grad_;       // [routed_expert_num, intermediate_size * ggml_type_size(grad_type)]
+    std::vector<float*> s_gate_input_grad_;        // [routed_expert_num, hidden_size]
+    std::vector<float*> s_up_input_grad_;          // [routed_expert_num, hidden_size]
+    float* s_input_grad_fp32_;                     // [hidden_size]
 
     std::vector<float*> m_input_fp32_;    // [group_max_len, hidden_size]
     std::vector<uint8_t*> m_gate_input_;  // [group_max_len, hidden_size * ggml_type_size(ggml_internal_get_type_traits(gate_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(gate_type).vec_dot_type)]
