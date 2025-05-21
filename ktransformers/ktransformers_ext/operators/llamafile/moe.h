@@ -40,7 +40,7 @@ struct MOEConfig {
     ggml_type up_type;
     ggml_type down_type;
     ggml_type hidden_type;
-    ggml_type grad_type = GGML_TYPE_F32;
+    ggml_type grad_type = GGML_TYPE_BF16;
 
     MOEConfig() {}
 

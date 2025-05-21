@@ -21,17 +21,18 @@ intermediate_size = 1536
 stride = 32
 group_min_len = 10
 group_max_len = 1024
-gate_type = 0 # ggml_type::GGML_TYPE_F16
-up_type = 0 # ggml_type::GGML_TYPE_F16
-down_type = 0 # ggml_type::GGML_TYPE_F16
-hidden_type = 0 # ggml_type::GGML_TYPE_F16
+gate_type = 1 # ggml_type::GGML_TYPE_F16
+up_type = 1 # ggml_type::GGML_TYPE_F16
+down_type = 1 # ggml_type::GGML_TYPE_F16
+hidden_type = 1 # ggml_type::GGML_TYPE_F16
 n_routed_experts = 2
 qlen = 30
 layer_num = 10
 CPUInfer = cpuinfer_ext.CPUInfer(48)
 validation_iter = 100
 
-ddtype = torch.float32
+dtype = torch.float16
+gradtype = torch.bfloat16
 
 def act_fn(x):
     return x / (1.0 + torch.exp(-x))
@@ -103,9 +104,9 @@ def test_forward():
         up_projs = []
         down_projs = []
         for _ in range(layer_num):
-            gate_proj = torch.randn((expert_num, intermediate_size, hidden_size), dtype=ddtype, device = "cuda").to("cpu").contiguous()
-            up_proj = torch.randn((expert_num, intermediate_size, hidden_size), dtype=ddtype, device = "cuda").to("cpu").contiguous()
-            down_proj = torch.randn((expert_num, hidden_size, intermediate_size), dtype=ddtype, device = "cuda").to("cpu").contiguous()
+            gate_proj = torch.randn((expert_num, intermediate_size, hidden_size), dtype=dtype, device = "cuda").to("cpu").contiguous()
+            up_proj = torch.randn((expert_num, intermediate_size, hidden_size), dtype=dtype, device = "cuda").to("cpu").contiguous()
+            down_proj = torch.randn((expert_num, hidden_size, intermediate_size), dtype=dtype, device = "cuda").to("cpu").contiguous()
             config = cpuinfer_ext.moe.MOEConfig(expert_num, n_routed_experts, hidden_size, intermediate_size, stride, group_min_len, group_max_len, gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr(), gate_type, up_type, down_type, hidden_type, 0)
             moe = cpuinfer_ext.moe.MOE(config)
             gate_projs.append(gate_proj)
@@ -117,8 +118,8 @@ def test_forward():
         for i in range(validation_iter):
             expert_ids = torch.stack([torch.randperm(expert_num)[:n_routed_experts] for _ in range(qlen)]).contiguous()
             weights = torch.rand((qlen, n_routed_experts), dtype=torch.float32).contiguous()
-            input = torch.randn((qlen, hidden_size), dtype=ddtype).contiguous()
-            output = torch.empty((qlen, hidden_size), dtype=ddtype).contiguous()
+            input = torch.randn((qlen, hidden_size), dtype=dtype).contiguous()
+            output = torch.empty((qlen, hidden_size), dtype=dtype).contiguous()
             input = input / 100
             
             moe = moes[i % layer_num]
@@ -150,9 +151,9 @@ def test_backward():
     # 先测试backward是否能正常调用
     print("\n===== Testing Backward Pass =====")
     # 创建一个单层MOE用于测试
-    gate_proj = torch.randn((expert_num, intermediate_size, hidden_size), dtype=ddtype, requires_grad=True).contiguous()
-    up_proj = torch.randn((expert_num, intermediate_size, hidden_size), dtype=ddtype, requires_grad=True).contiguous()
-    down_proj = torch.randn((expert_num, hidden_size, intermediate_size), dtype=ddtype, requires_grad=True).contiguous()
+    gate_proj = torch.randn((expert_num, intermediate_size, hidden_size), dtype=dtype, requires_grad=True).contiguous()
+    up_proj = torch.randn((expert_num, intermediate_size, hidden_size), dtype=dtype, requires_grad=True).contiguous()
+    down_proj = torch.randn((expert_num, hidden_size, intermediate_size), dtype=dtype, requires_grad=True).contiguous()
     # 创建MOE实例
     config = cpuinfer_ext.moe.MOEConfig(expert_num, n_routed_experts, hidden_size, intermediate_size, 
                                        stride, group_min_len, group_max_len, 
@@ -165,7 +166,7 @@ def test_backward():
     weights = torch.rand((qlen, n_routed_experts), dtype=torch.float32).contiguous()
     
     # 使用相同的输入进行torch和C++算子的计算
-    input = torch.randn((qlen, hidden_size), dtype=ddtype, requires_grad=True).contiguous()
+    input = torch.randn((qlen, hidden_size), dtype=dtype, requires_grad=True).contiguous()
     input = (input / 100).detach().requires_grad_(True)
     input_cpp = input.clone().detach().requires_grad_(True).contiguous()
 
@@ -175,9 +176,8 @@ def test_backward():
     t_output.retain_grad()
     
     # 计算C++算子输出
-    output_cpp = torch.empty((qlen, hidden_size), dtype=ddtype).contiguous()
-    grad_input_cpp = torch.empty_like(input_cpp)
-    
+    output_cpp = torch.empty((qlen, hidden_size), dtype=dtype).contiguous()
+
     # 前向传播
     forward_start_time = time.time()
     CPUInfer.submit(
@@ -200,8 +200,8 @@ def test_backward():
     assert forward_diff < 0.001, f"Forward diff too large: {forward_diff.item()}"
     print("✅ Forward test passed!")
     
-    # 创建相同的梯度输入
-    grad_output = torch.randn_like(t_output)
+    grad_input_cpp = torch.empty_like(input_cpp, dtype=gradtype).contiguous()
+    grad_output = torch.randn_like(t_output, dtype=gradtype).contiguous()
     grad_output_cpp = grad_output.clone()
     
     print("-- pytorch backward --")
@@ -251,7 +251,7 @@ def test_backward():
     # 验证梯度结果
     backward_diff = torch.mean(torch.abs(grad_input_cpp - input.grad)) / torch.mean(torch.abs(input.grad))
     print(f"Backward diff: {backward_diff.item()}")
-    assert backward_diff < 0.001, f"Backward diff too large: {backward_diff.item()}"
+    assert backward_diff < 0.005, f"Backward diff too large: {backward_diff.item()}" # FIXME: 0.005 是不是太大了？ 
     print("✅ Backward pass test passed!")
 
 if __name__ == "__main__":
