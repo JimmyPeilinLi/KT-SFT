@@ -54,6 +54,8 @@ MOE::MOE(MOEConfig config) {
     s_mem_requests.push_back({(void**)&gate_proj_t_, config_.expert_num * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.grad_type)});
     s_mem_requests.push_back({(void**)&up_proj_t_, config_.expert_num * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.grad_type)});
     s_mem_requests.push_back({(void**)&down_proj_t_, config_.expert_num * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.grad_type)});
+    s_mem_requests.push_back({(void**)&transpose_buffer_fp32_, config_.expert_num * config_.intermediate_size * config_.hidden_size * sizeof(float)});
+    s_mem_requests.push_back({(void**)&transpose_buffer_, config_.expert_num * config_.intermediate_size * config_.hidden_size * ggml_type_size(config_.grad_type)});
 
     s_mem_requests.push_back({(void**)&s_input_fp32_, sizeof(float) * config_.hidden_size});
     s_mem_requests.push_back({(void**)&s_gate_input_, config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type)});
@@ -456,14 +458,15 @@ static float act_fn_grad(float x) {
     return sigmoid_x * (1. + x * (1. - sigmoid_x));
 }
 
-void transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type) {
-    float temp_fp32_val; 
+void MOE::transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx) {
+    to_float(src, transpose_buffer_fp32_ + (R * C * expert_idx), R * C, src_type);
+    from_float(transpose_buffer_fp32_ + (R * C * expert_idx), transpose_buffer_ + (R * C * expert_idx) * ggml_type_size(dst_type), R * C, dst_type);
     for (int r = 0; r < R; ++r) {
         for (int c = 0; c < C; ++c) {
-            uint8_t* src_ptr = (uint8_t*)src + (r * C + c) * ggml_type_size(src_type);
-            uint8_t* dst_ptr = (uint8_t*)dst + (c * R + r) * ggml_type_size(dst_type);
-            to_float(src_ptr, &temp_fp32_val, 1, src_type);
-            from_float(&temp_fp32_val, dst_ptr, 1, dst_type);
+            memcpy(
+                (uint8_t*)dst + (c * R + r) * ggml_type_size(dst_type),
+                (uint8_t*)transpose_buffer_ + (R * C * expert_idx + r * C + c) * ggml_type_size(dst_type),
+                ggml_type_size(src_type));
         }
     }
 }
@@ -508,16 +511,16 @@ void transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type
 // }
 
 void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const MoEForwardCache* fwd_cache) {
-    if (!transposed_) {
+    if (!transposed_) { // FIXME: 每层都要重新取一次转置！
         // Transpose gate_proj_
         int R_gate = config_.intermediate_size;
         int C_gate = config_.hidden_size;
         size_t gate_expert_src_stride_bytes = (size_t)R_gate * C_gate * ggml_type_size(config_.gate_type);
         size_t gate_expert_dst_t_stride_bytes = (size_t)C_gate * R_gate * ggml_type_size(config_.grad_type);
-        backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int exp_idx) {
-            void* src_expert = (uint8_t*)gate_proj_ + exp_idx * gate_expert_src_stride_bytes;
-            void* dst_expert_t = (uint8_t*)gate_proj_t_ + exp_idx * gate_expert_dst_t_stride_bytes;
-            transpose_expert_matrix(src_expert, dst_expert_t, R_gate, C_gate, config_.gate_type, config_.grad_type);
+        backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
+            void* src_expert = (uint8_t*)gate_proj_ + expert_idx * gate_expert_src_stride_bytes;
+            void* dst_expert_t = (uint8_t*)gate_proj_t_ + expert_idx * gate_expert_dst_t_stride_bytes;
+            transpose_expert_matrix(src_expert, dst_expert_t, R_gate, C_gate, config_.gate_type, config_.grad_type, expert_idx);
         }, nullptr);
 
         // Transpose up_proj_
@@ -525,10 +528,10 @@ void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, 
         int C_up = config_.hidden_size;
         size_t up_expert_src_stride_bytes = (size_t)R_up * C_up * ggml_type_size(config_.up_type);
         size_t up_expert_dst_t_stride_bytes = (size_t)C_up * R_up * ggml_type_size(config_.grad_type);
-        backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int exp_idx) {
-            void* src_expert = (uint8_t*)up_proj_ + exp_idx * up_expert_src_stride_bytes;
-            void* dst_expert_t = (uint8_t*)up_proj_t_ + exp_idx * up_expert_dst_t_stride_bytes;
-            transpose_expert_matrix(src_expert, dst_expert_t, R_up, C_up, config_.up_type, config_.grad_type);
+        backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
+            void* src_expert = (uint8_t*)up_proj_ + expert_idx * up_expert_src_stride_bytes;
+            void* dst_expert_t = (uint8_t*)up_proj_t_ + expert_idx * up_expert_dst_t_stride_bytes;
+            transpose_expert_matrix(src_expert, dst_expert_t, R_up, C_up, config_.up_type, config_.grad_type, expert_idx);
         }, nullptr);
 
         // Transpose down_proj_
@@ -536,10 +539,10 @@ void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, 
         int C_down = config_.intermediate_size;
         size_t down_expert_src_stride_bytes = (size_t)R_down * C_down * ggml_type_size(config_.down_type);
         size_t down_expert_dst_t_stride_bytes = (size_t)C_down * R_down * ggml_type_size(config_.grad_type);
-        backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int exp_idx) {
-            void* src_expert = (uint8_t*)down_proj_ + exp_idx * down_expert_src_stride_bytes;
-            void* dst_expert_t = (uint8_t*)down_proj_t_ + exp_idx * down_expert_dst_t_stride_bytes;
-            transpose_expert_matrix(src_expert, dst_expert_t, R_down, C_down, config_.down_type, config_.grad_type);
+        backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
+            void* src_expert = (uint8_t*)down_proj_ + expert_idx * down_expert_src_stride_bytes;
+            void* dst_expert_t = (uint8_t*)down_proj_t_ + expert_idx * down_expert_dst_t_stride_bytes;
+            transpose_expert_matrix(src_expert, dst_expert_t, R_down, C_down, config_.down_type, config_.grad_type, expert_idx);
         }, nullptr);
         
         transposed_ = true;

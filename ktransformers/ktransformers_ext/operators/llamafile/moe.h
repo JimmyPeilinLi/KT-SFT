@@ -59,7 +59,8 @@ class MOE {
 	void backward_one(int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const MoEForwardCache* fwd_cache);
 	void backward(int qlen, int k, const uint64_t* expert_ids, const float* weights,
               const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache); // FIXME: expert backward definition for C++
-
+    
+    void transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx);
     void ensure_fwd_cache(int qlen, int k);
     MoEForwardCache* fwd_cache_ptr();
 
@@ -68,6 +69,9 @@ class MOE {
     void* gate_proj_;  // [expert_num * intermediate_size * hidden_size ( /32 if quantized)]
     void* up_proj_;    // [expert_num * intermediate_size * hidden_size ( /32 if quantized)]
     void* down_proj_;  // [expert_num * hidden_size * intermediate_size ( /32 if quantized)]
+
+    float* transpose_buffer_fp32_;  // [expert_num * intermediate_size * hidden_size]
+    uint8_t* transpose_buffer_;     // [expert_num * intermediate_size * hidden_size]
 
     uint8_t* gate_proj_t_;  // [expert_num * hidden_size * intermediate_size]
     uint8_t* up_proj_t_;    // [expert_num * hidden_size * intermediate_size]
