@@ -39,6 +39,8 @@ from ktransformers.operators.linear import KLinearMarlin, KLinearTorch, KTransfo
 import time
 from ktransformers.operators.cpuinfer import CPUInfer
 
+H_FIXED = 2048
+M_FIXED = 1408
 
 # class Base(BaseInjectedModule, ABC):
 # class KExpertsBase(nn.Module, ABC):
@@ -368,15 +370,9 @@ class KSFTExpertsCPU(torch.autograd.Function):
         self.call_count = 0
         self.flops_per_call = []
         self.times = []
-        # 详细FLOPs记录格式: [{'gate': flops, 'act': ...}, ...]
-        self.expert_flops_details = []  
-        self.total_flops = 0
         
-        # 参数量计算
-        h = self.config.hidden_size
-        m = self.config.moe_intermediate_size
-        self.params_per_expert = 3 * h * m
-        self.total_params = 64 * self.params_per_expert
+        self.tflops_fwd = []
+        self.tflops_bwd = []
 
     def load(self, w: dict | nn.Parameter | tuple | None = None, device:str|None = None, warmup:bool = False):
         if device:
@@ -446,7 +442,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
     def forward(ctx, input_tensor, expert_ids, weights, cpu_infer, moe, out_device):
         print("Go into the forward")
         # 记录开始时间
-        start_time = time.time()
+        wall_t0 = time.time()
         
         # generate, capture and run cuda graph
         # print(expert_ids)
@@ -484,25 +480,37 @@ class KSFTExpertsCPU(torch.autograd.Function):
         ctx.moe        = moe
         ctx.out_device = out_device
         
-        # 计算并打印执行时间
-        end_time = time.time()
-        print(f"KSFTExpertsCPU.forward execution time: {(end_time - start_time) * 1000:.2f} ms")
+        # ---------- FLOPs ----------
+        qlen = expert_ids.size(0)
+        k    = expert_ids.size(1)
+
+        flops_fwd = 6 * qlen * k * H_FIXED * M_FIXED
+        t_fwd     = time.time() - wall_t0
+        tflops_f  = flops_fwd / t_fwd / 1e12
+
+        # 把 qlen / k 留给 backward
+        ctx.saved_dims = (qlen, k)
+        ctx._time_fwd  = t_fwd
+        print(f"grad_output.size(0) , grad_output.size(1):{expert_ids.size(0)}, {expert_ids.size(1)}")
         
+        print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
+              f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
+
         return result
         
     # FIXME: expert backward for python
     @staticmethod
     def backward(ctx, grad_output):
         print("Go into the backward!!")
-        start_time = time.time()
+        bw_start = time.time()
         
-		# Pick back the middle results
+        # Pick back the middle results
         input_tensor, expert_ids, weights = ctx.saved_tensors
         # cpu_infer  = ctx.cpu_infer
         # moe        = ctx.moe
         # out_device = ctx.out_device
 
-		# ready for computing gradient
+        # ready for computing gradient
         grad_output = grad_output.contiguous().cpu()
         grad_input = torch.empty_like(input_tensor).contiguous()
         print(dir(cpuinfer_ext.moe.MOE))
@@ -519,9 +527,17 @@ class KSFTExpertsCPU(torch.autograd.Function):
             )
         )
         ctx.cpu_infer.sync()
+        
+        bw_end   = time.time()
+        t_bw    = bw_end - bw_start
+        
+        # ---------- FLOPs ----------
+        qlen, k  = ctx.saved_dims          # 正确的 q / k
+        flops_bw = 18 * qlen * k * H_FIXED * M_FIXED
+        tflops_b = flops_bw / t_bw / 1e12
 
-        end_time = time.time()
-        print(f"KSFTExpertsCPU.backward execution time: {(end_time - start_time) * 1000:.2f} ms")
+        print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
+              f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
         
         return grad_input.to(device=ctx.out_device), None, None, None, None, None
     

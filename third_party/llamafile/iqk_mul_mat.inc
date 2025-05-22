@@ -3233,7 +3233,6 @@ bool MulMat::set_mul_mat(int typeA, int typeB, int ne00, MulMat& mm, int Ny) {
 
         default:
         {
-            printf("case:%d",typeA);
             return false;
         }
             

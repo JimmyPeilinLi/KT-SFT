@@ -194,6 +194,9 @@ def test_backward():
     forward_end_time = time.time()
     print(f"C++ forward 耗时: {forward_end_time - forward_start_time:.4f} 秒")
     
+    FLOPs_fwd  = 6 * qlen * n_routed_experts * hidden_size * intermediate_size
+    KT_TFLOPS_fwd = FLOPs_fwd / (forward_end_time - forward_start_time) / 1e12
+    
     # 验证前向传播结果
     forward_diff = torch.mean(torch.abs(output_cpp - t_output)) / torch.mean(torch.abs(t_output))
     print(f"Forward diff: {forward_diff.item()}")
@@ -248,6 +251,30 @@ def test_backward():
     print(f"C++ backward 耗时: {cpp_time:.4f} 秒")
     print(f"性能比较: PyTorch/C++ = {pytorch_time/cpp_time:.2f}x")
     
+
+    print(f"qlen:{qlen}, n_exp:{n_routed_experts}, hidden:{hidden_size}, inter:{intermediate_size}")
+    FLOPs_bwd  = 18 * qlen * n_routed_experts * hidden_size * intermediate_size
+    torch_TFLOPS_bwd = FLOPs_bwd / pytorch_time / 1e12
+    KT_TFLOPS_bwd = FLOPs_bwd / cpp_time / 1e12
+    
+    print(f"PyTorch backward TFLOPS: {torch_TFLOPS_bwd}")
+    print(f"KT forward TFLOPS: {KT_TFLOPS_fwd}")
+    print(f"KT backward TFLOPS: {KT_TFLOPS_bwd}")
+
+        # ================== TFLOPS 统计 ==================
+    total_flops_fwd = 6 * qlen * n_routed_experts * hidden_size * intermediate_size
+    total_flops_bwd = 18 * qlen * n_routed_experts * hidden_size * intermediate_size
+
+    tflops_fwd_cpp = total_flops_fwd / (forward_end_time - forward_start_time) / 1e12
+    tflops_bwd_cpp = total_flops_bwd / cpp_time / 1e12
+    tflops_bwd_torch = total_flops_bwd / pytorch_time / 1e12
+
+    print(f"\n=== TFLOPS ===")
+    print(f"CPUInfer forward  : {tflops_fwd_cpp:.2f} TFLOPS")
+    print(f"CPUInfer backward : {tflops_bwd_cpp:.2f} TFLOPS")
+    print(f"Torch   backward : {tflops_bwd_torch:.2f} TFLOPS")
+
+
     # 验证梯度结果
     backward_diff = torch.mean(torch.abs(grad_input_cpp - input.grad)) / torch.mean(torch.abs(input.grad))
     print(f"Backward diff: {backward_diff.item()}")

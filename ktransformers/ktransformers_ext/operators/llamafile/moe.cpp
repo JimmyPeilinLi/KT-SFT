@@ -468,6 +468,45 @@ void transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type
     }
 }
 
+// // constants
+// constexpr int QK = QK_K;           // 256
+
+// void transpose_expert_matrix(const void* src,
+//                              void*       dst,
+//                              int R, int C,
+//                              ggml_type src_type,
+//                              ggml_type dst_type)
+// {
+//     for (int c0 = 0; c0 < C; c0 += QK) {
+//         int blk = std::min(QK, C - c0);
+
+//         for (int r = 0; r < R; ++r) {
+//             const uint8_t* src_ptr =
+//                 (const uint8_t*)src +
+//                 (size_t)r * C * ggml_type_size(src_type) / ggml_blck_size(src_type) +
+//                 (size_t)c0 * ggml_type_size(src_type)     / ggml_blck_size(src_type);
+
+//             float tmp[QK];
+//             to_float(src_ptr, tmp, QK, src_type);            // always 256
+
+//             if (dst_type == GGML_TYPE_F32) {
+//                 float* dst_f32 = (float*)dst + (size_t)c0 * R + r * blk;
+//                 std::memcpy(dst_f32, tmp, blk * sizeof(float));
+
+//             } else if (dst_type == GGML_TYPE_BF16) {
+//                 /* 目标缓冲指针声明成 ggml_bf16_t* */
+//                 ggml_bf16_t* dst_bf16 =
+//                     (ggml_bf16_t*)dst + (size_t)c0 * R + r * blk;
+
+//                 for (int i = 0; i < blk; ++i)
+//                     dst_bf16[i] = ggml_fp32_to_bf16(tmp[i]);   // 直接赋值
+//             } else {
+//                 GGML_ASSERT(false && "unsupported dst_type");
+//             }
+//         }
+//     }
+// }
+
 void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const MoEForwardCache* fwd_cache) {
     if (!transposed_) {
         // Transpose gate_proj_
