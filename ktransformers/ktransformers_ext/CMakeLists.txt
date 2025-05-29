@@ -3,14 +3,16 @@ project(cpuinfer_ext VERSION 0.1.0)
 
 
 set(CMAKE_CXX_STANDARD 17)
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -ffast-math")
-set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -fno-finite-math-only")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -ffast-math -fopenmp")
+# set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -fno-finite-math-only")
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-finite-math-only")
-add_compile_options(
-        -O3                 # Release 优化；Debug 由用户自己决定
-        -fno-finite-math-only  # 覆盖 fast‑math 隐式选项
-)
+# add_compile_options(
+#         -O3                 # Release 优化；Debug 由用户自己决定
+#         -fno-finite-math-only  # 覆盖 fast‑math 隐式选项
+# )
 set(CMAKE_BUILD_TYPE "Release")
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -ffast-math -fopenmp")
+# set(CMAKE_BUILD_TYPE "Debug")
 
 # option(CPUINFER_DEBUG "build cpuinfer_ext with -g -O0 -rdynamic" ON)
 

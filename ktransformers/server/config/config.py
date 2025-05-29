@@ -156,7 +156,7 @@ class Config(metaclass=Singleton):
         self.mount_web: bool = self.web.get("mount", False)
 
         self.ext: dict = cfg.get("ext", {})
-        self.cpu_infer = self.ext.get("cpu_infer", 10)
+        self.cpu_infer = self.ext.get("cpu_infer", 64)
 
         # file config
         self.local_store_configs: dict = cfg.get("local_store", {})

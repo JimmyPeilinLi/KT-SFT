@@ -441,8 +441,6 @@ class KSFTExpertsCPU(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_tensor, expert_ids, weights, cpu_infer, moe, out_device):
         print("Go into the forward")
-        # 记录开始时间
-        wall_t0 = time.time()
         
         # generate, capture and run cuda graph
         # print(expert_ids)
@@ -454,6 +452,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
             KSFTExpertsCPU.weights_cpu.copy_(weights, non_blocking=True)
             cpu_infer.submit_with_cuda_stream(torch.cuda.current_stream().cuda_stream, moe.forward(1, expert_ids.size(1), KSFTExpertsCPU.expert_ids_cpu.data_ptr(), KSFTExpertsCPU.weights_cpu.data_ptr(), KSFTExpertsCPU.input_tensor_cpu.data_ptr(), KSFTExpertsCPU.output_cpu.data_ptr()))
             cpu_infer.sync_with_cuda_stream(torch.cuda.current_stream().cuda_stream)
+            t_fwd     = time.time() - wall_t0
             KSFTExpertsCPU.output_gpu_map[out_device].copy_(KSFTExpertsCPU.output_cpu, non_blocking=True)
             result = KSFTExpertsCPU.output_gpu_map[out_device]
         else:
@@ -461,6 +460,9 @@ class KSFTExpertsCPU(torch.autograd.Function):
             expert_ids = expert_ids.contiguous().cpu()
             weights = weights.contiguous().to(torch.float32).cpu()
             output = torch.empty_like(input_tensor).contiguous()
+            print("success record")
+			# 记录开始时间
+            wall_t0 = time.time()
             cpu_infer.submit(
                 moe.forward(
                     expert_ids.size(0), 
@@ -472,6 +474,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
                 )
             )
             cpu_infer.sync()
+            t_fwd     = time.time() - wall_t0
 
             result = output.to(device=out_device)
 
@@ -484,14 +487,13 @@ class KSFTExpertsCPU(torch.autograd.Function):
         qlen = expert_ids.size(0)
         k    = expert_ids.size(1)
 
-        flops_fwd = 6 * qlen * k * H_FIXED * M_FIXED
-        t_fwd     = time.time() - wall_t0
+        flops_fwd = 6 * qlen * k * H_FIXED * M_FIXED # 2（2 次乘加）* 3（三个矩阵）= 6
         tflops_f  = flops_fwd / t_fwd / 1e12
 
         # 把 qlen / k 留给 backward
         ctx.saved_dims = (qlen, k)
         ctx._time_fwd  = t_fwd
-        print(f"grad_output.size(0) , grad_output.size(1):{expert_ids.size(0)}, {expert_ids.size(1)}")
+        print(f"qlen ,k:{qlen}, {k}")
         
         print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
               f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
@@ -502,7 +504,6 @@ class KSFTExpertsCPU(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         print("Go into the backward!!")
-        bw_start = time.time()
         
         # Pick back the middle results
         input_tensor, expert_ids, weights = ctx.saved_tensors
@@ -515,6 +516,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
         grad_input = torch.empty_like(input_tensor).contiguous()
         print(dir(cpuinfer_ext.moe.MOE))
         # 调用C++后端
+        bw_start = time.time()
         ctx.cpu_infer.submit(
             ctx.moe.backward(
                 grad_output.size(0),  # qlen
@@ -535,6 +537,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
         qlen, k  = ctx.saved_dims          # 正确的 q / k
         flops_bw = 18 * qlen * k * H_FIXED * M_FIXED
         tflops_b = flops_bw / t_bw / 1e12
+        print(f"qlen:{qlen}, k:{k}")
 
         print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
               f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")

@@ -14,6 +14,7 @@ import time
 sys.path.append(os.path.dirname(__file__) + '/../build')
 import cpuinfer_ext
 import torch
+from tqdm import tqdm
 
 hidden_size = 5120
 intermediate_size = 3072
@@ -106,7 +107,7 @@ def bench_mlp(quant_mode: str):
         output = torch.empty((layer_num, qlen, hidden_size), dtype=torch.bfloat16, device = "cuda").to("cpu").contiguous()
 
         # warm up
-        for i in range(warm_up_iter):
+        for i in tqdm(range(warm_up_iter)):
             CPUInfer.submit(
                 mlps[i % layer_num].forward( 
                     qlen, 
@@ -118,7 +119,7 @@ def bench_mlp(quant_mode: str):
 
         # test
         start = time.perf_counter()
-        for i in range(test_iter):
+        for i in tqdm(range(test_iter)):
             CPUInfer.submit(
                 mlps[i % layer_num].forward( 
                     qlen, 

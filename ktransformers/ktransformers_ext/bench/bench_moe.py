@@ -13,20 +13,34 @@ import os, sys
 import time
 sys.path.append(os.path.dirname(__file__) + '/../build')
 import cpuinfer_ext
+from tqdm import tqdm
 import torch
 
-expert_num = 160
-hidden_size = 5120
-intermediate_size = 1536
+# expert_num = 160
+# hidden_size = 5120
+# intermediate_size = 1536
+# stride = 16
+# group_min_len = 10
+# group_max_len = 1024
+# n_routed_experts = 6
+# layer_num = 10
+# qlen = 1
+# CPUInfer = cpuinfer_ext.CPUInfer(64)
+# warm_up_iter = 1000
+# test_iter = 10000
+
+expert_num = 64
+hidden_size = 2048
+intermediate_size = 1408
 stride = 16
 group_min_len = 10
 group_max_len = 1024
 n_routed_experts = 6
-layer_num = 10
-qlen = 1
+layer_num = 1
+qlen = 4096
 CPUInfer = cpuinfer_ext.CPUInfer(64)
-warm_up_iter = 1000
-test_iter = 10000
+warm_up_iter = 10
+test_iter = 100
 
 def bench_moe(quant_mode: str):
     with torch.inference_mode(mode=True):
@@ -109,8 +123,9 @@ def bench_moe(quant_mode: str):
         input = torch.randn((layer_num, qlen, hidden_size), dtype=torch.bfloat16, device = "cuda").to("cpu").contiguous()
         output = torch.empty((layer_num, qlen, hidden_size), dtype=torch.bfloat16, device = "cuda").to("cpu").contiguous()
 
+        print("before warm up")
         # warm up
-        for i in range(warm_up_iter):
+        for i in tqdm(range(warm_up_iter)):
             CPUInfer.submit(
                 moes[i % layer_num].forward( 
                     qlen, 
@@ -122,10 +137,11 @@ def bench_moe(quant_mode: str):
                 )
             )
             CPUInfer.sync()
+        print("before test")
 
         # test
         start = time.perf_counter()
-        for i in range(test_iter):
+        for i in tqdm(range(test_iter)):
             CPUInfer.submit(
                 moes[i % layer_num].forward( 
                     qlen, 
@@ -144,17 +160,18 @@ def bench_moe(quant_mode: str):
         print('Iteration: ', test_iter) 
         print('Time(us) per iteration: ', total_time / test_iter * 1000000)
         print('Bandwidth: ', hidden_size * intermediate_size * 3 * n_routed_experts * bytes_per_elem * test_iter / total_time / 1000 / 1000 / 1000, 'GB/s')
+        print('Tflops: ',hidden_size * intermediate_size * qlen * 3 * n_routed_experts * 2 * test_iter / total_time / 1e12, 'tflops')  # 单位：TFLOPS
         print('')
 
-bench_moe("fp32")
-bench_moe("fp16")
-bench_moe("bf16")
-bench_moe("q8_0")
-bench_moe("q6_k")
-bench_moe("q5_k_m")
+# bench_moe("fp32")
+# bench_moe("fp16")
+# bench_moe("bf16")
+# bench_moe("q8_0")
+# bench_moe("q6_k")
+# bench_moe("q5_k_m")
 bench_moe("q4_k_m")
-bench_moe("q3_k_m")
-bench_moe("q2_k")
+# bench_moe("q3_k_m")
+# bench_moe("q2_k")
 # Not supported on __x86_64__
 # bench_linear("iq3_xs")
 # bench_linear("iq2_xxs")

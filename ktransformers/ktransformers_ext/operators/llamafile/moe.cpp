@@ -11,6 +11,7 @@
 #include <iostream>
 #include <cstdint>
 #include <cstring>
+#include <time.h>
 
 #ifdef USE_NUMA
 #include <numa.h>
@@ -471,46 +472,10 @@ void MOE::transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml
     }
 }
 
-// // constants
-// constexpr int QK = QK_K;           // 256
-
-// void transpose_expert_matrix(const void* src,
-//                              void*       dst,
-//                              int R, int C,
-//                              ggml_type src_type,
-//                              ggml_type dst_type)
-// {
-//     for (int c0 = 0; c0 < C; c0 += QK) {
-//         int blk = std::min(QK, C - c0);
-
-//         for (int r = 0; r < R; ++r) {
-//             const uint8_t* src_ptr =
-//                 (const uint8_t*)src +
-//                 (size_t)r * C * ggml_type_size(src_type) / ggml_blck_size(src_type) +
-//                 (size_t)c0 * ggml_type_size(src_type)     / ggml_blck_size(src_type);
-
-//             float tmp[QK];
-//             to_float(src_ptr, tmp, QK, src_type);            // always 256
-
-//             if (dst_type == GGML_TYPE_F32) {
-//                 float* dst_f32 = (float*)dst + (size_t)c0 * R + r * blk;
-//                 std::memcpy(dst_f32, tmp, blk * sizeof(float));
-
-//             } else if (dst_type == GGML_TYPE_BF16) {
-//                 /* 目标缓冲指针声明成 ggml_bf16_t* */
-//                 ggml_bf16_t* dst_bf16 =
-//                     (ggml_bf16_t*)dst + (size_t)c0 * R + r * blk;
-
-//                 for (int i = 0; i < blk; ++i)
-//                     dst_bf16[i] = ggml_fp32_to_bf16(tmp[i]);   // 直接赋值
-//             } else {
-//                 GGML_ASSERT(false && "unsupported dst_type");
-//             }
-//         }
-//     }
-// }
-
 void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const MoEForwardCache* fwd_cache) {
+	// clock_t clk1, clk2, clk3, clk4;
+	// clock_t clkz1, clkz2, clkz3, clkz4, clkz5;
+	// clk1 = clock();
     if (!transposed_) { // FIXME: 每层都要重新取一次转置！
         // Transpose gate_proj_
         int R_gate = config_.intermediate_size;
@@ -547,27 +512,31 @@ void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, 
         
         transposed_ = true;
     }
-
+	// clk2 = clock();
     int nth = config_.intermediate_size / config_.stride;
     backend->do_work_stealing_job(nth * k, nullptr, [&](int task_id) {
         int expert_idx = task_id / nth;
         uint64_t expert_id = expert_ids[expert_idx];
         int ith = task_id % nth;
-
+		// clkz1 = clock();
         void* down_proj_t_ptr = (uint8_t*)down_proj_t_ + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.grad_type);
         float* down_input_grad_ptr = s_down_input_grad_[expert_idx] + ith * config_.stride;
+        // clkz2 = clock();
         llamafile_sgemm(config_.stride, 1, config_.hidden_size, down_proj_t_ptr, config_.hidden_size, output_grad, config_.hidden_size, down_input_grad_ptr, config_.stride, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.grad_type, config_.grad_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
-        
+        // clkz3 = clock();
         for (int i = ith * config_.stride; i < (ith + 1) * config_.stride; i++) {
             s_down_input_grad_[expert_idx][i] *= weights[expert_idx];
 
             s_gate_output_grad_fp32_[expert_idx][i] = s_down_input_grad_[expert_idx][i] * fwd_cache->up_v[expert_idx][i] * act_fn_grad(fwd_cache->gate_u[expert_idx][i]); 
             s_up_output_grad_fp32_[expert_idx][i] = s_down_input_grad_[expert_idx][i] * act_fn(fwd_cache->gate_u[expert_idx][i]);
         }
+        // clkz4 = clock();
         from_float(s_gate_output_grad_fp32_[expert_idx] + ith * config_.stride, s_gate_output_grad_[expert_idx] + ith * config_.stride * ggml_type_size(config_.grad_type), config_.stride, config_.grad_type);
         from_float(s_up_output_grad_fp32_[expert_idx] + ith * config_.stride, s_up_output_grad_[expert_idx] + ith * config_.stride * ggml_type_size(config_.grad_type), config_.stride, config_.grad_type);
+        // clkz5 = clock();
     }, nullptr);
 
+	// clk3 = clock();
     nth = config_.hidden_size / config_.stride;
     backend->do_work_stealing_job(nth, nullptr, [&](int task_id) {
         int ith = task_id;
@@ -591,6 +560,16 @@ void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, 
         }
         from_float(s_input_grad_fp32_ + ith * config_.stride, (uint8_t*)input_grad + ith * config_.stride * ggml_type_size(config_.grad_type), config_.stride, config_.grad_type);
     }, nullptr);
+	// clk4 = clock();
+	// std::cout << "[Δclk12] " << (clk2 - clk1) / static_cast<double>(CLOCKS_PER_SEC) * 1000
+    //       << " ms  [Δclk23] " << (clk3 - clk2) / static_cast<double>(CLOCKS_PER_SEC) * 1000
+    //       << " ms  [Δclk34] " << (clk4 - clk3) / static_cast<double>(CLOCKS_PER_SEC) * 1000
+    //       << " ms  [Δclkz12] " << (clkz2 - clkz1) / static_cast<double>(CLOCKS_PER_SEC) * 1000
+    //       << " ms  [Δclkz23] " << (clkz3 - clkz2) / static_cast<double>(CLOCKS_PER_SEC) * 1000
+    //       << " ms  [Δclkz34] " << (clkz4 - clkz3) / static_cast<double>(CLOCKS_PER_SEC) * 1000
+    //       << " ms  [Δclkz45] " << (clkz5 - clkz4) / static_cast<double>(CLOCKS_PER_SEC) * 1000
+    //       << " ms\n";
+
 }
 
 // TODO: input参数可以删除

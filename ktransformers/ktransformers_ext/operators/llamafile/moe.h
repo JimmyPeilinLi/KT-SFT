@@ -26,10 +26,10 @@
 #include "moe_forward_cache.h"
 
 struct MOEConfig {
-    int expert_num;
+    long expert_num;
     int routed_expert_num;
-    int hidden_size;
-    int intermediate_size;
+    long hidden_size;
+    long intermediate_size;
     int stride;
     int group_min_len;
     int group_max_len;

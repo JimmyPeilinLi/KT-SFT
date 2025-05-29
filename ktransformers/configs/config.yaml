@@ -35,7 +35,7 @@ web:
   open_cross_domain: True
 
 ext:
-  cpu_infer: 10
+  cpu_infer: 64
 
 long_context:
   chunk_size: 4096
