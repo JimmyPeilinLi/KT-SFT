@@ -574,7 +574,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
 
     trainer.train()
 
-    verify_lora_layers(model)
+    # verify_lora_layers(model)
 
     # model.save_pretrained(save_adapter_path)
 

@@ -37,3 +37,6 @@ ktransformers/ktransformers_ext/compile_commands.json
 ktransformers/ktransformers_ext/Makefile
 *.egg-info*
 *.so
+
+*.txt
+*.pt

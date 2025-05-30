@@ -461,7 +461,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
             weights = weights.contiguous().to(torch.float32).cpu()
             output = torch.empty_like(input_tensor).contiguous()
             print("success record")
-			# 记录开始时间
+            # 记录开始时间
             wall_t0 = time.time()
             cpu_infer.submit(
                 moe.forward(
@@ -505,6 +505,15 @@ class KSFTExpertsCPU(torch.autograd.Function):
     def backward(ctx, grad_output):
         print("Go into the backward!!")
         
+        # 检查输入的梯度
+        if torch.isnan(grad_output).any():
+            print("[ERROR] grad_output contains NaN before C++ backward!")
+            print("NaN positions:", torch.isnan(grad_output).nonzero())
+            print("grad_output stats: min={}, max={}, mean={}".format(
+                grad_output.min(), grad_output.max(), grad_output.mean()
+            ))
+            return
+        
         # Pick back the middle results
         input_tensor, expert_ids, weights = ctx.saved_tensors
         # cpu_infer  = ctx.cpu_infer
@@ -514,7 +523,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
         # ready for computing gradient
         grad_output = grad_output.contiguous().cpu()
         grad_input = torch.empty_like(input_tensor).contiguous()
-        print(dir(cpuinfer_ext.moe.MOE))
+        print(grad_input)
         # 调用C++后端
         bw_start = time.time()
         ctx.cpu_infer.submit(
@@ -529,6 +538,25 @@ class KSFTExpertsCPU(torch.autograd.Function):
             )
         )
         ctx.cpu_infer.sync()
+        print(grad_input)
+
+        # 检查 C++ 返回的梯度
+        if torch.isnan(grad_input).any():
+            print("[CRITICAL] grad_input from C++ contains NaN!")
+            print("NaN positions:", torch.isnan(grad_input).nonzero())
+            print("grad_input stats: min={}, max={}, mean={}".format(
+                grad_input.min(), grad_input.max(), grad_input.mean()
+            ))
+            
+            # 保存问题数据用于调试
+            torch.save({
+                'input_tensor': input_tensor,
+                'expert_ids': expert_ids,
+                'weights': weights,
+                'grad_output': grad_output
+            }, "moe_nan_debug.pt")
+            raise RuntimeError("NaN detected in grad_input from C++")
+
         
         bw_end   = time.time()
         t_bw    = bw_end - bw_start

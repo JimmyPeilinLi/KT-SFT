@@ -12,11 +12,102 @@
 #include <cstdint>
 #include <cstring>
 #include <time.h>
+#include <iomanip>
+#include <cmath>
+#include <mutex>
 
 #ifdef USE_NUMA
 #include <numa.h>
 #include <numaif.h>
 #endif
+
+constexpr float CLIP_MAX = 1e30f;
+constexpr float CLIP_MIN =-1e30f;
+constexpr float CLIP_EPS = 1e-30f;
+
+// 用位运算判 NaN，不受 -ffast-math 影响
+inline bool fast_isnan(float x) {
+    uint32_t bits = *reinterpret_cast<uint32_t*>(&x);
+    return (bits & 0x7f800000u) == 0x7f800000u && (bits & 0x007fffffu);
+}
+
+// 裁剪 + NaN 归零
+inline float sanitize(float x) {
+    if (fast_isnan(x)) return 0.f;
+    if (x > CLIP_MAX)  return CLIP_MAX;
+    if (x < CLIP_MIN)  return CLIP_MIN;
+    if (std::fabs(x) < CLIP_EPS) return 0.f;
+    return x;
+}
+
+inline float next_pow2(float v) {
+    int e;
+    frexpf(v, &e);            // v = m * 2^(e-1), 0.5≤m<1
+    return ldexpf(1.0f, e);   // 返回 2^(e-1)
+}
+
+void apply_row_scaling(float* row, size_t len, float inv_scale){
+    // AVX2 版可用 _mm256_mul_ps
+    for(size_t i=0;i<len;++i) row[i] *= inv_scale;
+}
+
+// for nan debug
+static std::mutex print_mutex;
+
+// NaN 检查工具函数
+void check_nan(const float* data, size_t len, const char* name) {
+    for (size_t i = 0; i < len; ++i) {
+        if (std::isnan(data[i])) {
+            printf("[NaN] %s at position %zu\n", name, i);
+            std::exit(1);
+        }
+    }
+}
+
+// 转成 float32，len = rows*cols
+void cast_to_fp32(const void* src, float* dst,
+                         size_t len, ggml_type t) {
+    if (t == GGML_TYPE_F32) {
+        std::memcpy(dst, src, len * sizeof(float));
+    } else {
+        to_float(src, dst, (int)len, t);          // 你已有的 to_float()
+    }
+}
+
+//  把 1-D 数据按 (rows,cols) 排版打印；若元素为 NaN，则高亮 “nan”
+void print_block(const char* tag,
+					const void* src, int rows, int cols,
+					ggml_type t,
+					int max_rows = 6, int max_cols = 10) {
+    static std::mutex mtx;          // 多线程打印时避免输出交错
+    std::lock_guard<std::mutex> lk(mtx);
+
+    std::vector<float> buf(rows * cols);
+    cast_to_fp32(src, buf.data(), buf.size(), t);
+
+    std::cout << "\n[" << tag << "]  shape=("
+              << rows << "," << cols << ")\n";
+    int r_lim = std::min(rows, max_rows);
+    int c_lim = std::min(cols, max_cols);
+
+    auto fmt = [](float v) -> std::string {
+        if (std::isnan(v)) return "  nan";
+        std::ostringstream os;
+        os << std::setw(8) << std::setprecision(4) << v;
+        return os.str();
+    };
+
+    for (int r = 0; r < r_lim; ++r) {
+        std::cout << "  [";
+        for (int c = 0; c < c_lim; ++c) {
+            std::cout << fmt(buf[r * cols + c]);
+            if (c != c_lim - 1) std::cout << ",";
+        }
+        if (c_lim < cols) std::cout << ", ...";
+        std::cout << "]\n";
+    }
+    if (r_lim < rows) std::cout << "  ...\n";
+}
 
 MOE::MOE(MOEConfig config) {
     config_ = config;
@@ -512,6 +603,7 @@ void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, 
         
         transposed_ = true;
     }
+
 	// clk2 = clock();
     int nth = config_.intermediate_size / config_.stride;
     backend->do_work_stealing_job(nth * k, nullptr, [&](int task_id) {
@@ -523,22 +615,72 @@ void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, 
         float* down_input_grad_ptr = s_down_input_grad_[expert_idx] + ith * config_.stride;
         // clkz2 = clock();
         llamafile_sgemm(config_.stride, 1, config_.hidden_size, down_proj_t_ptr, config_.hidden_size, output_grad, config_.hidden_size, down_input_grad_ptr, config_.stride, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.grad_type, config_.grad_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
+
         // clkz3 = clock();
         for (int i = ith * config_.stride; i < (ith + 1) * config_.stride; i++) {
             s_down_input_grad_[expert_idx][i] *= weights[expert_idx];
 
             s_gate_output_grad_fp32_[expert_idx][i] = s_down_input_grad_[expert_idx][i] * fwd_cache->up_v[expert_idx][i] * act_fn_grad(fwd_cache->gate_u[expert_idx][i]); 
             s_up_output_grad_fp32_[expert_idx][i] = s_down_input_grad_[expert_idx][i] * act_fn(fwd_cache->gate_u[expert_idx][i]);
+
+			// // 检查权重是否有效
+			// if (std::isnan(weights[expert_idx]) || std::isinf(weights[expert_idx])) {
+			// 	std::cerr << "Invalid weight at expert_idx=" << expert_idx 
+			// 			<< " value=" << weights[expert_idx] << std::endl;
+			// }
+			
+			// // 检查激活函数输入
+			// float gate_val = fwd_cache->gate_u[expert_idx][i];
+			// if (std::isnan(gate_val) || std::abs(gate_val) > 1000.0f) {
+			// 	std::cerr << "Suspicious gate value at [" << expert_idx << "," << i 
+			// 			<< "] = " << gate_val << std::endl;
+			// }
         }
+		// +++ 新增检查点 +++
+		// check_nan(s_down_input_grad_[expert_idx] + ith * config_.stride, 
+		// 		config_.stride, "s_down_input_grad_");
+		// check_nan(s_gate_output_grad_fp32_[expert_idx] + ith * config_.stride, 
+		// 		config_.stride, "s_gate_output_grad_fp32_");
+		// check_nan(s_up_output_grad_fp32_[expert_idx] + ith * config_.stride, 
+		// 		config_.stride, "s_up_output_grad_fp32_");
+
+		// print_block("down_input_grad",
+		// 			s_down_input_grad_[expert_idx] + ith * config_.stride,
+		// 			1,                      /* rows   */
+		// 			config_.stride,         /* cols   */
+		// 			GGML_TYPE_F32);         // 已是 FP32
+		// print_block("gate_out_grad_fp32",
+		// 			s_gate_output_grad_fp32_[expert_idx] + ith * config_.stride,
+		// 			1, config_.stride, GGML_TYPE_F32);
+		// print_block("up_out_grad_fp32",
+		// 			s_up_output_grad_fp32_[expert_idx] + ith * config_.stride,
+		// 			1, config_.stride, GGML_TYPE_F32);
+
         // clkz4 = clock();
         from_float(s_gate_output_grad_fp32_[expert_idx] + ith * config_.stride, s_gate_output_grad_[expert_idx] + ith * config_.stride * ggml_type_size(config_.grad_type), config_.stride, config_.grad_type);
         from_float(s_up_output_grad_fp32_[expert_idx] + ith * config_.stride, s_up_output_grad_[expert_idx] + ith * config_.stride * ggml_type_size(config_.grad_type), config_.stride, config_.grad_type);
         // clkz5 = clock();
+
+		// print_block("gate_out_grad (packed)",
+		// 			s_gate_output_grad_[expert_idx] +
+		// 			ith * config_.stride * ggml_type_size(config_.grad_type),
+		// 			1, config_.stride, config_.grad_type);
+
+		// print_block("up_out_grad (packed)",
+		// 			s_up_output_grad_[expert_idx] +
+		// 			ith * config_.stride * ggml_type_size(config_.grad_type),
+		// 			1, config_.stride, config_.grad_type);
     }, nullptr);
 
 	// clk3 = clock();
     nth = config_.hidden_size / config_.stride;
     backend->do_work_stealing_job(nth, nullptr, [&](int task_id) {
+
+		size_t M = config_.stride;            // 行数
+		size_t K = config_.intermediate_size; // 列数
+
+		std::vector<float> row_scale(M);
+
         int ith = task_id;
         for (int i = ith * config_.stride; i < (ith + 1) * config_.stride; i++) {
             s_input_grad_fp32_[i] = 0;
@@ -548,7 +690,46 @@ void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, 
 
             void* gate_proj_t_ptr = (uint8_t*)gate_proj_t_ + (expert_id * config_.hidden_size + ith * config_.stride) * config_.intermediate_size * ggml_type_size(config_.grad_type);
             float* gate_input_grad_ptr = s_gate_input_grad_[expert_idx] + ith * config_.stride;
+
+			// 裁剪方式,结果:0.008误差,但是nan仍然存在
+			// float* gate_in   = reinterpret_cast<float*>(gate_proj_t_ptr);
+			// float* gate_grad = gate_input_grad_ptr;
+
+			// // 把本 tile 做一次就地裁剪
+			// for(size_t j = 0; j < config_.intermediate_size * config_.stride; ++j)
+			// 	gate_in[j] = sanitize(gate_in[j]);
+
+			// for(size_t j = 0; j < config_.stride; ++j)
+			// 	gate_grad[j] = sanitize(gate_grad[j]);
+
+			// for(int r = 0; r < M; ++r){
+			// 	// 1) 找到该行最大绝对值
+			// 	float* a_row = (float*)gate_proj_t_ptr + r*K;
+			// 	float  maxA  = 0.f;
+			// 	for(size_t c=0; c<K; ++c){
+			// 		maxA = std::max(maxA, fabsf(a_row[c]));
+			// 	}
+			// 	// 2) 列向量最大值
+			// 	float  maxB = fabsf(s_gate_output_grad_[expert_idx][r]);
+			// 	// 3) 计算缩放
+			// 	float sA = next_pow2(maxA > 0 ? maxA : 1.f);   // 避免除零
+			// 	float sB = next_pow2(maxB > 0 ? maxB : 1.f);
+			// 	float invA = 1.f / sA, invB = 1.f / sB;
+
+			// 	// 4) 就地缩放
+			// 	apply_row_scaling(a_row, K, invA);
+			// 	s_gate_output_grad_[expert_idx][r] *= invB;
+
+			// 	// 5) 记录总 scale
+			// 	row_scale[r] = sA * sB;
+			// }
+
             llamafile_sgemm(config_.stride, 1, config_.intermediate_size, gate_proj_t_ptr, config_.intermediate_size, s_gate_output_grad_[expert_idx], config_.intermediate_size, gate_input_grad_ptr, config_.stride, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.grad_type, config_.grad_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
+
+			// // 6) 把结果乘回 scale（AVX2 同理）
+			// for(int r = 0; r < M; ++r){
+			// 	gate_input_grad_ptr[r] *= row_scale[r];
+			// }
 
             void* up_proj_t_ptr = (uint8_t*)up_proj_t_ + (expert_id * config_.hidden_size + ith * config_.stride) * config_.intermediate_size * ggml_type_size(config_.grad_type);
             float* up_input_grad_ptr = s_up_input_grad_[expert_idx] + ith * config_.stride;
@@ -558,8 +739,195 @@ void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, 
                 s_input_grad_fp32_[i] += s_gate_input_grad_[expert_idx][i] + s_up_input_grad_[expert_idx][i];
             }
         }
+
+		// for (int expert_idx = 0; expert_idx < k; ++expert_idx) {
+		// 	uint64_t expert_id = expert_ids[expert_idx];
+
+		// 	/* ------------ gate branch ------------ */
+		// 	void*  gate_proj_t_ptr = (uint8_t*)gate_proj_t_	+ (expert_id * config_.hidden_size + ith * config_.stride) * config_.intermediate_size * ggml_type_size(config_.grad_type);
+
+		// 	// size_t byte_offset = ((size_t)expert_id * config_.hidden_size + (size_t)ith * config_.stride) * ((size_t)config_.intermediate_size * ggml_type_size(config_.grad_type));
+		// 	// uint8_t* gate_proj_t_ptr = (uint8_t*)gate_proj_t_ + byte_offset;
+
+		// 	// float* gate_input_grad_ptr = s_gate_input_grad_[expert_idx] + ith * config_.stride;
+
+		// 	// // 行坐标合法检验
+		// 	// size_t rows_per_expert = (size_t)config_.hidden_size;
+		// 	// size_t total_rows = rows_per_expert * config_.expert_num;
+
+		// 	// size_t row_index = (size_t)expert_id * rows_per_expert + (size_t)ith * config_.stride;
+
+		// 	// assert(expert_id < config_.expert_num);
+		// 	// assert(row_index + 1 <= total_rows);
+
+		// 	// std::lock_guard<std::mutex> lk(print_mutex);
+
+		// 	// std::cout << "\n=== TRACE @expert=" << expert_idx
+		// 	// 		<< " ith=" << ith << " ===\n";
+
+		// 	// // a) gate_input_grad_ptr 初值（理应全 0）
+		// 	// print_block("gate_input_grad_ptr (before)",    // rows=1   cols=stride
+		// 	// 			gate_input_grad_ptr,
+		// 	// 			1, config_.stride, GGML_TYPE_F32, 1, 16);
+
+		// 	// // b) gate_output_grad（packed&fp32 两份）
+		// 	// print_block("gate_output_grad (packed)",
+		// 	// 			s_gate_output_grad_[expert_idx] +
+		// 	// 				ith * config_.stride * ggml_type_size(config_.grad_type),
+		// 	// 			1, config_.stride, config_.grad_type, 1, 16);
+
+		// 	// print_block("gate_output_grad_fp32",
+		// 	// 			s_gate_output_grad_fp32_[expert_idx] +
+		// 	// 				ith * config_.stride,
+		// 	// 			1, config_.stride, GGML_TYPE_F32, 1, 16);
+
+		// 	// // c) gate_proj_t 行（参与这次 GEMM 的权重行）
+		// 	// print_block("gate_proj_t_row",
+		// 	// 			gate_proj_t_ptr,
+		// 	// 			1, config_.intermediate_size, config_.grad_type, 1, 16);
+
+		// 	// ==================================================
+
+		// 	llamafile_sgemm(config_.stride, 1, config_.intermediate_size,
+		// 					gate_proj_t_ptr, config_.intermediate_size,
+		// 					s_gate_output_grad_[expert_idx], config_.intermediate_size,
+		// 					gate_input_grad_ptr, config_.stride,
+		// 					0, 1, GGML_TASK_TYPE_COMPUTE,
+		// 					config_.grad_type, config_.grad_type,
+		// 					GGML_TYPE_F32, GGML_PREC_DEFAULT);
+
+		// 	// ==================================================
+
+		// 	// // d) gate_input_grad_ptr 结果
+		// 	// print_block("gate_input_grad_ptr (after)",
+		// 	// 			gate_input_grad_ptr,
+		// 	// 			1, config_.stride, GGML_TYPE_F32, 1, 16);
+
+		// 	// // e) 快速检测这一 tile 内是否出现 NaN
+		// 	// for (int j = 0; j < config_.stride; ++j) {
+		// 	// 	if (std::isnan(gate_input_grad_ptr[j])) {
+		// 	// 		std::cout << "!!! NaN FOUND in gate_input_grad_ptr["
+		// 	// 				<< j << "]\n";
+		// 	// 		break;
+		// 	// 	}
+		// 	// }
+		// 	// std::cout.flush();
+
+		// 	/* ------------ up branch -------------- */
+		// 	void*  up_proj_t_ptr = (uint8_t*)up_proj_t_
+		// 		+ (expert_id * config_.hidden_size + ith * config_.stride)
+		// 		* config_.intermediate_size * ggml_type_size(config_.grad_type);
+		// 	float* up_input_grad_ptr = s_up_input_grad_[expert_idx]
+		// 		+ ith * config_.stride;
+
+		// 	llamafile_sgemm(config_.stride, 1, config_.intermediate_size,
+		// 					up_proj_t_ptr,  config_.intermediate_size,
+		// 					s_up_output_grad_[expert_idx], config_.intermediate_size,
+		// 					up_input_grad_ptr, config_.stride,
+		// 					0, 1, GGML_TASK_TYPE_COMPUTE,
+		// 					config_.grad_type, config_.grad_type,
+		// 					GGML_TYPE_F32, GGML_PREC_DEFAULT);
+
+		// 	/* ------------ accumulate ------------- */
+		// 	for (int i = ith * config_.stride; i < (ith + 1) * config_.stride; ++i) {
+		// 		s_input_grad_fp32_[i] += gate_input_grad_ptr[i - ith * config_.stride] + up_input_grad_ptr  [i - ith * config_.stride];
+		// 	}
+
+		// 	// /* ===== 检测 NaN 并做溯源打印 ===== */
+		// 	// float* tile_ptr = s_input_grad_fp32_ + ith * config_.stride;
+		// 	// float val = tile_ptr[0];
+		// 	// bool bad = false;
+		// 	// std::ostringstream oss;
+		// 	// oss << std::defaultfloat << val;      // defaultfloat 保持 cout 的默认格式
+		// 	// std::string s = oss.str();
+
+		// 	// std::cout << "as string: " << s << std::endl;
+
+		// 	// if (s == "nan" || s == "-nan") {
+		// 	// 	bad = true;
+		// 	// 	// std::cout << "Also detected via string: NaN\n";
+		// 	// }
+
+		// 	// if (true) {
+		// 	// // 	std::lock_guard<std::mutex> lk(print_mutex);
+
+		// 	// // 	std::cout << "\n*** NaN in gate_input_grad_fp32  "
+		// 	// // 			<< "(expert_idx=" << expert_idx << ", ith=" << ith << ") ***\n";
+
+		// 	// 	/* ==== 把 sgemm 两侧张量都转成 FP32 打印 ==== */
+		// 	// 	const int K = config_.intermediate_size;
+
+		// 	// 	/* gate_proj_t_ -> FP32 row */
+		// 	// 	std::vector<float> gate_row_fp32(K);
+		// 	// 	cast_to_fp32(gate_proj_t_ptr, gate_row_fp32.data(), K, config_.grad_type);
+
+		// 	// 	/* s_gate_output_grad_ (packed) -> FP32 col */
+		// 	// 	std::vector<float> gate_col_fp32(K);
+		// 	// 	const void* gate_out_packed = (uint8_t*)s_gate_output_grad_[expert_idx] + ith * config_.stride * ggml_type_size(config_.grad_type);
+		// 	// 	cast_to_fp32(gate_out_packed, gate_col_fp32.data(), K, config_.grad_type);
+
+		// 	// // 	print_block("gate_proj_t_row (FP32)", gate_row_fp32.data(),
+		// 	// // 				1, K, GGML_TYPE_F32, 1, 16);
+		// 	// // 	print_block("gate_output_grad_col (FP32)", gate_col_fp32.data(),
+		// 	// // 				1, K, GGML_TYPE_F32, 1, 16);
+
+		// 	// 	/* ==== 手动重算首元素的点积，定位哪一项出 NaN ==== */
+		// 	// 	double acc = 0.0;
+		// 	// 	for (int j = 0; j < K; ++j) {
+		// 	// 		double prod = (double)gate_row_fp32[j] * (double)gate_col_fp32[j];
+		// 	// 		acc += prod;
+		// 	// 		// std::ostringstream oss2;
+		// 	// 		// oss2 << std::defaultfloat << gate_row_fp32[j];      // defaultfloat 保持 cout 的默认格式
+		// 	// 		// std::string s_acc = oss2.str();
+		// 	// 		if (j == 394 || j == 494 || j == 942) {
+		// 	// 			std::cout << "  -> bad term @ j=" << j
+		// 	// 					<< "   row=" << gate_row_fp32[j]
+		// 	// 					<< "   col=" << gate_col_fp32[j]
+		// 	// 					<< "   byte_offset=" << byte_offset
+		// 	// 					<< "   acc=" << acc << '\n';
+		// 	// 		}
+		// 	// 	}
+		// 	// 	std::cout << "  manual dot(acc) = " << acc << '\n';
+
+		// 	// // 	/* ==== 打印 sgemm 输出及后续张量 ==== */
+		// 	// // 	print_block("gate_input_grad_fp32",      /* 这一步已经 NaN */
+		// 	// // 				s_gate_input_grad_[expert_idx] + ith * config_.stride,
+		// 	// // 				1, config_.stride, GGML_TYPE_F32);
+
+		// 	// // 	print_block("up_input_grad_fp32",
+		// 	// // 				up_input_grad_ptr,
+		// 	// // 				1, config_.stride, GGML_TYPE_F32);
+
+		// 	// // 	print_block("input_grad_fp32_tile (after add)",
+		// 	// // 				tile_ptr,
+		// 	// // 				1, config_.stride, GGML_TYPE_F32);
+		// 	// 	std::cout.flush();
+		// 	// }
+		// }
+
+
+		// +++ 新增检查点 +++
+		// check_nan(s_input_grad_fp32_ + ith * config_.stride, 
+		// 		config_.stride, "s_input_grad_fp32_");
+		// // 在写入 input_grad 前添加
+		// for (int i = 0; i < config_.hidden_size; i++) {
+		// 	if (std::isnan(s_input_grad_fp32_[i])) {
+		// 		s_input_grad_fp32_[i] = 0.0f;  // 临时处理
+		// 		printf("ERROR time 1!!");
+		// 	} else if (std::abs(s_input_grad_fp32_[i]) > 1e4) {
+		// 		s_input_grad_fp32_[i] = std::copysign(1e4, s_input_grad_fp32_[i]);
+		// 	}
+		// }
+
         from_float(s_input_grad_fp32_ + ith * config_.stride, (uint8_t*)input_grad + ith * config_.stride * ggml_type_size(config_.grad_type), config_.stride, config_.grad_type);
     }, nullptr);
+
+	// const int rows = config_.hidden_size / config_.stride;
+    // const int cols = config_.stride;
+    // std::vector<float> tmp(config_.hidden_size);
+    // to_float(input_grad, tmp.data(), config_.hidden_size, config_.grad_type);
+    // print_block("input_grad (full)", tmp.data(), rows, cols, GGML_TYPE_F32, /*max_rows=*/8, /*max_cols=*/12);
+
 	// clk4 = clock();
 	// std::cout << "[Δclk12] " << (clk2 - clk1) / static_cast<double>(CLOCKS_PER_SEC) * 1000
     //       << " ms  [Δclk23] " << (clk3 - clk2) / static_cast<double>(CLOCKS_PER_SEC) * 1000
