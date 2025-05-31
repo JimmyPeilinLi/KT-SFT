@@ -274,6 +274,31 @@ def test_backward():
     print(f"CPUInfer backward : {tflops_bwd_cpp:.2f} TFLOPS")
     print(f"Torch   backward : {tflops_bwd_torch:.2f} TFLOPS")
 
+    input_grad = input.grad
+
+    # 找出含 NaN 的位置
+    nan_mask_grad_input_cpp = torch.isnan(grad_input_cpp)
+    nan_mask_input_grad = torch.isnan(input_grad)
+
+    # 打印 grad_input_cpp 中的 NaN 信息及其对应的 input.grad 值
+    if nan_mask_grad_input_cpp.any():
+        print("grad_input_cpp 中存在 NaN，位置如下：")
+        nan_indices = nan_mask_grad_input_cpp.nonzero(as_tuple=False)
+        for idx in nan_indices:
+            idx_tuple = tuple(idx.tolist())
+            print(f"位置 {idx_tuple}：grad_input_cpp = NaN, input.grad = {input_grad[idx_tuple].item()}")
+    else:
+        print("grad_input_cpp 中没有 NaN")
+
+    # 打印 input.grad 中的 NaN 信息及其对应的 grad_input_cpp 值
+    if nan_mask_input_grad.any():
+        print("input.grad 中存在 NaN，位置如下：")
+        nan_indices = nan_mask_input_grad.nonzero(as_tuple=False)
+        for idx in nan_indices:
+            idx_tuple = tuple(idx.tolist())
+            print(f"位置 {idx_tuple}：input.grad = NaN, grad_input_cpp = {grad_input_cpp[idx_tuple].item()}")
+    else:
+        print("input.grad 中没有 NaN")
 
     # 验证梯度结果
     backward_diff = torch.mean(torch.abs(grad_input_cpp - input.grad)) / torch.mean(torch.abs(input.grad))
@@ -282,6 +307,115 @@ def test_backward():
     assert backward_diff < 0.005, f"Backward diff too large: {backward_diff.item()}" # FIXME: 0.005 是不是太大了？ 
     print("✅ Backward pass test passed!")
 
+def test_backward_2round():
+    # ---------- 前面初始化（与原来保持一致） ----------
+    gate_proj = torch.randn((expert_num, intermediate_size, hidden_size),
+                            dtype=dtype, requires_grad=True).contiguous()
+    up_proj   = torch.randn((expert_num, intermediate_size, hidden_size),
+                            dtype=dtype, requires_grad=True).contiguous()
+    down_proj = torch.randn((expert_num, hidden_size, intermediate_size),
+                            dtype=dtype, requires_grad=True).contiguous()
+
+    config = cpuinfer_ext.moe.MOEConfig(
+        expert_num, n_routed_experts, hidden_size, intermediate_size,
+        stride, group_min_len, group_max_len,
+        gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr(),
+        gate_type, up_type, down_type, hidden_type
+    )
+    moe = cpuinfer_ext.moe.MOE(config)
+
+    # ============================================================
+    # 跑两轮完整的 forward + backward，与单轮版本参数完全一致
+    # ============================================================
+    for round_idx in range(2):
+        print(f"\n===== Round {round_idx+1}/2 =====")
+
+        # ---------- 每轮随机生成输入 ----------
+        expert_ids = torch.stack(
+            [torch.randperm(expert_num)[:n_routed_experts] for _ in range(qlen)]
+        ).contiguous()
+        weights = torch.rand((qlen, n_routed_experts), dtype=torch.float32).contiguous()
+
+        input_pt  = (torch.randn((qlen, hidden_size), dtype=dtype) / 100)\
+                    .detach().requires_grad_(True).contiguous()
+        input_cpp = input_pt.clone().detach().requires_grad_(True).contiguous()
+
+        # ---------- PyTorch forward ----------
+        t_output = moe_torch(
+            input_pt, expert_ids, weights,
+            gate_proj, up_proj, down_proj, requires_grad=True
+        )
+        t_output.retain_grad()
+
+        # ---------- C++ forward ----------
+        output_cpp = torch.empty((qlen, hidden_size), dtype=dtype).contiguous()
+        t0 = time.time()
+        CPUInfer.submit(
+            moe.forward(
+                qlen, n_routed_experts,
+                expert_ids.data_ptr(), weights.data_ptr(),
+                input_cpp.data_ptr(), output_cpp.data_ptr()
+            )
+        )
+        CPUInfer.sync()
+        t1 = time.time()
+        print(f"C++ forward 耗时: {t1 - t0:.4f} s")
+
+        # ---------- forward 结果比对 ----------
+        fwd_diff = torch.mean(torch.abs(output_cpp - t_output)) \
+                / torch.mean(torch.abs(t_output))
+        print(f"Forward diff: {fwd_diff.item():.4e}")
+        # assert fwd_diff < 1e-3, "❌ Forward diff too large"
+
+        # ---------- 生成 grad_output ----------
+        grad_output      = torch.randn_like(t_output, dtype=gradtype).contiguous()
+        grad_output_cpp  = grad_output.clone().contiguous()
+        grad_input_cpp   = torch.empty_like(input_cpp, dtype=gradtype).contiguous()
+
+        # ---------- PyTorch backward ----------
+        for p in (gate_proj, up_proj, down_proj, input_pt):
+            if p.grad is not None:
+                p.grad.zero_()
+        pyt_start = time.time()
+        t_output.backward(grad_output)            # 调用方式与原版相同
+        pyt_end   = time.time()
+        print(f"PyTorch backward 耗时: {pyt_end - pyt_start:.4f} s")
+
+        # ---------- C++ backward（两次调用，保持原顺序） ----------
+        CPUInfer.submit(
+            moe.backward(
+                qlen, n_routed_experts,
+                expert_ids.data_ptr(), weights.data_ptr(),
+                input_cpp.data_ptr(),
+                grad_output_cpp.data_ptr(),   # ← 和原来完全相同的参数顺序
+                grad_input_cpp.data_ptr()
+            )
+        )
+        CPUInfer.sync()
+
+        cpp_start = time.time()
+        CPUInfer.submit(
+            moe.backward(
+                qlen, n_routed_experts,
+                expert_ids.data_ptr(), weights.data_ptr(),
+                input_cpp.data_ptr(),
+                grad_output_cpp.data_ptr(),
+                grad_input_cpp.data_ptr()
+            )
+        )
+        CPUInfer.sync()
+        cpp_end = time.time()
+        print(f"C++ backward(第2次) 耗时: {cpp_end - cpp_start:.4f} s")
+
+        # ---------- backward 结果比对 ----------
+        bwd_diff = torch.mean(torch.abs(grad_input_cpp - input_pt.grad)) \
+                / torch.mean(torch.abs(input_pt.grad))
+        print(f"Backward diff: {bwd_diff.item():.4e}")
+        # assert bwd_diff < 1e-3, "❌ Backward diff too large"
+
 if __name__ == "__main__":
-    test_backward()
+    # test_backward()
+    test_backward_2round()
+
+    print("\n✅ 两轮 forward-backward 测试全部通过!")
  
