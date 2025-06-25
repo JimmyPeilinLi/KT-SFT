@@ -472,7 +472,7 @@ void MOE::transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml
     }
 }
 
-void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const MoEForwardCache* fwd_cache) {
+void MOE::backward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const MoEForwardCache* fwd_cache) {
 	// clock_t clk1, clk2, clk3, clk4;
 	// clock_t clkz1, clkz2, clkz3, clkz4, clkz5;
 	// clk1 = clock();
@@ -573,10 +573,11 @@ void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, 
 }
 
 // TODO: input参数可以删除
-void MOE::backward(int qlen, int k, const uint64_t* expert_ids, const float* weights,
+void MOE::backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights,
                    const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache) {
     for (int i = 0; i < qlen; i++) {
-        backward_one(k,
+        backward_one(layer_idx,
+					 k,
                      expert_ids + i * k,
                      weights + i * k,
                      (uint8_t*)grad_output + i * config_.hidden_size * ggml_type_size(config_.grad_type),

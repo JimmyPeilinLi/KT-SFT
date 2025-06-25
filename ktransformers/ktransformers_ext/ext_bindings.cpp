@@ -534,7 +534,8 @@ inline void moe_forward_wrapper(
 
 inline void moe_backward_wrapper(
         MOE& self,
-        int qlen, int k,
+        int layer_idx,
+		int qlen, int k,
         const uint64_t* expert_ids,
         const float*     weights,
         const void*      input,
@@ -547,7 +548,7 @@ inline void moe_backward_wrapper(
     //               input, grad_output, grad_input,
     //               backend, fw_cache.data());
 	/* 反向直接用已存在的缓存；无需重新 init */
-    self.backward(qlen, k, expert_ids, weights,
+    self.backward(layer_idx, qlen, k, expert_ids, weights,
                   input, grad_output, grad_input,
                   backend,
                   self.fwd_cache_ptr());
@@ -621,6 +622,7 @@ class MOEBindings {
 		struct Args {
 			CPUInfer* cpuinfer;
 			MOE* moe;
+			int layer_idx;
 			int qlen;
 			int k;
 			const uint64_t* expert_ids;
@@ -645,6 +647,7 @@ class MOEBindings {
 			args_->cpuinfer->enqueue(
 				&moe_backward_wrapper,  // 使用包装函数
 				args_->moe,
+				args_->layer_idx,
 				args_->qlen, args_->k,
 				args_->expert_ids,
 				args_->weights,
@@ -654,13 +657,13 @@ class MOEBindings {
 		}
 
         static std::pair<intptr_t, intptr_t> cpuinfer_interface(
-            MOE& moe, int qlen, int k, 
+            MOE& moe, int layer_idx, int qlen, int k, 
             intptr_t expert_ids, intptr_t weights,
     		intptr_t input,
             intptr_t grad_output, intptr_t grad_input) {
             
             Args* args = new Args{
-				nullptr, &moe, qlen, k,
+				nullptr, &moe, layer_idx, qlen, k,
 				reinterpret_cast<const uint64_t*>(expert_ids),
 				reinterpret_cast<const float*>(weights),
 				reinterpret_cast<const void*>(input), 

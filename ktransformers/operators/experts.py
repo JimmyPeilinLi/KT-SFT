@@ -22,6 +22,7 @@ from tqdm import tqdm
 import time
 import logging
 from tqdm.auto import tqdm
+import re
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext", "build"))
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext", "build", "Release"))
@@ -439,8 +440,8 @@ class KSFTExpertsCPU(torch.autograd.Function):
         return KSFTExpertsCPU.output_gpu_map[self.out_device]
 
     @staticmethod
-    def forward(ctx, input_tensor, expert_ids, weights, cpu_infer, moe, out_device):
-        print("Go into the forward")
+    def forward(ctx, input_tensor, expert_ids, weights, cpu_infer, moe, out_device, layer_idx):
+        # print("Go into the forward")
         
         # generate, capture and run cuda graph
         # print(expert_ids)
@@ -461,7 +462,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
             weights = weights.contiguous().to(torch.float32).cpu()
             output = torch.empty_like(input_tensor).contiguous()
             print("success record")
-			# 记录开始时间
+            # 记录开始时间
             wall_t0 = time.time()
             cpu_infer.submit(
                 moe.forward(
@@ -482,6 +483,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
         ctx.cpu_infer  = cpu_infer
         ctx.moe        = moe
         ctx.out_device = out_device
+        ctx.layer_idx = layer_idx
         
         # ---------- FLOPs ----------
         qlen = expert_ids.size(0)
@@ -503,10 +505,11 @@ class KSFTExpertsCPU(torch.autograd.Function):
     # FIXME: expert backward for python
     @staticmethod
     def backward(ctx, grad_output):
-        print("Go into the backward!!")
+        # print("Go into the backward!!")
         
         # Pick back the middle results
         input_tensor, expert_ids, weights = ctx.saved_tensors
+        layer_idx   = ctx.layer_idx
         # cpu_infer  = ctx.cpu_infer
         # moe        = ctx.moe
         # out_device = ctx.out_device
@@ -514,11 +517,12 @@ class KSFTExpertsCPU(torch.autograd.Function):
         # ready for computing gradient
         grad_output = grad_output.contiguous().cpu()
         grad_input = torch.empty_like(input_tensor).contiguous()
-        print(dir(cpuinfer_ext.moe.MOE))
+        # print(dir(cpuinfer_ext.moe.MOE))
         # 调用C++后端
         bw_start = time.time()
         ctx.cpu_infer.submit(
             ctx.moe.backward(
+                layer_idx,
                 grad_output.size(0),  # qlen
                 expert_ids.size(1),   # k
                 expert_ids.data_ptr(),
@@ -542,7 +546,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
         print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
               f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
         
-        return grad_input.to(device=ctx.out_device), None, None, None, None, None
+        return grad_input.to(device=ctx.out_device), None, None, None, None, None, None
     
     def unload(self):
         return
@@ -1104,7 +1108,8 @@ class KTransformersExperts(BaseInjectedModule, KExpertsBase):
         if self.mode == InferenceState.GENERATE:
             assert self.generate_experts is not None, "generate_experts is None"
             if type(self.generate_experts) == KSFTExpertsCPU:
-                return self.generate_experts.apply(input_tensor, expert_ids, weights, self.generate_experts.cpu_infer, self.generate_experts.moe, self.generate_experts.out_device)
+                layer_idx = int(re.search(r'\d+', self.key).group())
+                return self.generate_experts.apply(input_tensor, expert_ids, weights, self.generate_experts.cpu_infer, self.generate_experts.moe, self.generate_experts.out_device, layer_idx)
             else:
                 return self.generate_experts.forward(input_tensor, expert_ids, weights)
         elif self.mode == InferenceState.PREFILL:
