@@ -1,4 +1,7 @@
 from typing import Any, List, Optional, Set
+import re
+import json
+import uuid
 from transformers import (
     LlamaTokenizer,
     AutoTokenizer,
@@ -8,6 +11,14 @@ from transformers import (
     StaticCache,
     AutoModelForCausalLM,
     BitsAndBytesConfig,
+    LogitsProcessorList,
+    TemperatureLogitsWarper,
+    TopKLogitsWarper,
+    TopPLogitsWarper,
+    MinPLogitsWarper,
+    TypicalLogitsWarper,
+    EpsilonLogitsWarper,
+    EtaLogitsWarper,
 )
 
 from ktransformers.server.config.config import Config
@@ -203,11 +214,65 @@ class TransformersInterface(BackendInterfaceBase):
         self.seq_length += 1
         return self.streamer.put(new_tokens)
 
+    @staticmethod
+    def tf_logits_warper(generation_config):
+        """
+        This class returns a [`LogitsProcessorList`] list object that contains all relevant [`LogitsWarper`] instances
+        used for multinomial sampling.
+        """
+
+        # instantiate warpers list
+        warpers = LogitsProcessorList()
+
+        # In beam methods, we need to keep at least one non-eos token to explore continuations that might have a
+        # better score (i.e. keep len(list(generation_config._eos_token_tensor)) + 1)
+        if generation_config.num_beams > 1:
+            if isinstance(generation_config._eos_token_tensor, list):
+                min_tokens_to_keep = len(generation_config._eos_token_tensor) + 1
+            elif isinstance(generation_config._eos_token_tensor, torch.Tensor):
+                min_tokens_to_keep = generation_config._eos_token_tensor.shape[0] + 1
+            else:
+                min_tokens_to_keep = 2
+        else:
+            min_tokens_to_keep = 1
+
+        # the following idea is largely copied from this PR: https://github.com/huggingface/transformers/pull/5420/files
+        # all samplers can be found in `generation_utils_samplers.py`
+        if generation_config.temperature is not None and generation_config.temperature != 1.0:
+            warpers.append(TemperatureLogitsWarper(generation_config.temperature))
+        if generation_config.top_k is not None and generation_config.top_k != 0:
+            warpers.append(TopKLogitsWarper(top_k=generation_config.top_k, min_tokens_to_keep=min_tokens_to_keep))
+        if generation_config.top_p is not None and generation_config.top_p < 1.0:
+            warpers.append(TopPLogitsWarper(top_p=generation_config.top_p, min_tokens_to_keep=min_tokens_to_keep))
+        if generation_config.min_p is not None:
+            # Applied after temperature scaling (see https://github.com/ggerganov/llama.cpp/pull/3841#issuecomment-2073826084)
+            warpers.append(MinPLogitsWarper(min_p=generation_config.min_p, min_tokens_to_keep=min_tokens_to_keep))
+        if generation_config.typical_p is not None and generation_config.typical_p < 1.0:
+            warpers.append(
+                TypicalLogitsWarper(mass=generation_config.typical_p, min_tokens_to_keep=min_tokens_to_keep)
+            )
+        if generation_config.epsilon_cutoff is not None and 0.0 < generation_config.epsilon_cutoff < 1.0:
+            warpers.append(
+                EpsilonLogitsWarper(epsilon=generation_config.epsilon_cutoff, min_tokens_to_keep=min_tokens_to_keep)
+            )
+        if generation_config.eta_cutoff is not None and 0.0 < generation_config.eta_cutoff < 1.0:
+            warpers.append(
+               EtaLogitsWarper(
+                    epsilon=generation_config.eta_cutoff, min_tokens_to_keep=min_tokens_to_keep, device=device
+                )
+            )
+        # `LogitNormalization` should always be the last logit processor, when present
+        if generation_config.renormalize_logits is True:
+            warpers.append(LogitNormalization())
+        return warpers
+
     def prepare_logits_wrapper(self, inputs, device, temperature: Optional[float] = None, top_p: Optional[float] = None):
         if temperature is None or temperature == 0:
             temperature = self.model.generation_config.temperature
         if top_p is None:
             top_p = self.model.generation_config.top_p
+        if top_p == 0:
+            top_p = 0.0001
         generation_config, model_kwargs = self.model._prepare_generation_config(
             None, max_length=self.args.max_new_tokens,
             do_sample=True, 
@@ -217,14 +282,8 @@ class TransformersInterface(BackendInterfaceBase):
             repetition_penalty=self.args.repetition_penalty # change this to modify generate config
         )
         self.inputs = inputs
-        try: # transformers==4.43
-            self.logits_warper = (
-                self.model._get_logits_warper(generation_config, device=device)
-            )
-        except: 
-            self.logits_warper = (
-                self.model._get_logits_warper(generation_config)
-            )
+
+        self.logits_warper = self.tf_logits_warper(generation_config)
 
     def logits_to_token(self, logits: torch.Tensor):
         logits = self.logits_warper(self.inputs.view(1, -1), logits.view(1, -1))
@@ -257,10 +316,15 @@ class TransformersInterface(BackendInterfaceBase):
         return self.logits_to_token(logits)
 
     @torch.no_grad
-    def prefill(self, input_ids: torch.Tensor, is_new: bool, temperature: Optional[float] = None, top_p: Optional[float] = None):
+    def prefill(self, input_ids: torch.Tensor, is_new: bool, temperature: Optional[float] = None, top_p: Optional[float] = None, max_tokens: Optional[float] = None, max_completion_tokens: Optional[float] = None):
         input_ids_length = input_ids.shape[-1]
         logger.debug(f"input_ids: {input_ids.shape}")
-
+        if max_tokens is not None:
+            max_completion_tokens = max_tokens
+        if max_completion_tokens is None:
+            max_new_tokens = self.args.max_new_tokens
+        else:
+            max_new_tokens = min(self.args.max_new_tokens, max_completion_tokens)
         if is_new:
             self.ever_generated_ids.clear()
             same_prefix = 0
@@ -269,7 +333,7 @@ class TransformersInterface(BackendInterfaceBase):
             if getattr(self, 'generated_ids', None) is None:
                 self.generated_ids = torch.zeros(
                     self.args.batch_size,
-                    input_ids.shape[-1] + self.args.max_new_tokens + 1,
+                    input_ids.shape[-1] + max_new_tokens + 1,
                     dtype=torch.int,
                     device=self.args.device,
                 )
@@ -296,7 +360,7 @@ class TransformersInterface(BackendInterfaceBase):
         logger.debug(f"generate_ids: {self.generated_ids.shape}")
         former_seq_length = self.seq_length
         self.seq_length += input_ids_length
-        expected_length = self.seq_length + self.args.max_new_tokens + 1
+        expected_length = self.seq_length + max_new_tokens + 1
         delta_length = expected_length - self.generated_ids.shape[-1]
         if delta_length > 0:
             new_generate_ids = torch.zeros(
@@ -325,33 +389,39 @@ class TransformersInterface(BackendInterfaceBase):
 
         self.prepare_logits_wrapper(input_ids, device, temperature, top_p)
         next_token = self.logits_to_token(logits[0, -1, :])
+        self.max_new_tokens = min(max_new_tokens, self.args.cache_lens - self.seq_length) - 1 
         yield self.append_new_tokens(next_token)
 
     @torch.no_grad
     def generate(self):
-        self.max_new_tokens = min(self.args.max_new_tokens, self.args.cache_lens - self.seq_length) - 1 
         logger.info(f"args.max_new_tokens: {self.args.max_new_tokens}, cache_lens: {self.args.cache_lens}, seq_length: {self.seq_length}")
         if(self.max_new_tokens <= 0):
             logger.warning("max_new_tokens is less than 0")
-            yield self.streamer.end()
+            yield self.streamer.end(), "length"
             return
-        logger.info(f"max_new_tokens: {self.max_new_tokens}")
         self.profiler.set_counter("decode", 0)
 
         for i in range(1, self.max_new_tokens):
             with torch.nn.attention.sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION, SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION]):
                 if flashinfer_enabled:
-                    MLAWrapperSingleton.plan_all(None,None,None,self.active_cache_position.to(torch.int32)+1,
+                    MLAWrapperSingleton.plan_all(None,None,None,self.active_cache_position.to(torch.int32)+1, None,
                                              num_heads=self.model.config.num_attention_heads, head_dim_ckv=self.model.config.kv_lora_rank, 
                                              head_dim_kpe=self.model.config.qk_rope_head_dim, page_size=self.cache.page_size,
-                                             sm_scale=(self.model.config.qk_rope_head_dim + self.model.config.qk_nope_head_dim) ** (-0.5), q_data_type=torch.bfloat16, kv_data_type=torch.bfloat16)
+                                             sm_scale=self.model.model.layers[0].self_attn.softmax_scale, q_data_type=torch.bfloat16, kv_data_type=torch.bfloat16)
                 next_token = self.decode_one_tokens()
                 self.profiler.inc("decode")
                 if next_token == self.tokenizer.eos_token_id or "<|im_end|>" == self.tokenizer.decode(next_token):
+                    yield self.streamer.end(), None
+                    yield "", "stop"
                     assert self.args.batch_size == 1
                     break
-                yield self.append_new_tokens(next_token)
-        yield self.streamer.end()
+                yield self.append_new_tokens(next_token), None
+
+        else:   # for's else, if output get max new tokens
+            yield self.streamer.end(), None
+            yield "", "length"
+        
+        
 
     def check_is_new(self, thread_id: str):
         if not self.use_static_cache:
@@ -366,7 +436,7 @@ class TransformersInterface(BackendInterfaceBase):
                 self.last_request_id = thread_id
                 return True
 
-    async def inference(self, local_messages, thread_id: str, temperature: Optional[float] = None, top_p: Optional[float] = None):
+    async def inference(self, local_messages, thread_id: str, temperature: Optional[float] = None, top_p: Optional[float] = None, max_tokens: Optional[float] = None, max_completion_tokens: Optional[float] = None):
         self.streamer.reset()
         self.profiler.create_and_start_timer("tokenize")
         if isinstance(local_messages, List):
@@ -391,20 +461,20 @@ class TransformersInterface(BackendInterfaceBase):
         if Config().user_force_think:
             think = '<think>\n'
             print(think, end="",flush=True)
-            yield think
+            yield think, None
         
-        for t in self.prefill(input_ids, self.check_is_new(thread_id), temperature, top_p):
+        for t in self.prefill(input_ids, self.check_is_new(thread_id), temperature, top_p, max_tokens, max_completion_tokens):
             # output think token after prefill done
             if t is not None:
                 print(t, end="",flush=True)
-                yield t
+                yield t, None
         self.profiler.pause_timer("prefill")
 
         self.profiler.create_and_start_timer("decode")
-        for t in self.generate():
+        for t, finish_reason in self.generate():
             if t is not None:
                 print(t, end="",flush=True)
-                yield t 
+                yield t, finish_reason
         print("")
         self.profiler.pause_timer("decode")
         self.report_last_time_performance()

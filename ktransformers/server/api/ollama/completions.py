@@ -13,6 +13,8 @@ from ktransformers.server.utils.create_interface import get_interface
 from ktransformers.server.schemas.assistants.streaming import check_link_response
 from ktransformers.server.backend.base import BackendInterfaceBase
 
+from ktransformers.server.schemas.endpoints.chat import RawUsage
+
 router = APIRouter(prefix='/api')
 
 # https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-completion
@@ -47,7 +49,10 @@ class OllamaGenerationStreamResponse(BaseModel):
     done: bool = Field(...)
 
 class OllamaGenerationResponse(BaseModel):
-    pass
+    model: str
+    created_at: str
+    response: str
+    done: bool
 
 @router.post("/generate", tags=['ollama'])
 async def generate(request: Request, input: OllamaGenerateCompletionRequest):
@@ -58,14 +63,18 @@ async def generate(request: Request, input: OllamaGenerateCompletionRequest):
 
     if input.stream:
         async def inner():
-            async for token in interface.inference(input.prompt, id):
-                d = OllamaGenerationStreamResponse(
-                    model=config.model_name,
-                    created_at=str(datetime.now()),
-                    response=token,
-                    done=False
-                )
-                yield d.model_dump_json() + '\n'
+            async for res in interface.inference(input.prompt, id):
+                if isinstance(res, RawUsage):
+                    raw_usage = res
+                else: 
+                    token, finish_reason = res
+                    d = OllamaGenerationStreamResponse(
+                        model=config.model_name,
+                        created_at=str(datetime.now()),
+                        response=token,
+                        done=False
+                    )
+                    yield d.model_dump_json() + '\n'
             d = OllamaGenerationStreamResponse(
                 model=config.model_name,
                 created_at=str(datetime.now()),
@@ -75,8 +84,21 @@ async def generate(request: Request, input: OllamaGenerateCompletionRequest):
             yield d.model_dump_json() + '\n'
         return check_link_response(request, inner())
     else:
-        raise NotImplementedError
-
+        complete_response = ""
+        async for res in interface.inference(input.prompt, id):
+            if isinstance(res, RawUsage):
+                raw_usage = res
+            else: 
+                token, finish_reason = res
+                complete_response += token
+        response = OllamaGenerationResponse(
+            model=config.model_name,
+            created_at=str(datetime.now()),
+            response=complete_response,
+            done=True
+        )
+        return response
+    
 # https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion
 class OllamaChatCompletionMessage(BaseModel):
     role: str
@@ -93,6 +115,7 @@ class OllamaChatCompletionStreamResponse(BaseModel):
     created_at: str
     message: dict
     done: bool = Field(...)
+    done_reason: Optional[str] = Field("", description="done_reason")
     total_duration: Optional[int] = Field(None, description="Total time spent in nanoseconds")
     load_duration: Optional[int] = Field(None, description="Time spent loading model in nanoseconds")
     prompt_eval_count: Optional[int] = Field(None, description="Number of tokens in prompt")
@@ -100,10 +123,18 @@ class OllamaChatCompletionStreamResponse(BaseModel):
     eval_count: Optional[int] = Field(None, description="Number of tokens generated")
     eval_duration: Optional[int] = Field(None, description="Time spent generating response in nanoseconds")
 
-
-
 class OllamaChatCompletionResponse(BaseModel):
-    pass
+    model: str
+    created_at: str
+    message: dict
+    done: bool
+    done_reason: Optional[str] = Field("", description="done_reason")
+    total_duration: Optional[int] = Field(None, description="Total time spent in nanoseconds")
+    load_duration: Optional[int] = Field(None, description="Time spent loading model in nanoseconds")
+    prompt_eval_count: Optional[int] = Field(None, description="Number of tokens in prompt")
+    prompt_eval_duration: Optional[int] = Field(None, description="Time spent evaluating prompt in nanoseconds")
+    eval_count: Optional[int] = Field(None, description="Number of tokens generated")
+    eval_duration: Optional[int] = Field(None, description="Time spent generating response in nanoseconds")
 
 @router.post("/chat", tags=['ollama'])
 async def chat(request: Request, input: OllamaChatCompletionRequest):
@@ -111,33 +142,34 @@ async def chat(request: Request, input: OllamaChatCompletionRequest):
     interface: BackendInterfaceBase = get_interface()
     config = Config()
 
-    # 将消息转换为提示字符串
-    prompt = ""
-    for msg in input.messages:
-        prompt += f"{msg.role}: {msg.content}\n"
-    prompt += "assistant:"
+    input_message = [json.loads(m.model_dump_json()) for m in input.messages]
 
     if input.stream:
         async def inner():
             start_time = time()  # 记录开始时间（秒）
-            eval_count = 0  # 统计生成的 token 数量
             tokens = []
 
-            async for token in interface.inference(prompt, id):
-                d = OllamaChatCompletionStreamResponse(
-                    model=config.model_name,
-                    created_at=str(datetime.now()),
-                    message={"role": "assistant", "content": token}, 
-                    done=False
-                )
-                yield d.model_dump_json() + '\n'
+            async for res in interface.inference(input_message, id):
+                if isinstance(res, RawUsage):
+                    raw_usage = res
+                else: 
+                    token, finish_reason = res
+                    d = OllamaChatCompletionStreamResponse(
+                        model=config.model_name,
+                        created_at=str(datetime.now()),
+                        message={"role": "assistant", "content": token}, 
+                        done=False
+                    )
+                    yield d.model_dump_json() + '\n'
             # 计算性能数据
             end_time = time()
-            total_duration = int((end_time - start_time) * 1_000_000_000)  # 转换为纳秒
-            prompt_eval_count = len(prompt.split())  # 简单估算提示词数量
-            eval_duration = total_duration  # 假设全部时间用于生成（简化）
-            prompt_eval_duration = 0  # 假设无单独提示评估时间
-            load_duration = 0  # 假设加载时间未知
+            total_duration = int((end_time - start_time) * 1_000_000_000) # unit: ns
+            prompt_eval_count = raw_usage.prefill_count
+            eval_count = raw_usage.decode_count
+            eval_duration = int(raw_usage.decode_time * 1_000_000_000)
+            prompt_eval_duration = int(raw_usage.prefill_time * 1_000_000_000)
+            load_duration = int(raw_usage.tokenize_time * 1_000_000_000)
+            done_reason = finish_reason
 
             d = OllamaChatCompletionStreamResponse(
                 model=config.model_name,
@@ -149,13 +181,48 @@ async def chat(request: Request, input: OllamaChatCompletionRequest):
                 prompt_eval_count=prompt_eval_count,
                 prompt_eval_duration=prompt_eval_duration,
                 eval_count=eval_count,
-                eval_duration=eval_duration
+                eval_duration=eval_duration,
+                done_reason=done_reason
             )
             yield d.model_dump_json() + '\n'
         return check_link_response(request, inner())
     else:
-        raise NotImplementedError("Non-streaming chat is not implemented.")
+        start_time = time()
+        complete_response = ""
+        eval_count = 0 
 
+        async for res in interface.inference(input_message, id):
+            if isinstance(res, RawUsage):
+                raw_usage = res
+            else: 
+                token, finish_reason = res
+                complete_response += token
+
+        end_time = time()
+        total_duration = int((end_time - start_time) * 1_000_000_000) # unit: ns
+        prompt_eval_count = raw_usage.prefill_count
+        eval_count = raw_usage.decode_count
+        eval_duration = int(raw_usage.decode_time * 1_000_000_000)
+        prompt_eval_duration = int(raw_usage.prefill_time * 1_000_000_000)
+        load_duration = int(raw_usage.tokenize_time * 1_000_000_000)
+        done_reason = finish_reason
+
+
+        response = OllamaChatCompletionResponse(
+            model=config.model_name,
+            created_at=str(datetime.now()),
+            message={"role": "assistant", "content": complete_response},
+            done=True,
+            total_duration=total_duration,
+            load_duration=load_duration,
+            prompt_eval_count=prompt_eval_count,
+            prompt_eval_duration=prompt_eval_duration,
+            eval_count=eval_count,
+            eval_duration=eval_duration,
+            done_reason=done_reason
+        )
+        return response
+    
 # https://github.com/ollama/ollama/blob/main/docs/api.md#list-local-models
 class OllamaModel(BaseModel):
     name: str

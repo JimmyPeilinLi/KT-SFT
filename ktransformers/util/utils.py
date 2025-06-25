@@ -11,17 +11,43 @@ from torch import nn
 import itertools
 import time
 import enum
-from torchviz import make_dot
-# from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
-from ktransformers.util.custom_gguf import translate_name_to_gguf, translate_adapter_name_to_gguf
-from ktransformers.util.custom_gguf import GGUFLoader
+from transformers import (
+    LogitsProcessorList,
+    TemperatureLogitsWarper,
+    TopKLogitsWarper,
+    TopPLogitsWarper,
+    MinPLogitsWarper,
+    TypicalLogitsWarper,
+    EpsilonLogitsWarper,
+    EtaLogitsWarper,
+)
+
+from ktransformers.util.custom_loader import ModelLoaderFactory, ModelLoader, SafeTensorLoader, GGUFLoader, translate_name_to_gguf
 from ktransformers.operators import base_operator
 from ktransformers.models.custom_cache import StaticCache
 from ktransformers.util.cuda_graph_runner import CUDAGraphRunner
 from ktransformers.util.textstream import TextStreamer
-from ktransformers.operators.flashinfer_wrapper import MLAWrapperSingleton
+if not torch.xpu.is_available():
+    from ktransformers.operators.flashinfer_wrapper import MLAWrapperSingleton
+import socket
 
 warm_uped = False
+
+def get_free_ports(n: int, continue_prot: list):
+    sockets = []
+    ports = []
+    for _ in range(n):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("", 0)) 
+        port = s.getsockname()[1]
+        if port in continue_prot:
+            s.close()
+            continue
+        ports.append(port)
+        sockets.append(s)
+    for s in sockets:
+        s.close()
+    return ports
 
 def get_compute_capability(device:torch.device = None):
     if torch.cuda.is_available():
@@ -34,6 +60,8 @@ def get_compute_capability(device:torch.device = None):
             return min_compute_capability_major
         else:
             return torch.cuda.get_device_properties(device)
+    else:
+        return 0
 
 def set_module(model, submodule_key, module):
     tokens = submodule_key.split('.')
@@ -51,8 +79,7 @@ def set_module(model, submodule_key, module):
 
 def set_param(module: nn.Module, name: str, weights: torch.Tensor):
     
-    # TODO: 目前先把requires_grad直接设为True了，后面看看要不要改（因为load_cur_state_dict加载参数起来太麻烦了）
-    param=nn.parameter.Parameter(weights, requires_grad=True)
+    param=nn.parameter.Parameter(weights, requires_grad=False)
     if isinstance(module, nn.Linear) and len(weights.shape)==1:
         param.unsqueeze_(0)
     setattr(module, name, param)
@@ -73,79 +100,142 @@ def get_all_used_cuda_device(device_map:dict):
     all_device_list = list(all_device_list)
     return all_device_list
 
-def load_cur_state_dict(module: nn.Module, gguf_loader: GGUFLoader, prefix: str = "", adapter_gguf: bool = False):
+def load_cur_state_dict(module: nn.Module, gguf_loader: ModelLoader, prefix: str = "", device="cuda"):
     prefix = prefix.replace("orig_module.", "")
     persistent_buffers = {k: v for k, v in module._buffers.items() if k not in module._non_persistent_buffers_set}
     local_name_params = itertools.chain(module._parameters.items(), persistent_buffers.items())
     local_state = {k: v for k, v in local_name_params if v is not None}
     for name, param in local_state.items():
         key = prefix + name
-        translated_key = translate_name_to_gguf(key)
-        if adapter_gguf == True:
-            translated_adapter_key = translate_adapter_name_to_gguf(key)
-
+        translated_key = key
+        
         # TODO: Merge all loader.
         # I know this is ugly but lets do it for now.
-        if gguf_loader.safetensor_loader is not None:
-            load_dequantized_tensor = gguf_loader.safetensor_loader.load_dequantized_tensor
-            tensor_file_map = gguf_loader.safetensor_loader.tensor_file_map
+        if isinstance(gguf_loader, SafeTensorLoader):
+            load_dequantized_tensor = gguf_loader.load_dequantized_tensor
         else:
             load_dequantized_tensor = gguf_loader.load_gguf_tensor
             tensor_file_map = gguf_loader.tensor_file_map
-        # print(f"tensor_file_map:{tensor_file_map}")
-        # We allow some key not be used in GGUF
-        if translated_key in tensor_file_map:
+        
+        if gguf_loader.has_tensor(translated_key) or "kv_b_proj" in translated_key:
             target_dtype = torch.get_default_dtype()
             device = get_device(translated_key[:translated_key.rfind(".")], gguf_loader.tensor_device_map)
             print(f"loading {translated_key} to {device}")
-            torch.cuda.empty_cache()
-            weights = load_dequantized_tensor(translated_key, device=device).to(dtype=target_dtype)
-            set_param(module, name, weights)
-            del weights
-        else:
-            if adapter_gguf == True: # Not all module should be reload in lora adapter
-                for single_tensor_file_map in tensor_file_map:
-                    if translated_adapter_key in single_tensor_file_map:
-                        target_dtype = torch.get_default_dtype()
-                        device = get_device(single_tensor_file_map[:single_tensor_file_map.rfind(".")], gguf_loader.tensor_device_map)
-                        print(f"loading {single_tensor_file_map} to {device}")
-                        torch.cuda.empty_cache()
-                        weights = load_dequantized_tensor(single_tensor_file_map, device=device).to(dtype=target_dtype)
-                        set_param(module, name, weights)
-                        del weights
-
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif torch.xpu.is_available():
+                torch.xpu.empty_cache()
+            if "kv_b_proj" in translated_key and not gguf_loader.has_tensor(translated_key):
+                attn_k_b = load_dequantized_tensor(translated_key.replace("self_attn.kv_b_proj", "attn_k_b"), device=device).to(dtype=target_dtype)
+                attn_k_b = attn_k_b.transpose(1, 2).contiguous()
+                attn_v_b = load_dequantized_tensor(translated_key.replace("self_attn.kv_b_proj", "attn_v_b"), device=device).to(dtype=target_dtype)
+                kv_b_proj = torch.cat((attn_k_b, attn_v_b), dim=1)
+                kv_b_proj = kv_b_proj.contiguous() if kv_b_proj.ndim == 2 else kv_b_proj.flatten(0, 1).contiguous()
+                set_param(module, name, kv_b_proj)
+                del attn_k_b
+                del attn_v_b
             else:
-                #print(load_config.tensor_file_map.keys())
-                raise Exception(f"can't find {translated_key} in GGUF file!")
-        
-def load_weights(module:nn.Module, gguf_loader:GGUFLoader, prefix='', adapter_gguf=False):
-    #print(f"recursively loading weights {prefix}")
-    # EMETODO
-    # if (not isinstance(module, base_operator.BaseInjectedModule)) or isinstance(module, KTransformersLinearLora):
-    if (not isinstance(module, base_operator.BaseInjectedModule)):
-        load_cur_state_dict(module, gguf_loader, prefix, adapter_gguf=adapter_gguf)
-        for name, child in module._modules.items():
-            load_weights(child, gguf_loader, prefix+name+".", adapter_gguf=adapter_gguf)
-    else:
-        if adapter_gguf == True:
-            # TODO: This is not the best choice, because we should change the value of gguf_loader in BaseInjectModule, but up to now, it can still work
-            try: # for other class inherit from BaseInjectModule, but not inherit from KTLinear
-                module.load(gguf_loader=gguf_loader, adapter_gguf=adapter_gguf)
-            except: # for only KTLinear up to now
-                module.load()
+                weights = load_dequantized_tensor(translated_key, device=device).to(dtype=target_dtype)
+                set_param(module, name, weights)
+                del weights
         else:
-            module.load()
+            #print(load_config.tensor_file_map.keys())
+            raise Exception(f"can't find {translated_key} in GGUF file!")
+        
+
+def sync_all_device(all_device_list):
+    for device in all_device_list:
+        if "cuda" in device.lower():
+            torch.cuda.synchronize(device)
+        elif "xpu" in device.lower():
+            torch.xpu.synchronize(device)
+        else:
+            raise RuntimeError("The device {} is not available".format(device))
+
+torch_device_mapping ={"cuda": "cuda:0", "xpu": "xpu:0"}
+
+def xpu_fp16_model(config):
+    # This function is to check if we run this model on XPU with FP16 dtype
+    if not torch.xpu.is_available():
+        return False
+    if config.architectures[0] == "DeepseekV3ForCausalLM":
+        return True
+    if config.architectures[0] == "Qwen3MoeForCausalLM" and config.hidden_size == 4096:
+        # Qwen3-30B seems have precision issue with FP16
+        # so we only use FP16 for Qwen3-235B now
+        return True
+    return False
+
+def load_weights(module:nn.Module, gguf_loader:ModelLoader, prefix='', device="cuda"):
+    #print(f"recursively loading weights {prefix}")
+    if not isinstance(module, base_operator.BaseInjectedModule):
+        load_cur_state_dict(module, gguf_loader, prefix, device=device)
+        for name, child in module._modules.items():
+            load_weights(child, gguf_loader, prefix+name+".", device=device)
+    else:
+        module.load()
+
+def tf_logits_warper(generation_config):
+        """
+        This class returns a [`LogitsProcessorList`] list object that contains all relevant [`LogitsWarper`] instances
+        used for multinomial sampling.
+        """
+
+        # instantiate warpers list
+        warpers = LogitsProcessorList()
+
+        # In beam methods, we need to keep at least one non-eos token to explore continuations that might have a
+        # better score (i.e. keep len(list(generation_config._eos_token_tensor)) + 1)
+        if generation_config.num_beams > 1:
+            if isinstance(generation_config._eos_token_tensor, list):
+                min_tokens_to_keep = len(generation_config._eos_token_tensor) + 1
+            elif isinstance(generation_config._eos_token_tensor, torch.Tensor):
+                min_tokens_to_keep = generation_config._eos_token_tensor.shape[0] + 1
+            else:
+                min_tokens_to_keep = 2
+        else:
+            min_tokens_to_keep = 1
+
+        # the following idea is largely copied from this PR: https://github.com/huggingface/transformers/pull/5420/files
+        # all samplers can be found in `generation_utils_samplers.py`
+        if generation_config.temperature is not None and generation_config.temperature != 1.0:
+            warpers.append(TemperatureLogitsWarper(generation_config.temperature))
+        if generation_config.top_k is not None and generation_config.top_k != 0:
+            warpers.append(TopKLogitsWarper(top_k=generation_config.top_k, min_tokens_to_keep=min_tokens_to_keep))
+        if generation_config.top_p is not None and generation_config.top_p < 1.0:
+            warpers.append(TopPLogitsWarper(top_p=generation_config.top_p, min_tokens_to_keep=min_tokens_to_keep))
+        if generation_config.min_p is not None:
+            # Applied after temperature scaling (see https://github.com/ggerganov/llama.cpp/pull/3841#issuecomment-2073826084)
+            warpers.append(MinPLogitsWarper(min_p=generation_config.min_p, min_tokens_to_keep=min_tokens_to_keep))
+        if generation_config.typical_p is not None and generation_config.typical_p < 1.0:
+            warpers.append(
+                TypicalLogitsWarper(mass=generation_config.typical_p, min_tokens_to_keep=min_tokens_to_keep)
+            )
+        if generation_config.epsilon_cutoff is not None and 0.0 < generation_config.epsilon_cutoff < 1.0:
+            warpers.append(
+                EpsilonLogitsWarper(epsilon=generation_config.epsilon_cutoff, min_tokens_to_keep=min_tokens_to_keep)
+            )
+        if generation_config.eta_cutoff is not None and 0.0 < generation_config.eta_cutoff < 1.0:
+            warpers.append(
+               EtaLogitsWarper(
+                    epsilon=generation_config.eta_cutoff, min_tokens_to_keep=min_tokens_to_keep, device=device
+                )
+            )
+        # `LogitNormalization` should always be the last logit processor, when present
+        if generation_config.renormalize_logits is True:
+            warpers.append(LogitNormalization())
+        return warpers
 
 def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cuda_graph: bool = True,
-                         mode = 'normal', force_think: bool = False, chunk_prefill_size = 16384, use_flashinfer_mla = False,
+                         mode = 'normal', force_think: bool = False, chunk_size = 16384, use_flashinfer_mla = False,
                          num_heads = None, head_dim_ckv = None, head_dim_kpe = None, q_head_dim = None):
     import os
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     torch._dynamo.config.suppress_errors = True
     batch_size, seq_length = inputs.shape
     device_map = model.gguf_loader.tensor_device_map
-    torch_device = get_device('blk.0.self_attn', device_map)
-    torch_device = "cuda:0" if torch_device == "cuda" else torch_device
+    torch_device = get_device('model.layers.0.self_attn', device_map)
+    torch_device = torch_device_mapping[torch_device] if torch_device in torch_device_mapping else torch_device
     inputs = inputs.to(torch_device)
     all_cuda_device = get_all_used_cuda_device(device_map)
 
@@ -158,7 +248,12 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             logits = cuda_graph_runner(cur_token, position_ids, cache_position)
         else:
             # custom_stream = torch.cuda.Stream()
-            torch.cuda.set_device(torch_device)
+            if torch.cuda.is_available():
+                torch.cuda.set_device(torch_device)
+            elif torch.xpu.is_available():
+                torch.xpu.set_device(torch_device)
+            else:
+                raise RuntimeError(f"The device: {torch_device} is not available")
             inputs_embeds = model.model.embed_tokens(cur_token.to("cpu")).to(torch_device)
             # with torch.cuda.stream(custom_stream):
             logits=model(inputs_embeds=inputs_embeds,
@@ -166,14 +261,9 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                         cache_position=cache_position,
                         past_key_values=past_key_values,
                         return_dict=False, use_cache=True)[0]
-            
-            # loss = logits.mean()
-            # dot = make_dot(loss, params=dict(model.named_parameters()))
-            # dot.render("KT_compute_graph", format="svg")
-        if past_key_values != None:
+        if past_key_values != None and isinstance(past_key_values, StaticCache):
             past_key_values.change_seq_length(1)
-        for device in all_cuda_device:
-            torch.cuda.synchronize(device)
+        sync_all_device(all_cuda_device)
         #print(logits)
         next_token_scores = logits_warper(inputs, logits[:, -1, :])
         if generation_config.do_sample:
@@ -187,8 +277,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     def chunk_prefill(inputs, cache_position, past_key_values):
         if mode == "long_context":
             inputs_embeds = model.model.embed_tokens(inputs.to("cpu"))
-        else: # TODO: not verify the inputs.to(xxx), origin is 'cpu', but not on same device for lora model.
-            inputs_embeds = model.model.embed_tokens(inputs.to(model.model.embed_tokens.weight.device)).to(torch_device)
+        else:
+            inputs_embeds = model.model.embed_tokens(inputs.to("cpu")).to(torch_device)
         if use_flashinfer_mla:
             MLAWrapperSingleton.update_buffer(past_key_values.max_pages)
             MLAWrapperSingleton.need_plan_all()
@@ -199,11 +289,22 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         
         return logits
     
-    torch.cuda.set_device(torch_device)
-    with torch.no_grad(): # TODO: 目前看上去应该可以暂时保留，不过如果要测试整体的计算图的话就需要去掉了
+    if torch.cuda.is_available():
+        torch.cuda.set_device(torch_device)
+    elif torch.xpu.is_available():
+        torch.xpu.set_device(torch_device)
+    else:
+        raise RuntimeError(f"The device: {torch_device} is not available")
+    with torch.no_grad():
         
         stream = TextStreamer(tokenizer)
-        if mode != 'long_context':
+        if torch.xpu.is_available():
+            from ipex_llm.transformers.kv import DynamicUnbalancedFp8Cache, DynamicNormalCache
+            if model.config.architectures[0] in ["DeepseekV3ForCausalLM", "DeepseekV2ForCausalLM"]:
+                past_key_values = DynamicUnbalancedFp8Cache.from_legacy_cache(None)
+            else:
+                past_key_values = DynamicNormalCache.from_legacy_cache(None)
+        elif mode != 'long_context':
             past_key_values = StaticCache(
                 config = model.config, max_batch_size = 1, max_cache_len = seq_length + max_new_tokens, device = device_map, dtype = model.dtype
             )
@@ -215,14 +316,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             # change this to modify generate config
             #top_k=5, top_p=0.85, temperature=0.1
         )
-        try: # transformers==4.43
-            logits_warper = (
-                model._get_logits_warper(generation_config,device=inputs.device)
-            )
-        except: 
-            logits_warper = (
-                model._get_logits_warper(generation_config)
-            )
+
+        logits_warper = tf_logits_warper(generation_config)
 
         cache_position = torch.arange(seq_length, device=torch_device, dtype=torch.int32)
         generated_ids = torch.zeros(
@@ -233,11 +328,11 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
 
         chunk_start = 0
         while chunk_start < seq_length:
-            chunk_end = min(chunk_start + chunk_prefill_size, seq_length)
+            chunk_end = min(chunk_start + chunk_size, seq_length)
             if past_key_values != None:
                 past_key_values.cur_idx=cache_position[chunk_start:chunk_end]
             logits = chunk_prefill(inputs[:, chunk_start:chunk_end], cache_position[chunk_start:chunk_end], past_key_values)
-            chunk_start += chunk_prefill_size
+            chunk_start += chunk_size
 
         next_token_scores = logits_warper(inputs, logits[:, -1, :])
         if generation_config.do_sample:
@@ -268,9 +363,9 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         start_time = time.time()
         for i in range(1, max_new_tokens):
             if use_flashinfer_mla:
-                MLAWrapperSingleton.plan_all(None,None,None,position_ids.squeeze(1)+1,
+                MLAWrapperSingleton.plan_all(None,None,None,position_ids.squeeze(1)+1,None,
                                              num_heads, head_dim_ckv, head_dim_kpe, past_key_values.page_size,
-                                             q_head_dim ** (-0.5), torch.bfloat16, torch.bfloat16)
+                                             model.model.layers[0].self_attn.softmax_scale, torch.bfloat16, torch.bfloat16)
             global warm_uped
             if use_cuda_graph and ( (warm_uped == True and int(i) == 1) or (warm_uped == False and int(i) == 2) ):
                 warm_uped = True
@@ -306,173 +401,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
 
     return tokens
 
-def simple_prefill_and_generate_for_test(model, tokenizer, inputs, max_new_tokens=10000, use_cuda_graph: bool = True,
-                         mode = 'normal', force_think: bool = False, chunk_prefill_size = 16384, use_flashinfer_mla = False,
-                         num_heads = None, head_dim_ckv = None, head_dim_kpe = None, q_head_dim = None):
-    import os
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    torch._dynamo.config.suppress_errors = True
-    batch_size, seq_length = inputs.shape
-    device_map = model.gguf_loader.tensor_device_map
-    torch_device = get_device('blk.0.self_attn', device_map)
-    torch_device = "cuda:0" if torch_device == "cuda" else torch_device
-    inputs = inputs.to(torch_device)
-    all_cuda_device = get_all_used_cuda_device(device_map)
-
-    tokens = []
-    
-    def decode_one_tokens(cuda_graph_runner, cur_token, position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph: bool = True):
-        if cuda_graph_runner is None:
-            use_cuda_graph = False
-        if use_cuda_graph:
-            logits = cuda_graph_runner(cur_token, position_ids, cache_position)
-        else:
-            # custom_stream = torch.cuda.Stream()
-            torch.cuda.set_device(torch_device)
-            inputs_embeds = model.model.embed_tokens(cur_token.to("cpu")).to(torch_device)
-            # with torch.cuda.stream(custom_stream):
-            logits=model(inputs_embeds=inputs_embeds,
-                        position_ids=position_ids,
-                        cache_position=cache_position,
-                        past_key_values=past_key_values,
-                        return_dict=False, use_cache=True)[0]
-            
-            # loss = logits.mean()
-            # dot = make_dot(loss, params=dict(model.named_parameters()))
-            # dot.render("KT_compute_graph", format="svg")
-        if past_key_values != None:
-            past_key_values.change_seq_length(1)
-        for device in all_cuda_device:
-            torch.cuda.synchronize(device)
-        #print(logits)
-        next_token_scores = logits_warper(inputs, logits[:, -1, :])
-        if generation_config.do_sample:
-            probs = nn.functional.softmax(next_token_scores, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
-        else:
-            next_token = torch.argmax(next_token_scores, dim=-1)
-        return next_token
-    
-    # TODO: use CUDA Graph for chunk prefill, may get small improvement
-    def chunk_prefill(inputs, cache_position, past_key_values):
-        if mode == "long_context":
-            inputs_embeds = model.model.embed_tokens(inputs.to("cpu"))
-        else: # TODO: not verify the inputs.to(xxx), origin is 'cpu', but not on same device for lora model.
-            inputs_embeds = model.model.embed_tokens(inputs.to(model.model.embed_tokens.weight.device)).to(torch_device)
-        if use_flashinfer_mla:
-            MLAWrapperSingleton.update_buffer(past_key_values.max_pages)
-            MLAWrapperSingleton.need_plan_all()
-            
-        logits = model(
-            inputs_embeds = inputs_embeds, cache_position=cache_position, past_key_values=past_key_values, return_dict=False, use_cache=True
-        )[0][:,-1,:].unsqueeze(0).clone().to(torch_device)
-        
-        return logits
-    
-    torch.cuda.set_device(torch_device)
-    with torch.no_grad(): # TODO: 目前看上去应该可以暂时保留，不过如果要测试整体的计算图的话就需要去掉了
-        
-        stream = TextStreamer(tokenizer)
-        if mode != 'long_context':
-            past_key_values = StaticCache(
-                config = model.config, max_batch_size = 1, max_cache_len = seq_length + max_new_tokens, device = device_map, dtype = model.dtype
-            )
-        else:
-            past_key_values = None
-        
-        generation_config, model_kwargs = model._prepare_generation_config(
-            None, do_sample=True
-            # change this to modify generate config
-            #top_k=5, top_p=0.85, temperature=0.1
-        )
-        try: # transformers==4.43
-            logits_warper = (
-                model._get_logits_warper(generation_config,device=inputs.device)
-            )
-        except: 
-            logits_warper = (
-                model._get_logits_warper(generation_config)
-            )
-
-        cache_position = torch.arange(seq_length, device=torch_device, dtype=torch.int32)
-        generated_ids = torch.zeros(
-            batch_size, seq_length + max_new_tokens + 1, dtype=torch.int, device=torch_device
-        )
-        generated_ids[:, cache_position] = inputs.to(torch_device).to(torch.int)
-        start_time = time.time()
-
-        chunk_start = 0
-        while chunk_start < seq_length:
-            chunk_end = min(chunk_start + chunk_prefill_size, seq_length)
-            if past_key_values != None:
-                past_key_values.cur_idx=cache_position[chunk_start:chunk_end]
-            logits = chunk_prefill(inputs[:, chunk_start:chunk_end], cache_position[chunk_start:chunk_end], past_key_values)
-            chunk_start += chunk_prefill_size
-
-        next_token_scores = logits_warper(inputs, logits[:, -1, :])
-        if generation_config.do_sample:
-            probs = nn.functional.softmax(next_token_scores, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
-        else:
-            next_token = torch.argmax(next_token_scores, dim=-1)
-
-        first_token_time = time.time() - start_time
-        
-        if use_flashinfer_mla:
-            MLAWrapperSingleton.reset_buffer()
-
-        prefill_count = seq_length
-        prefill_time = first_token_time
-        if force_think:
-            print("<think>")
-        print(stream.put(next_token.item()), end="", flush=True)
-        generated_ids[:, seq_length] = next_token
-        tokens.append(int(next_token))
-        inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
-        cache_position = torch.tensor([seq_length], device=torch_device, dtype=torch.int32)
-        position_ids = cache_position.unsqueeze(0)
-        seq_length += 1
-        
-        cuda_graph_runner = None
-            
-        start_time = time.time()
-        for i in range(1, max_new_tokens):
-            if use_flashinfer_mla:
-                MLAWrapperSingleton.plan_all(None,None,None,position_ids.squeeze(1)+1,
-                                             num_heads, head_dim_ckv, head_dim_kpe, past_key_values.page_size,
-                                             q_head_dim ** (-0.5), torch.bfloat16, torch.bfloat16)
-            global warm_uped
-            if use_cuda_graph and ( (warm_uped == True and int(i) == 1) or (warm_uped == False and int(i) == 2) ):
-                warm_uped = True
-                cuda_graph_runner = CUDAGraphRunner()
-                cuda_graph_runner.capture(model, next_token.unsqueeze(0), position_ids, cache_position, past_key_values, torch_device, return_dict=False, use_cache=True)
-            next_token = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph).to(torch_device)
-            inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
-            generated_ids[:, cache_position] = next_token.int()
-            tokens.append(int(next_token))
-            seq_length += 1
-            if next_token[0].item() == tokenizer.eos_token_id or tokenizer.decode(next_token.tolist()) == '<|im_end|>':
-                print(stream.end(), end="", flush=True)
-                break
-            else:
-                print(stream.put(next_token.item()), end="", flush=True)
-            
-            cache_position += 1
-            position_ids = cache_position.unsqueeze(0)
-        
-
-    total_time = time.time() - start_time
-    tokens_generated = len(tokens)
-    tokens_per_second = tokens_generated / total_time
-    
-	
-    print("")
-
-    print(f"prompt eval count:    {prefill_count} token(s)")
-    print(f"prompt eval duration: {prefill_time}s")
-    print(f"prompt eval rate:     {prefill_count/prefill_time} tokens/s")
-    print(f"eval count:           {tokens_generated} token(s)")
-    print(f"eval duration:        {total_time}s")
-    print(f"eval rate:            {tokens_per_second} tokens/s")
-    
-    return tokens
+class InferenceState(enum.Enum):
+    UNLOAD = 0
+    PREFILL = 1
+    GENERATE = 2
+    RESTORE = 3
