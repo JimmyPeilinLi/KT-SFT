@@ -571,7 +571,7 @@ void MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, 
             transpose_expert_matrix(src_expert, dst_expert_t, R_down, C_down, config_.down_type, config_.grad_type, expert_idx);
         }, nullptr);
         
-        transposed_ = true;
+        // transposed_ = true;
     }
 
 	// clk2 = clock();
