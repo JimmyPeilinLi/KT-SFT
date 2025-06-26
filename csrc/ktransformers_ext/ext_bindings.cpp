@@ -17,6 +17,7 @@
 #include "operators/llamafile/linear.h"
 #include "operators/llamafile/mlp.h"
 #include "operators/llamafile/moe.h"
+#include "operators/llamafile/sft_moe.h"
 
 #if defined(__x86_64__) && defined(__HAS_AVX512F__) && defined(__HAS_AMX__)
 #include "operators/amx/moe.hpp"
@@ -568,6 +569,161 @@ class MOEBindings {
     };
 };
 
+namespace {
+	inline void sft_moe_forward_wrapper(
+			SFT_MOE& self,
+			int qlen, int k,
+			const uint64_t* expert_ids,
+			const float*     weights,
+			const void*      input,
+			void*            output,
+			Backend*         backend)
+	{
+		self.ensure_fwd_cache(qlen, k);
+		self.forward(qlen, k, expert_ids, weights,
+					input, output,
+					backend,
+					self.fwd_cache_ptr());
+	}
+
+	inline void sft_moe_backward_wrapper(
+			SFT_MOE& self,
+			int layer_idx,
+			int qlen, int k,
+			const uint64_t* expert_ids,
+			const float*     weights,
+			const void*      input,
+			const void*      grad_output,
+			void*            grad_input,
+			Backend*         backend)
+	{
+		self.backward(layer_idx, qlen, k, expert_ids, weights,
+					input, grad_output, grad_input,
+					backend,
+					self.fwd_cache_ptr());
+	}
+}
+
+class SFT_MOEBindings {
+  public:
+    class WarmUpBindinds {
+      public:
+        struct Args {
+            CPUInfer *cpuinfer;
+            SFT_MOE *moe;
+        };
+        static void inner(void *args) {
+            Args *args_ = (Args *)args;
+            args_->cpuinfer->enqueue(&SFT_MOE::warm_up, args_->moe);
+        }
+        static std::pair<intptr_t, intptr_t> cpuinfer_interface(SFT_MOE &moe) {
+            Args *args = new Args{nullptr, &moe};
+            return std::make_pair((intptr_t)&inner, (intptr_t)args);
+        }
+    };
+    class ForwardBindings {
+      public:
+        struct Args {
+            CPUInfer *cpuinfer;
+            SFT_MOE *moe;
+            int qlen;
+            int k;
+            const uint64_t *expert_ids;
+            const float *weights;
+            const void *input;
+            void *output;
+        };
+        // static void inner(void *args) {
+        //     Args *args_ = (Args *)args;
+        //     args_->cpuinfer->enqueue(
+        //         &SFT_MOE::forward, args_->moe, args_->qlen, args_->k,
+        //         args_->expert_ids, args_->weights, args_->input, args_->output);
+        // }
+		static void inner(void *args) {
+			Args *args_ = static_cast<Args *>(args);
+			args_->cpuinfer->enqueue(
+				&sft_moe_forward_wrapper,   // 使用包装函数
+				args_->moe, 
+				args_->qlen, args_->k,
+				args_->expert_ids,
+				args_->weights,
+				args_->input,
+				args_->output);
+		}
+        static std::pair<intptr_t, intptr_t>
+        cpuinfer_interface(SFT_MOE &moe, int qlen, int k, intptr_t expert_ids,
+                           intptr_t weights, intptr_t input, intptr_t output) {
+            Args *args = new Args{nullptr,
+                                  &moe,
+                                  qlen,
+                                  k,
+                                  (const uint64_t *)expert_ids,
+                                  (const float *)weights,
+                                  (const void *)input,
+                                  (void *)output};
+            return std::make_pair((intptr_t)&inner, (intptr_t)args);
+        }
+    };
+	// FIXME: need fit the args setting with the backward of MoE
+	class BackwardBindings {
+    public:
+		struct Args {
+			CPUInfer* cpuinfer;
+			SFT_MOE* moe;
+			int layer_idx;
+			int qlen;
+			int k;
+			const uint64_t* expert_ids;
+			const float* weights;
+			const void* input;
+			const void* grad_output;
+			void* grad_input;
+		};
+
+        // static void inner(void* args) {
+        //     Args* args_ = static_cast<Args*>(args);
+        //     args_->cpuinfer->enqueue(&SFT_MOE::backward, args_->moe, 
+        //         args_->qlen, args_->k,
+        //         args_->expert_ids, args_->weights,
+		// 		args_->input,
+		// 		args_->grad_output,
+		// 		args_->grad_input);
+        // }
+
+		static void inner(void *args) {
+			Args *args_ = static_cast<Args *>(args);
+			args_->cpuinfer->enqueue(
+				&sft_moe_backward_wrapper,  // 使用包装函数
+				args_->moe,
+				args_->layer_idx,
+				args_->qlen, args_->k,
+				args_->expert_ids,
+				args_->weights,
+				args_->input,
+				args_->grad_output,
+				args_->grad_input);
+		}
+
+        static std::pair<intptr_t, intptr_t> cpuinfer_interface(
+            SFT_MOE& moe, int layer_idx, int qlen, int k, 
+            intptr_t expert_ids, intptr_t weights,
+    		intptr_t input,
+            intptr_t grad_output, intptr_t grad_input) {
+            
+            Args* args = new Args{
+				nullptr, &moe, layer_idx, qlen, k,
+				reinterpret_cast<const uint64_t*>(expert_ids),
+				reinterpret_cast<const float*>(weights),
+				reinterpret_cast<const void*>(input), 
+				reinterpret_cast<const void*>(grad_output),
+				reinterpret_cast<void*>(grad_input)
+			};
+            return std::make_pair(
+                reinterpret_cast<intptr_t>(&inner),
+                reinterpret_cast<intptr_t>(args));
+        }
+    };
+};
 
 #if defined(__x86_64__) && defined(__HAS_AVX512F__) && defined(__HAS_AMX__)
 template<class T>
@@ -698,6 +854,25 @@ PYBIND11_MODULE(cpuinfer_ext, m) {
         .def("warm_up", &MOEBindings::WarmUpBindinds::cpuinfer_interface)
         .def("forward", &MOEBindings::ForwardBindings::cpuinfer_interface);
 
+    auto sft_moe_module = m.def_submodule("sft_moe");
+    py::class_<SFT_MOEConfig>(sft_moe_module, "SFT_MOEConfig")
+        .def(py::init([](int expert_num, int routed_expert_num, int hidden_size,
+                         int intermediate_size, int stride, int group_min_len,
+                         int group_max_len, intptr_t gate_proj,
+                         intptr_t up_proj, intptr_t down_proj, int gate_type,
+                         int up_type, int down_type, int hidden_type) {
+            return SFT_MOEConfig(expert_num, routed_expert_num, hidden_size,
+                             intermediate_size, stride, group_min_len,
+                             group_max_len, (void *)gate_proj, (void *)up_proj,
+                             (void *)down_proj, (ggml_type)gate_type,
+                             (ggml_type)up_type, (ggml_type)down_type,
+                             (ggml_type)hidden_type);
+        }));
+    py::class_<SFT_MOE>(sft_moe_module, "SFT_MOE")
+        .def(py::init<SFT_MOEConfig>())
+        .def("warm_up", &SFT_MOEBindings::WarmUpBindinds::cpuinfer_interface)
+        .def("forward", &SFT_MOEBindings::ForwardBindings::cpuinfer_interface)
+		.def("backward", &SFT_MOEBindings::BackwardBindings::cpuinfer_interface);
 
     #if defined(__x86_64__) && defined(__HAS_AVX512F__) && defined(__HAS_AMX__)
     py::class_<AMX_MOEConfig>(moe_module, "AMX_MOEConfig")

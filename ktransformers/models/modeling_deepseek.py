@@ -1688,6 +1688,7 @@ class DeepseekV2ForCausalLM(DeepseekV2PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -1743,7 +1744,9 @@ class DeepseekV2ForCausalLM(DeepseekV2PreTrainedModel):
         )
 
         hidden_states = outputs[0]
-        logits = self.lm_head(hidden_states[:,-1:,:]).float()
+        # logits = self.lm_head(hidden_states[:,-1:,:]).float()
+        
+        logits = self.lm_head(hidden_states).float() 
 
         loss = None
         if labels is not None:

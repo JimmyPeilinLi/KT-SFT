@@ -7,7 +7,7 @@
  * @LastEditTime : 2024-08-15 07:43:41
  * @Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
  **/
-#include "moe.h"
+#include "sft_moe.h"
 #include <iostream>
 #include <cstdint>
 #include <cstring>
@@ -18,7 +18,7 @@
 #include <numaif.h>
 #endif
 
-MOE::MOE(MOEConfig config) {
+SFT_MOE::SFT_MOE(SFT_MOEConfig config) {
     config_ = config;
     gate_proj_ = config_.gate_proj;
     up_proj_ = config_.up_proj;
@@ -131,7 +131,7 @@ MOE::MOE(MOEConfig config) {
     m_local_down_output_ptr_.resize(config_.expert_num);
 }
 
-MOE::~MOE() {
+SFT_MOE::~SFT_MOE() {
     shared_mem_buffer.dealloc(this);
 
     #ifdef USE_NUMA
@@ -144,7 +144,7 @@ MOE::~MOE() {
     #endif
 }
 
-void MOE::warm_up(Backend* backend) {
+void SFT_MOE::warm_up(Backend* backend) {
     std::vector<float> input_fp32(config_.hidden_size);
     std::vector<uint8_t> input(config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type));
     std::vector<uint8_t> output(config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type));
@@ -153,7 +153,7 @@ void MOE::warm_up(Backend* backend) {
     }
     from_float(input_fp32.data(), input.data(), config_.hidden_size, config_.hidden_type);
 	/* ---------- 仅用于占位的 ForwardCache ---------- */
-    MoEForwardCache dummy_cache; // 内容无用，只为满足接口
+    SFT_MoEForwardCache dummy_cache; // 内容无用，只为满足接口
 	dummy_cache.init(/*k=*/1, config_.intermediate_size);
     for (int i = 0; i < config_.expert_num; i++) {
         uint64_t expert_ids = i;
@@ -166,7 +166,7 @@ static float act_fn(float x) {
     return x / (1.0f + expf(-x));
 }
 
-void MOE::ensure_fwd_cache(int qlen, int k)
+void SFT_MOE::ensure_fwd_cache(int qlen, int k)
 {
 	// if ((int)fw_cache_.size() < qlen)
 	// 	fw_cache_.resize(qlen);
@@ -191,12 +191,12 @@ void MOE::ensure_fwd_cache(int qlen, int k)
 
 }
 
-MoEForwardCache* MOE::fwd_cache_ptr()
+SFT_MoEForwardCache* SFT_MOE::fwd_cache_ptr()
 {
 	return fw_cache_.empty() ? nullptr : fw_cache_.data();
 }
 
-void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache) {
+void SFT_MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, SFT_MoEForwardCache* fwd_cache) {
     const void* gate_input_ptr;
     const void* up_input_ptr;
     if (config_.hidden_type == ggml_internal_get_type_traits(config_.gate_type).vec_dot_type && config_.hidden_type == ggml_internal_get_type_traits(config_.up_type).vec_dot_type) {
@@ -303,7 +303,7 @@ void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, c
     }
 }
 
-void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache) {
+void SFT_MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, SFT_MoEForwardCache* fwd_cache) {
     for (int i = 0; i < config_.expert_num; i++) {
         m_local_num_[i] = 0;
     }
@@ -439,7 +439,7 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
     }, nullptr);
 }
 
-void MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache) {
+void SFT_MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, SFT_MoEForwardCache* fwd_cache) {
     if (qlen < config_.group_min_len) {
         for (int i = 0; i < qlen; i++) {
 			// fwd_cache[i].init(k, config_.intermediate_size);      // 预分配
@@ -459,7 +459,7 @@ static float act_fn_grad(float x) {
     return sigmoid_x * (1. + x * (1. - sigmoid_x));
 }
 
-void MOE::transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx) {
+void SFT_MOE::transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx) {
     to_float(src, transpose_buffer_fp32_ + (R * C * expert_idx), R * C, src_type);
     from_float(transpose_buffer_fp32_ + (R * C * expert_idx), transpose_buffer_ + (R * C * expert_idx) * ggml_type_size(dst_type), R * C, dst_type);
     for (int r = 0; r < R; ++r) {
@@ -472,7 +472,7 @@ void MOE::transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml
     }
 }
 
-void MOE::backward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const MoEForwardCache* fwd_cache) {
+void SFT_MOE::backward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const SFT_MoEForwardCache* fwd_cache) {
 	// clock_t clk1, clk2, clk3, clk4;
 	// clock_t clkz1, clkz2, clkz3, clkz4, clkz5;
 	// clk1 = clock();
@@ -573,8 +573,8 @@ void MOE::backward_one(int layer_idx, int k, const uint64_t* expert_ids, const f
 }
 
 // TODO: input参数可以删除
-void MOE::backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights,
-                   const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache) {
+void SFT_MOE::backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights,
+                   const void* input, const void* grad_output, void* grad_input, Backend* backend, const SFT_MoEForwardCache* fwd_cache) {
     for (int i = 0; i < qlen; i++) {
         backward_one(layer_idx,
 					 k,
@@ -586,44 +586,3 @@ void MOE::backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, c
 					 fwd_cache + i);
     }
 }
-
-// TODO: many拓展之后的调用方式
-// void MOE::backward(int qlen, int k,
-//                    const uint64_t* expert_ids,
-//                    const float*     weights,
-//                    const void*      input,
-//                    const void*      grad_output,
-//                    void*            grad_input,
-//                    Backend*         backend,
-//                    MoEForwardCache* fwd_cache)
-// {
-//     if (qlen < config_.group_min_len) {
-//         for (int i = 0; i < qlen; ++i) {
-//             backward_one(k,
-//                          expert_ids + i * k,
-//                          weights    + i * k,
-//                          (const uint8_t*)input        + i * stride_in_bytes,
-//                          (const uint8_t*)grad_output  + i * stride_in_bytes,
-//                          (uint8_t*)grad_input         + i * stride_in_bytes,
-//                          backend,
-//                          fwd_cache + i);                // ⭐ 调用 backward_one
-//         }
-//         return;
-//     }
-
-//     int backward_len = std::min(config_.group_max_len, qlen);
-//     backward_many(backward_len, k,                        // ⭐ 调用 backward_many
-//                   expert_ids, weights,
-//                   input, grad_output, grad_input,
-//                   backend,
-//                   fwd_cache);
-
-//     backward(qlen - backward_len, k,                      // ⭐ 递归调用自己
-//              expert_ids + backward_len * k,
-//              weights    + backward_len * k,
-//              (const uint8_t*)input        + backward_len * stride_in_bytes,
-//              (const uint8_t*)grad_output  + backward_len * stride_in_bytes,
-//              (uint8_t*)grad_input         + backward_len * stride_in_bytes,
-//              backend,
-//              fwd_cache + backward_len);
-// }

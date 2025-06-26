@@ -643,7 +643,8 @@ class KDeepseekV2Model(BaseInjectedModule):
         if inputs_embeds is None:
             org_device = input_ids.device
             # TODO move to embed_tokens's device, not hard code to cpu
-            input_ids = input_ids.to("cpu")
+            # input_ids = input_ids.to("cpu")
+            input_ids = input_ids.to(self.embed_tokens.weight.device)
             inputs_embeds = self.embed_tokens(input_ids).to(org_device)
             input_ids = input_ids.to(org_device)
 

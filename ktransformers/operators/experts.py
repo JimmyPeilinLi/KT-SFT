@@ -29,6 +29,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext", "build", "Debug"))
 import cpuinfer_ext
 from cpuinfer_ext.moe import MOEConfig, MOE
+from cpuinfer_ext.sft_moe import SFT_MOEConfig, SFT_MOE
 import ctypes
 from ktransformers.util.custom_loader import GGUFLoader
 from ktransformers.util.inference_state import InferenceState
@@ -469,7 +470,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
         #print(self.gate_type, self.up_type, self.down_type)
         n_routed_experts = self.n_routed_experts
         # n_routed_experts = len(self.orig_module)
-        moe_config = MOEConfig(
+        sft_moe_config = SFT_MOEConfig(
             n_routed_experts,
             self.config.num_experts_per_tok,
             self.config.hidden_size,
@@ -487,7 +488,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
         )
         # print(n_routed_experts, hidden_size, moe_intermediate_size)
         num_experts_per_tok = self.config.num_experts_per_tok
-        self.moe = MOE(moe_config)
+        self.moe = SFT_MOE(sft_moe_config)
         self.cpu_infer = KSFTExpertsCPU.CPU_INFER
         if warmup:
             self.cpu_infer.submit(self.moe.warm_up())

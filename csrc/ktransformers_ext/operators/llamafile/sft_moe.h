@@ -7,8 +7,8 @@
  * @LastEditTime : 2024-07-25 10:35:10
  * @Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
  **/
-#ifndef CPUINFER_OPERATOR_MOE_H
-#define CPUINFER_OPERATOR_MOE_H
+#ifndef CPUINFER_OPERATOR_SFT_MOE_H
+#define CPUINFER_OPERATOR_SFT_MOE_H
 
 #include <cmath>
 #include <cstdio>
@@ -17,15 +17,15 @@
 #include <vector>
 
 #include "../../cpu_backend/backend.h"
+#include "../../cpu_backend/shared_mem_buffer.h"
 #include "conversion.h"
 #include "llama.cpp/ggml-impl.h"
 #include "llama.cpp/ggml-quants.h"
 #include "llama.cpp/ggml.h"
 #include "llamafile/sgemm.h"
-#include "shared_mem_buffer.h"
-#include "moe_forward_cache.h"
+#include "sft_moe_forward_cache.h"
 
-struct MOEConfig {
+struct SFT_MOEConfig {
     long expert_num;
     int routed_expert_num;
     long hidden_size;
@@ -42,30 +42,30 @@ struct MOEConfig {
     ggml_type hidden_type;
     ggml_type grad_type = GGML_TYPE_BF16;
 
-    MOEConfig() {}
+    SFT_MOEConfig() {}
 
-    MOEConfig(int expert_num, int routed_expert_num, int hidden_size, int intermediate_size, int stride, int group_min_len, int group_max_len, void* gate_proj, void* up_proj, void* down_proj, ggml_type gate_type, ggml_type up_type, ggml_type down_type, ggml_type hidden_type)
+    SFT_MOEConfig(int expert_num, int routed_expert_num, int hidden_size, int intermediate_size, int stride, int group_min_len, int group_max_len, void* gate_proj, void* up_proj, void* down_proj, ggml_type gate_type, ggml_type up_type, ggml_type down_type, ggml_type hidden_type)
         : expert_num(expert_num), routed_expert_num(routed_expert_num), hidden_size(hidden_size), intermediate_size(intermediate_size), stride(stride), group_min_len(group_min_len), group_max_len(group_max_len), gate_proj(gate_proj), up_proj(up_proj), down_proj(down_proj), gate_type(gate_type), up_type(up_type), down_type(down_type), hidden_type(hidden_type) {}
 };
 
-class MOE {
+class SFT_MOE {
    public:
-    MOE(MOEConfig);
-    ~MOE();
+    SFT_MOE(SFT_MOEConfig);
+    ~SFT_MOE();
     void warm_up(Backend* backend);
-    void forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache);
-    void forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache);
-    void forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, MoEForwardCache* fwd_cache);
-	void backward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const MoEForwardCache* fwd_cache);
+    void forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, SFT_MoEForwardCache* fwd_cache);
+    void forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, SFT_MoEForwardCache* fwd_cache);
+    void forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, SFT_MoEForwardCache* fwd_cache);
+	void backward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const SFT_MoEForwardCache* fwd_cache);
 	void backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights,
-              const void* input, const void* grad_output, void* grad_input, Backend* backend, const MoEForwardCache* fwd_cache); // FIXME: expert backward definition for C++
+              const void* input, const void* grad_output, void* grad_input, Backend* backend, const SFT_MoEForwardCache* fwd_cache); // FIXME: expert backward definition for C++
     
     void transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx);
     void ensure_fwd_cache(int qlen, int k);
-    MoEForwardCache* fwd_cache_ptr();
+    SFT_MoEForwardCache* fwd_cache_ptr();
 
    private:
-    MOEConfig config_;
+    SFT_MOEConfig config_;
     void* gate_proj_;  // [expert_num * intermediate_size * hidden_size ( /32 if quantized)]
     void* up_proj_;    // [expert_num * intermediate_size * hidden_size ( /32 if quantized)]
     void* down_proj_;  // [expert_num * hidden_size * intermediate_size ( /32 if quantized)]
@@ -125,7 +125,7 @@ class MOE {
     std::vector<uint8_t*> m_local_down_input_ptr_;       // [expert_num]
     std::vector<float*> m_local_down_output_ptr_;        // [expert_num]
 
-	std::vector<MoEForwardCache> fw_cache_; // 持久缓存，便于backward读取到forward_cache
+	std::vector<SFT_MoEForwardCache> fw_cache_; // 持久缓存，便于backward读取到forward_cache
 };
 
 #endif
