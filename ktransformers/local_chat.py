@@ -35,6 +35,7 @@ from ktransformers.server.config.config import Config
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled
 from ktransformers.sft.lora import inject_lora_layer, lora_and_load_adapter
 from ktransformers.util.custom_loader import GGUFLoader
+from ktransformers.util.globals import GLOBAL_CONFIG
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
@@ -149,6 +150,7 @@ def local_chat(
     model.train()
 
     if is_sft == True:
+        GLOBAL_CONFIG["mod"] = "sft"
         print(f"sft with lora in dataset: {sft_data_path} ...")
         lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path)
 
@@ -185,6 +187,7 @@ def local_chat(
     if model.generation_config.pad_token_id is None:
         model.generation_config.pad_token_id = model.generation_config.eos_token_id
     model.eval()
+    GLOBAL_CONFIG["mod"] = "infer"
     logging.basicConfig(level=logging.INFO)
 
     system = platform.system()
@@ -277,6 +280,11 @@ if __name__ == "__main__":
             use_adapter=args.use_adapter,
             use_adapter_path=args.use_adapter_path
         )
+        
+        if args.is_sft == True:
+            GLOBAL_CONFIG["mod"] = "sft"
+        else:
+            GLOBAL_CONFIG["mod"] = "infer"
 
     else:
         local_chat(
@@ -293,3 +301,5 @@ if __name__ == "__main__":
             use_adapter=False,
             use_adapter_path="/home/lpl/KT-SFT/test_adapter/demo_adapter_origin_target_kv"
         )
+        
+        GLOBAL_CONFIG["mod"] = "sft"

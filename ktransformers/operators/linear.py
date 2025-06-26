@@ -18,7 +18,7 @@ if not torch.xpu.is_available():
     import KTransformersOps
     import vLLMMarlin
 from ktransformers.util.custom_loader import GGUFLoader, SafeTensorLoader
-from ktransformers.util.utils import InferenceState
+from ktransformers.util.inference_state import InferenceState
 if not torch.xpu.is_available():
     from ktransformers.ktransformers_ext.operators.custom_marlin.quantize.utils.marlin_utils import (
         MarlinWorkspace,
@@ -31,6 +31,7 @@ if not torch.xpu.is_available():
 from ktransformers.operators.base_operator import BaseInjectedModule
 from transformers.configuration_utils import PretrainedConfig
 from ktransformers.ktransformers_ext.triton.fp8gemm import fp8_gemm, act_quant, weight_dequant
+from ktransformers.util.globals import GLOBAL_CONFIG
 from abc import ABC, abstractmethod
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext", "build"))
@@ -43,7 +44,7 @@ from typing import Dict, Tuple, Optional, Union
 import numpy as np
 
 #class KLinearBase(BaseInjectedModule, ABC):
-class KLinearBase(ABC):
+class KLinearBase(nn.Module, ABC):
     def __init__(
         self,
         key: str,
@@ -156,6 +157,9 @@ class KLinearTorch(KLinearBase):
     def forward(self, x: torch.Tensor, bsz_tensor: torch.Tensor=None, **kwargs) -> torch.Tensor:
         dtype = x.dtype
         out_device = x.device
+
+        if (not x.requires_grad) and GLOBAL_CONFIG["mod"] == "sft":
+            x = x.requires_grad_(True)
         # TODO: support CUDA Graph when using cpu, but CPUInfer is recommended.
         x = x.to(device=self.device, dtype=self.dtype)
         x = x @ self.weight
@@ -170,21 +174,39 @@ class KLinearTorch(KLinearBase):
         if w is None: w = self.load_weight(device=device)
         # else: self.out_features = w.shape[0], self.in_features = w.shape[1]
         
-        if isinstance(w, nn.Parameter):
-            try:
-                self.weight = w.to(dtype=self.dtype).view(self.out_features, self.in_features).T
-            except: 
-                self.weight = w.to(dtype=self.dtype).T
-            self.has_bias = False
-        elif isinstance(w, tuple):
-            try:
-                self.weight = w[0].to(dtype=self.dtype).view(self.out_features, self.in_features).T
-            except:
-                self.weight = w[0].to(dtype=self.dtype).T
-            self.bias = w[1].to(dtype=self.dtype)
-            self.has_bias = True
-        else:
-            raise ValueError("Invalid weight type")
+        if GLOBAL_CONFIG["mod"] == "infer":
+            if isinstance(w, nn.Parameter):
+                try:
+                    self.weight = w.to(dtype=self.dtype).view(self.out_features, self.in_features).T
+                except: 
+                    self.weight = w.to(dtype=self.dtype).T
+                self.has_bias = False
+            elif isinstance(w, tuple):
+                try:
+                    self.weight = w[0].to(dtype=self.dtype).view(self.out_features, self.in_features).T
+                except:
+                    self.weight = w[0].to(dtype=self.dtype).T
+                self.bias = w[1].to(dtype=self.dtype)
+                self.has_bias = True
+            else:
+                raise ValueError("Invalid weight type")
+
+        elif GLOBAL_CONFIG["mod"] == "sft":
+            if isinstance(w, nn.Parameter):
+                try:
+                    self.weight = nn.Parameter(w.to(dtype=self.dtype).view(self.out_features, self.in_features).T, requires_grad=True)
+                except: 
+                    self.weight = nn.Parameter(w.to(dtype=self.dtype).T, requires_grad=True)
+                self.has_bias = False
+            elif isinstance(w, tuple):
+                try:
+                    self.weight = nn.Parameter(w[0].to(dtype=self.dtype).view(self.out_features, self.in_features).T, requires_grad=True)
+                except:
+                    self.weight = nn.Parameter(w[0].to(dtype=self.dtype).T, requires_grad=True)
+                self.bias = nn.Parameter(w[1].to(dtype=self.dtype), requires_grad=True)
+                self.has_bias = True
+            else:
+                raise ValueError("Invalid weight type")
         # self.linear = self.linear.to(device)
         self.weight = self.weight.to(device)
         if self.has_bias:
@@ -920,7 +942,14 @@ class KTransformersLinear(BaseInjectedModule, KLinearBase):
             y = self.prefill_linear.forward(x, bsz_tensor)
         else:
             assert self.generate_linear is not None, "gpu linear is not initialized"
-            y = self.generate_linear.forward(x, bsz_tensor)
+        # TODO: A violence way to solve the weight=None, for Lora inference Test, need modify it later
+            try:
+                y = self.generate_linear.forward(x, bsz_tensor)
+            except TypeError as e:
+                Warning("A Dange way to avoid the none weight, Need to check it later in KTransformersLinear forward!!")
+                self.generate_linear.weight = self.orig_module.generate_linear.weight
+                self.weight = self.orig_module.generate_linear.weight
+                y = self.generate_linear.forward(x, bsz_tensor)
         return y
 
     def load(self, w: dict | nn.Parameter | tuple | None = None, mode: InferenceState = InferenceState.GENERATE):

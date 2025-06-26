@@ -21,12 +21,14 @@ from transformers import (
     EpsilonLogitsWarper,
     EtaLogitsWarper,
 )
-
-from ktransformers.util.custom_loader import ModelLoaderFactory, ModelLoader, SafeTensorLoader, GGUFLoader, translate_name_to_gguf
+from torchviz import make_dot
+# from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
+from ktransformers.util.custom_loader import ModelLoaderFactory, ModelLoader, SafeTensorLoader, GGUFLoader, translate_name_to_gguf, translate_adapter_name_to_gguf
 from ktransformers.operators import base_operator
 from ktransformers.models.custom_cache import StaticCache
 from ktransformers.util.cuda_graph_runner import CUDAGraphRunner
 from ktransformers.util.textstream import TextStreamer
+from ktransformers.util.globals import GLOBAL_CONFIG
 if not torch.xpu.is_available():
     from ktransformers.operators.flashinfer_wrapper import MLAWrapperSingleton
 import socket
@@ -79,7 +81,8 @@ def set_module(model, submodule_key, module):
 
 def set_param(module: nn.Module, name: str, weights: torch.Tensor):
     
-    param=nn.parameter.Parameter(weights, requires_grad=False)
+    # TODO: 目前先把requires_grad直接设为True了，后面看看要不要改（因为load_cur_state_dict加载参数起来太麻烦了）
+    param=nn.parameter.Parameter(weights, requires_grad=True)
     if isinstance(module, nn.Linear) and len(weights.shape)==1:
         param.unsqueeze_(0)
     setattr(module, name, param)
@@ -87,6 +90,8 @@ def set_param(module: nn.Module, name: str, weights: torch.Tensor):
 def get_device(gguf_module_key:str, device_map:dict):
     if gguf_module_key in device_map:
         return device_map[gguf_module_key]["generate_device"]
+    elif gguf_module_key.replace("model.layers", "blk") in device_map:
+        return device_map[gguf_module_key.replace("model.layer", "blk")]["generate_device"]
     else:
         return "cuda"
 
@@ -100,47 +105,92 @@ def get_all_used_cuda_device(device_map:dict):
     all_device_list = list(all_device_list)
     return all_device_list
 
-def load_cur_state_dict(module: nn.Module, gguf_loader: ModelLoader, prefix: str = "", device="cuda"):
-    prefix = prefix.replace("orig_module.", "")
-    persistent_buffers = {k: v for k, v in module._buffers.items() if k not in module._non_persistent_buffers_set}
-    local_name_params = itertools.chain(module._parameters.items(), persistent_buffers.items())
-    local_state = {k: v for k, v in local_name_params if v is not None}
-    for name, param in local_state.items():
-        key = prefix + name
-        translated_key = key
-        
-        # TODO: Merge all loader.
-        # I know this is ugly but lets do it for now.
-        if isinstance(gguf_loader, SafeTensorLoader):
-            load_dequantized_tensor = gguf_loader.load_dequantized_tensor
-        else:
-            load_dequantized_tensor = gguf_loader.load_gguf_tensor
-            tensor_file_map = gguf_loader.tensor_file_map
-        
-        if gguf_loader.has_tensor(translated_key) or "kv_b_proj" in translated_key:
-            target_dtype = torch.get_default_dtype()
-            device = get_device(translated_key[:translated_key.rfind(".")], gguf_loader.tensor_device_map)
-            print(f"loading {translated_key} to {device}")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            elif torch.xpu.is_available():
-                torch.xpu.empty_cache()
-            if "kv_b_proj" in translated_key and not gguf_loader.has_tensor(translated_key):
-                attn_k_b = load_dequantized_tensor(translated_key.replace("self_attn.kv_b_proj", "attn_k_b"), device=device).to(dtype=target_dtype)
-                attn_k_b = attn_k_b.transpose(1, 2).contiguous()
-                attn_v_b = load_dequantized_tensor(translated_key.replace("self_attn.kv_b_proj", "attn_v_b"), device=device).to(dtype=target_dtype)
-                kv_b_proj = torch.cat((attn_k_b, attn_v_b), dim=1)
-                kv_b_proj = kv_b_proj.contiguous() if kv_b_proj.ndim == 2 else kv_b_proj.flatten(0, 1).contiguous()
-                set_param(module, name, kv_b_proj)
-                del attn_k_b
-                del attn_v_b
+def load_cur_state_dict(module: nn.Module, gguf_loader: ModelLoader, prefix: str = "", device="cuda", adapter_gguf: bool = False):
+    if GLOBAL_CONFIG["mod"] == 'sft':
+        prefix = prefix.replace("orig_module.", "")
+        persistent_buffers = {k: v for k, v in module._buffers.items() if k not in module._non_persistent_buffers_set}
+        local_name_params = itertools.chain(module._parameters.items(), persistent_buffers.items())
+        local_state = {k: v for k, v in local_name_params if v is not None}
+        for name, param in local_state.items():
+            key = prefix + name
+            translated_key = translate_name_to_gguf(key)
+            if adapter_gguf == True:
+                translated_adapter_key = translate_adapter_name_to_gguf(key)
+
+            # TODO: Merge all loader.
+            # I know this is ugly but lets do it for now.
+            if gguf_loader.safetensor_loader is not None:
+                load_dequantized_tensor = gguf_loader.safetensor_loader.load_dequantized_tensor
+                tensor_file_map = gguf_loader.safetensor_loader.tensor_file_map
             else:
+                load_dequantized_tensor = gguf_loader.load_gguf_tensor
+                tensor_file_map = gguf_loader.tensor_file_map
+            # print(f"tensor_file_map:{tensor_file_map}")
+            # We allow some key not be used in GGUF
+            if translated_key in tensor_file_map:
+                target_dtype = torch.get_default_dtype()
+                device = get_device(translated_key[:translated_key.rfind(".")], gguf_loader.tensor_device_map)
+                print(f"loading {translated_key} to {device}")
+                torch.cuda.empty_cache()
                 weights = load_dequantized_tensor(translated_key, device=device).to(dtype=target_dtype)
                 set_param(module, name, weights)
                 del weights
-        else:
-            #print(load_config.tensor_file_map.keys())
-            raise Exception(f"can't find {translated_key} in GGUF file!")
+            else:
+                if adapter_gguf == True: # Not all module should be reload in lora adapter
+                    for single_tensor_file_map in tensor_file_map:
+                        if translated_adapter_key in single_tensor_file_map:
+                            target_dtype = torch.get_default_dtype()
+                            device = get_device(single_tensor_file_map[:single_tensor_file_map.rfind(".")], gguf_loader.tensor_device_map)
+                            print(f"loading {single_tensor_file_map} to {device}")
+                            torch.cuda.empty_cache()
+                            weights = load_dequantized_tensor(single_tensor_file_map, device=device).to(dtype=target_dtype)
+                            set_param(module, name, weights)
+                            del weights
+
+                else:
+                    #print(load_config.tensor_file_map.keys())
+                    raise Exception(f"can't find {translated_key} in GGUF file!")
+    elif GLOBAL_CONFIG["mod"] == 'infer':
+        prefix = prefix.replace("orig_module.", "")
+        persistent_buffers = {k: v for k, v in module._buffers.items() if k not in module._non_persistent_buffers_set}
+        local_name_params = itertools.chain(module._parameters.items(), persistent_buffers.items())
+        local_state = {k: v for k, v in local_name_params if v is not None}
+        for name, param in local_state.items():
+            key = prefix + name
+            translated_key = key
+            
+            # TODO: Merge all loader.
+            # I know this is ugly but lets do it for now.
+            if isinstance(gguf_loader, SafeTensorLoader):
+                load_dequantized_tensor = gguf_loader.load_dequantized_tensor
+            else:
+                load_dequantized_tensor = gguf_loader.load_gguf_tensor
+                tensor_file_map = gguf_loader.tensor_file_map
+            
+            if gguf_loader.has_tensor(translated_key) or "kv_b_proj" in translated_key:
+                target_dtype = torch.get_default_dtype()
+                device = get_device(translated_key[:translated_key.rfind(".")], gguf_loader.tensor_device_map)
+                print(f"loading {translated_key} to {device}")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif torch.xpu.is_available():
+                    torch.xpu.empty_cache()
+                if "kv_b_proj" in translated_key and not gguf_loader.has_tensor(translated_key):
+                    attn_k_b = load_dequantized_tensor(translated_key.replace("self_attn.kv_b_proj", "attn_k_b"), device=device).to(dtype=target_dtype)
+                    attn_k_b = attn_k_b.transpose(1, 2).contiguous()
+                    attn_v_b = load_dequantized_tensor(translated_key.replace("self_attn.kv_b_proj", "attn_v_b"), device=device).to(dtype=target_dtype)
+                    kv_b_proj = torch.cat((attn_k_b, attn_v_b), dim=1)
+                    kv_b_proj = kv_b_proj.contiguous() if kv_b_proj.ndim == 2 else kv_b_proj.flatten(0, 1).contiguous()
+                    set_param(module, name, kv_b_proj)
+                    del attn_k_b
+                    del attn_v_b
+                else:
+                    weights = load_dequantized_tensor(translated_key, device=device).to(dtype=target_dtype)
+                    set_param(module, name, weights)
+                    del weights
+            else:
+                #print(load_config.tensor_file_map.keys())
+                raise Exception(f"can't find {translated_key} in GGUF file!")
         
 
 def sync_all_device(all_device_list):
@@ -166,14 +216,21 @@ def xpu_fp16_model(config):
         return True
     return False
 
-def load_weights(module:nn.Module, gguf_loader:ModelLoader, prefix='', device="cuda"):
+def load_weights(module:nn.Module, gguf_loader:ModelLoader, prefix='', device="cuda", adapter_gguf=False):
     #print(f"recursively loading weights {prefix}")
     if not isinstance(module, base_operator.BaseInjectedModule):
-        load_cur_state_dict(module, gguf_loader, prefix, device=device)
+        load_cur_state_dict(module, gguf_loader, prefix, device=device, adapter_gguf=adapter_gguf, )
         for name, child in module._modules.items():
-            load_weights(child, gguf_loader, prefix+name+".", device=device)
+            load_weights(child, gguf_loader, prefix+name+".", device=device, adapter_gguf=adapter_gguf, )
     else:
-        module.load()
+        if adapter_gguf == True:
+            # TODO: This is not the best choice, because we should change the value of gguf_loader in BaseInjectModule, but up to now, it can still work
+            try: # for other class inherit from BaseInjectModule, but not inherit from KTLinear
+                module.load(gguf_loader=gguf_loader, adapter_gguf=adapter_gguf)
+            except: # for only KTLinear up to now
+                module.load()
+        else:
+            module.load()
 
 def tf_logits_warper(generation_config):
         """
@@ -235,6 +292,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     batch_size, seq_length = inputs.shape
     device_map = model.gguf_loader.tensor_device_map
     torch_device = get_device('model.layers.0.self_attn', device_map)
+    # TODO: 这块不知道是不是要修改为cuda:0，不知道不然会不会有错
+    # torch_device = "cuda:0" if torch_device == "cuda" else torch_device
     torch_device = torch_device_mapping[torch_device] if torch_device in torch_device_mapping else torch_device
     inputs = inputs.to(torch_device)
     all_cuda_device = get_all_used_cuda_device(device_map)
@@ -278,7 +337,10 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         if mode == "long_context":
             inputs_embeds = model.model.embed_tokens(inputs.to("cpu"))
         else:
-            inputs_embeds = model.model.embed_tokens(inputs.to("cpu")).to(torch_device)
+            if (GLOBAL_CONFIG["mod"] == "infer"):
+                inputs_embeds = model.model.embed_tokens(inputs.to("cpu")).to(torch_device)
+            elif (GLOBAL_CONFIG["mod"] == "sft"):
+                inputs_embeds = model.model.embed_tokens(inputs.to(model.model.embed_tokens.weight.device)).to(torch_device)
         if use_flashinfer_mla:
             MLAWrapperSingleton.update_buffer(past_key_values.max_pages)
             MLAWrapperSingleton.need_plan_all()
@@ -401,8 +463,173 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
 
     return tokens
 
-class InferenceState(enum.Enum):
-    UNLOAD = 0
-    PREFILL = 1
-    GENERATE = 2
-    RESTORE = 3
+def simple_prefill_and_generate_for_test(model, tokenizer, inputs, max_new_tokens=10000, use_cuda_graph: bool = True,
+                         mode = 'normal', force_think: bool = False, chunk_prefill_size = 16384, use_flashinfer_mla = False,
+                         num_heads = None, head_dim_ckv = None, head_dim_kpe = None, q_head_dim = None):
+    import os
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    torch._dynamo.config.suppress_errors = True
+    batch_size, seq_length = inputs.shape
+    device_map = model.gguf_loader.tensor_device_map
+    torch_device = get_device('blk.0.self_attn', device_map)
+    torch_device = "cuda:0" if torch_device == "cuda" else torch_device
+    inputs = inputs.to(torch_device)
+    all_cuda_device = get_all_used_cuda_device(device_map)
+
+    tokens = []
+    
+    def decode_one_tokens(cuda_graph_runner, cur_token, position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph: bool = True):
+        if cuda_graph_runner is None:
+            use_cuda_graph = False
+        if use_cuda_graph:
+            logits = cuda_graph_runner(cur_token, position_ids, cache_position)
+        else:
+            # custom_stream = torch.cuda.Stream()
+            torch.cuda.set_device(torch_device)
+            inputs_embeds = model.model.embed_tokens(cur_token.to("cpu")).to(torch_device)
+            # with torch.cuda.stream(custom_stream):
+            logits=model(inputs_embeds=inputs_embeds,
+                        position_ids=position_ids,
+                        cache_position=cache_position,
+                        past_key_values=past_key_values,
+                        return_dict=False, use_cache=True)[0]
+            
+            # loss = logits.mean()
+            # dot = make_dot(loss, params=dict(model.named_parameters()))
+            # dot.render("KT_compute_graph", format="svg")
+        if past_key_values != None:
+            past_key_values.change_seq_length(1)
+        for device in all_cuda_device:
+            torch.cuda.synchronize(device)
+        #print(logits)
+        next_token_scores = logits_warper(inputs, logits[:, -1, :])
+        if generation_config.do_sample:
+            probs = nn.functional.softmax(next_token_scores, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
+        else:
+            next_token = torch.argmax(next_token_scores, dim=-1)
+        return next_token
+    
+    # TODO: use CUDA Graph for chunk prefill, may get small improvement
+    def chunk_prefill(inputs, cache_position, past_key_values):
+        if mode == "long_context":
+            inputs_embeds = model.model.embed_tokens(inputs.to("cpu"))
+        else: # TODO: not verify the inputs.to(xxx), origin is 'cpu', but not on same device for lora model.
+            inputs_embeds = model.model.embed_tokens(inputs.to(model.model.embed_tokens.weight.device)).to(torch_device)
+        if use_flashinfer_mla:
+            MLAWrapperSingleton.update_buffer(past_key_values.max_pages)
+            MLAWrapperSingleton.need_plan_all()
+            
+        logits = model(
+            inputs_embeds = inputs_embeds, cache_position=cache_position, past_key_values=past_key_values, return_dict=False, use_cache=True
+        )[0][:,-1,:].unsqueeze(0).clone().to(torch_device)
+        
+        return logits
+    
+    torch.cuda.set_device(torch_device)
+    with torch.no_grad(): # TODO: 目前看上去应该可以暂时保留，不过如果要测试整体的计算图的话就需要去掉了
+        
+        stream = TextStreamer(tokenizer)
+        if mode != 'long_context':
+            past_key_values = StaticCache(
+                config = model.config, max_batch_size = 1, max_cache_len = seq_length + max_new_tokens, device = device_map, dtype = model.dtype
+            )
+        else:
+            past_key_values = None
+        
+        generation_config, model_kwargs = model._prepare_generation_config(
+            None, do_sample=True
+            # change this to modify generate config
+            #top_k=5, top_p=0.85, temperature=0.1
+        )
+        try: # transformers==4.43
+            logits_warper = (
+                model._get_logits_warper(generation_config,device=inputs.device)
+            )
+        except: 
+            logits_warper = (
+                model._get_logits_warper(generation_config)
+            )
+
+        cache_position = torch.arange(seq_length, device=torch_device, dtype=torch.int32)
+        generated_ids = torch.zeros(
+            batch_size, seq_length + max_new_tokens + 1, dtype=torch.int, device=torch_device
+        )
+        generated_ids[:, cache_position] = inputs.to(torch_device).to(torch.int)
+        start_time = time.time()
+
+        chunk_start = 0
+        while chunk_start < seq_length:
+            chunk_end = min(chunk_start + chunk_prefill_size, seq_length)
+            if past_key_values != None:
+                past_key_values.cur_idx=cache_position[chunk_start:chunk_end]
+            logits = chunk_prefill(inputs[:, chunk_start:chunk_end], cache_position[chunk_start:chunk_end], past_key_values)
+            chunk_start += chunk_prefill_size
+
+        next_token_scores = logits_warper(inputs, logits[:, -1, :])
+        if generation_config.do_sample:
+            probs = nn.functional.softmax(next_token_scores, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
+        else:
+            next_token = torch.argmax(next_token_scores, dim=-1)
+
+        first_token_time = time.time() - start_time
+        
+        if use_flashinfer_mla:
+            MLAWrapperSingleton.reset_buffer()
+
+        prefill_count = seq_length
+        prefill_time = first_token_time
+        if force_think:
+            print("<think>")
+        print(stream.put(next_token.item()), end="", flush=True)
+        generated_ids[:, seq_length] = next_token
+        tokens.append(int(next_token))
+        inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
+        cache_position = torch.tensor([seq_length], device=torch_device, dtype=torch.int32)
+        position_ids = cache_position.unsqueeze(0)
+        seq_length += 1
+        
+        cuda_graph_runner = None
+            
+        start_time = time.time()
+        for i in range(1, max_new_tokens):
+            if use_flashinfer_mla:
+                MLAWrapperSingleton.plan_all(None,None,None,position_ids.squeeze(1)+1,
+                                             num_heads, head_dim_ckv, head_dim_kpe, past_key_values.page_size,
+                                             q_head_dim ** (-0.5), torch.bfloat16, torch.bfloat16)
+            global warm_uped
+            if use_cuda_graph and ( (warm_uped == True and int(i) == 1) or (warm_uped == False and int(i) == 2) ):
+                warm_uped = True
+                cuda_graph_runner = CUDAGraphRunner()
+                cuda_graph_runner.capture(model, next_token.unsqueeze(0), position_ids, cache_position, past_key_values, torch_device, return_dict=False, use_cache=True)
+            next_token = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph).to(torch_device)
+            inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
+            generated_ids[:, cache_position] = next_token.int()
+            tokens.append(int(next_token))
+            seq_length += 1
+            if next_token[0].item() == tokenizer.eos_token_id or tokenizer.decode(next_token.tolist()) == '<|im_end|>':
+                print(stream.end(), end="", flush=True)
+                break
+            else:
+                print(stream.put(next_token.item()), end="", flush=True)
+            
+            cache_position += 1
+            position_ids = cache_position.unsqueeze(0)
+        
+
+    total_time = time.time() - start_time
+    tokens_generated = len(tokens)
+    tokens_per_second = tokens_generated / total_time
+    
+	
+    print("")
+
+    print(f"prompt eval count:    {prefill_count} token(s)")
+    print(f"prompt eval duration: {prefill_time}s")
+    print(f"prompt eval rate:     {prefill_count/prefill_time} tokens/s")
+    print(f"eval count:           {tokens_generated} token(s)")
+    print(f"eval duration:        {total_time}s")
+    print(f"eval rate:            {tokens_per_second} tokens/s")
+    
+    return tokens

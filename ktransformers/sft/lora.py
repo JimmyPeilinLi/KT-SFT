@@ -402,6 +402,8 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     model.config.use_cache = False
 
     model.print_trainable_parameters() 
+    
+    print(f"model:{model}")
 
     # input_ids = torch.randint(0, 1000, (32, 128), device="cuda:0")
     # gradients = collect_gradients(model, input_ids)
