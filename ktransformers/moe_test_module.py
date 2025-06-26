@@ -20,7 +20,7 @@ from torch.autograd import gradcheck
 
 from ktransformers.operators.linear import KLinearTorch, KTransformersLinear
 from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
-from ktransformers.util.custom_gguf import GGUFLoader
+from ktransformers.util.custom_loader import GGUFLoader
 from ktransformers.operators.experts import KExpertsTorch
 from ktransformers.util.utils import load_weights
 

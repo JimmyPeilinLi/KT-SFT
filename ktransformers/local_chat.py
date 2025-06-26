@@ -34,7 +34,7 @@ from ktransformers.util.utils import load_weights, prefill_and_generate, get_com
 from ktransformers.server.config.config import Config
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled
 from ktransformers.sft.lora import inject_lora_layer, lora_and_load_adapter
-from ktransformers.util.custom_gguf import GGUFLoader
+from ktransformers.util.custom_loader import GGUFLoader
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 

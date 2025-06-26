@@ -15,7 +15,7 @@ import ctypes
 import torch
 from torch import Tensor, nn
 import KTransformersOps 
-from ktransformers.util.custom_gguf import GGUFLoader
+from ktransformers.util.custom_loader import GGUFLoader
 from ktransformers.util.inference_state import InferenceState
 from ktransformers.ktransformers_ext.operators.custom_marlin.quantize.utils.marlin_utils import (
     MarlinWorkspace,

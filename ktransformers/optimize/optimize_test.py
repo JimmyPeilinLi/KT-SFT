@@ -12,7 +12,7 @@ from torch import nn
 from transformers import AutoConfig
 from transformers.configuration_utils import PretrainedConfig
 # from operators import BaseInjectedModule
-from ktransformers.util.custom_gguf import GGUFLoader, translate_name_to_gguf
+from ktransformers.util.custom_loader import GGUFLoader, translate_name_to_gguf
 from ktransformers.util.utils import set_module, load_weights
 import itertools
 import copy

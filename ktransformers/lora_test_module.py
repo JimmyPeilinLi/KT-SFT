@@ -18,7 +18,7 @@ from transformers import (
 
 from ktransformers.operators.linear import KLinearTorch, KTransformersLinear
 from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
-from ktransformers.util.custom_gguf import GGUFLoader
+from ktransformers.util.custom_loader import GGUFLoader
 from ktransformers.util.inference_state import InferenceState
 
 import hiddenlayer as hl

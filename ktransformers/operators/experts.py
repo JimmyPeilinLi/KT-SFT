@@ -30,7 +30,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext
 import cpuinfer_ext
 from cpuinfer_ext.moe import MOEConfig, MOE
 import ctypes
-from ktransformers.util.custom_gguf import GGUFLoader
+from ktransformers.util.custom_loader import GGUFLoader
 from ktransformers.util.inference_state import InferenceState
 from ktransformers.util.custom_gguf import GGMLQuantizationType
 from ktransformers.util.custom_loader import GGUFLoader, SafeTensorLoader, ModelLoader

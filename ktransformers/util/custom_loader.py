@@ -274,6 +274,12 @@ class GGUFLoader(ModelLoader):
         self.gguf_file_meta = {}
         self.tensor_device_map = {}
 
+		# I know this is ugly, but I don't want to change the original code too much
+        # TODO: merge gguf load and other loads.
+        safetensor_loader = SafeTensorLoader(gguf_path)
+        if safetensor_loader.tensor_file_map:
+            self.safetensor_loader = safetensor_loader
+            return
         # Walk through all the .gguf files in the directory
         found_gguf = False
         for root, dirs, files in os.walk(gguf_path):
