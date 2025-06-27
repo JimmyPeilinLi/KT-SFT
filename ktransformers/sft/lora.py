@@ -404,6 +404,19 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     model.print_trainable_parameters() 
     
     print(f"model:{model}")
+    
+    trainer = ModifiedTrainer(
+        model=model,
+        train_dataset=train_dataset,
+        args=training_args,
+        data_collator=DataCollatorForSeq2Seq(
+            tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
+        )
+    )
+
+    print("-------------------------START TRAINING!!!-------------------------")
+
+    trainer.train()
 
     # input_ids = torch.randint(0, 1000, (32, 128), device="cuda:0")
     # gradients = collect_gradients(model, input_ids)
@@ -473,11 +486,11 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     # -----------------模型FLOPS测试（THOP方法）-----------------
     
     # -----------------计算图测试-----------------
-    output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
-    loss = output.logits.mean()
+    # output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
+    # loss = output.logits.mean()
         
-    dot = make_dot(loss, params=dict(model.named_parameters()))
-    dot.render("KT_compute_cpuinfer_moe_model_graph", format="svg")
+    # dot = make_dot(loss, params=dict(model.named_parameters()))
+    # dot.render("KT_compute_cpuinfer_moe_model_graph", format="svg")
     # -----------------计算图测试-----------------
 
     # -----------------KSFT前向测试-----------------
@@ -562,19 +575,6 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     #   check_moe_gradients(model) # 调试结果：无梯度
     
     # -----------------模型层性能初步测试-----------------
-
-    trainer = ModifiedTrainer(
-        model=model,
-        train_dataset=train_dataset,
-        args=training_args,            # 使用修改后的参数
-        data_collator=DataCollatorForSeq2Seq(
-            tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
-        )
-    )
-
-    print("-------------------------START TRAINING!!!-------------------------")
-
-    trainer.train()
 
     # verify_lora_layers(model)
 

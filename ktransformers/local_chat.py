@@ -165,6 +165,7 @@ def local_chat(
     if is_sft == True:
         GLOBAL_CONFIG._config["mod"] = "sft"
         print(f"sft with lora in dataset: {sft_data_path} ...")
+        print(f"use_cuda_graph:{use_cuda_graph}")
         lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path)
 
     if use_adapter == True:
@@ -246,7 +247,7 @@ def local_chat(
         if mode == 'long_context':
             assert Config().long_context_config['max_seq_len'] > input_tensor.shape[1] + max_new_tokens, \
             "please change max_seq_len in  ~/.ktransformers/config.yaml"
-        print(f"use_cuda_graph:{use_cuda_graph}")
+
         if system != "Windows" and (config.architectures[0] == "DeepseekV2ForCausalLM" or config.architectures[0] == "DeepseekV3ForCausalLM") and flashinfer_enabled and get_compute_capability() >= 8 and device_manager.gpu_vendor == GPUVendor.NVIDIA:
             generated = prefill_and_generate(
                 model, tokenizer, input_tensor.to(device), max_new_tokens, use_cuda_graph, mode = mode, force_think = force_think, chunk_size = chunk_size,
