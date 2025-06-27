@@ -502,6 +502,30 @@ struct GemmKernel224BF {
       }
     }
 
+    // 加载转置矩阵的版本（不进行转置操作）
+    void from_mat_transpose(ggml_bf16_t *src, int ith, int nth) {
+      auto [n_start, n_end] = split_range_n(n, ith, nth);
+      int n_block_begin = n_start;
+      int n_block_size = n_end - n_block_begin;
+      for (int n_begin = 0; n_begin < n_block_size; n_begin += N_STEP) {
+        for (int k_block_begin = 0; k_block_begin < k; k_block_begin += K_BLOCK) {
+          int k_block_size = std::min(K_BLOCK, k - k_block_begin);
+          for (int k_begin = 0; k_begin < k_block_size; k_begin += K_STEP) {
+            for (int i = 0; i < N_STEP; i++) {
+              __m512i *s = (__m512i *)(src + (n_block_begin + n_begin + i) * k + k_block_begin + k_begin);
+              __m512i *d = (__m512i *)(b + n_block_begin * k + k_block_begin * n_block_size + n_begin * k_block_size +
+                                       k_begin * N_STEP + i * K_STEP);
+              avx512_copy_32xbf16(s, d);
+            }
+            transpose_16x16_32bit((__m512i *)(b + n_block_begin * k + k_block_begin * n_block_size +
+                                              n_begin * k_block_size + k_begin * N_STEP));
+            transpose_16x16_32bit((__m512i *)(b + n_block_begin * k + k_block_begin * n_block_size +
+                                              n_begin * k_block_size + k_begin * N_STEP + TILE_N * K_STEP));
+          }
+        }
+      }
+    }
+
     ggml_bf16_t *get_submat(int n, int k, int n_begin, int k_begin) {
       int n_block_begin = n_begin / N_BLOCK * N_BLOCK;
       n_begin -= n_block_begin;

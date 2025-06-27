@@ -23,8 +23,6 @@ SFT_MOE::SFT_MOE(SFT_MOEConfig config) {
     gate_proj_ = config_.gate_proj;
     up_proj_ = config_.up_proj;
     down_proj_ = config_.down_proj;
-
-    transposed_ = false;
     
     #ifdef USE_NUMA
     int numa_nodes = numa_num_configured_nodes();
@@ -476,7 +474,8 @@ void SFT_MOE::backward_one(int layer_idx, int k, const uint64_t* expert_ids, con
 	// clock_t clk1, clk2, clk3, clk4;
 	// clock_t clkz1, clkz2, clkz3, clkz4, clkz5;
 	// clk1 = clock();
-    if (!transposed_) { // FIXME: 每层都要重新取一次转置！
+    if (layer_idx_ != layer_idx) { // FIXME: 每层都要重新取一次转置！
+        layer_idx_ = layer_idx;
         // Transpose gate_proj_
         int R_gate = config_.intermediate_size;
         int C_gate = config_.hidden_size;
@@ -509,8 +508,6 @@ void SFT_MOE::backward_one(int layer_idx, int k, const uint64_t* expert_ids, con
             void* dst_expert_t = (uint8_t*)down_proj_t_ + expert_idx * down_expert_dst_t_stride_bytes;
             transpose_expert_matrix(src_expert, dst_expert_t, R_down, C_down, config_.down_type, config_.grad_type, expert_idx);
         }, nullptr);
-        
-        transposed_ = true;
     }
 	// clk2 = clock();
     int nth = config_.intermediate_size / config_.stride;
