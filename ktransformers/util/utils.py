@@ -106,7 +106,7 @@ def get_all_used_cuda_device(device_map:dict):
     return all_device_list
 
 def load_cur_state_dict(module: nn.Module, gguf_loader: ModelLoader, prefix: str = "", device="cuda", adapter_gguf: bool = False):
-    if GLOBAL_CONFIG["mod"] == 'sft':
+    if GLOBAL_CONFIG._config["mod"] == 'sft':
         prefix = prefix.replace("orig_module.", "")
         persistent_buffers = {k: v for k, v in module._buffers.items() if k not in module._non_persistent_buffers_set}
         local_name_params = itertools.chain(module._parameters.items(), persistent_buffers.items())
@@ -150,7 +150,7 @@ def load_cur_state_dict(module: nn.Module, gguf_loader: ModelLoader, prefix: str
                 else:
                     #print(load_config.tensor_file_map.keys())
                     raise Exception(f"can't find {translated_key} in GGUF file!")
-    elif GLOBAL_CONFIG["mod"] == 'infer':
+    elif GLOBAL_CONFIG._config["mod"] == 'infer':
         prefix = prefix.replace("orig_module.", "")
         persistent_buffers = {k: v for k, v in module._buffers.items() if k not in module._non_persistent_buffers_set}
         local_name_params = itertools.chain(module._parameters.items(), persistent_buffers.items())
@@ -337,9 +337,9 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         if mode == "long_context":
             inputs_embeds = model.model.embed_tokens(inputs.to("cpu"))
         else:
-            if (GLOBAL_CONFIG["mod"] == "infer"):
+            if (GLOBAL_CONFIG._config["mod"] == "infer"):
                 inputs_embeds = model.model.embed_tokens(inputs.to("cpu")).to(torch_device)
-            elif (GLOBAL_CONFIG["mod"] == "sft"):
+            elif (GLOBAL_CONFIG._config["mod"] == "sft"):
                 inputs_embeds = model.model.embed_tokens(inputs.to(model.model.embed_tokens.weight.device)).to(torch_device)
         if use_flashinfer_mla:
             MLAWrapperSingleton.update_buffer(past_key_values.max_pages)

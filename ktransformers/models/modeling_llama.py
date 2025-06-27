@@ -49,6 +49,7 @@ from transformers.utils import (
 )
 from .configuration_llama import LlamaConfig
 
+from ktransformers.util.grad_wrapper import maybe_no_grad
 
 logger = logging.get_logger(__name__)
 
@@ -155,7 +156,7 @@ class LlamaRotaryEmbedding(nn.Module):
             self.register_buffer("inv_freq", self.original_inv_freq, persistent=False)
             self.max_seq_len_cached = self.original_max_seq_len
 
-    @torch.no_grad()
+    @maybe_no_grad()
     def forward(self, x, position_ids):
         # if "dynamic" in self.rope_type:
         #     self._dynamic_frequency_update(position_ids, device=x.device)

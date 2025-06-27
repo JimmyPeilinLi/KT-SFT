@@ -25,6 +25,7 @@ from ktransformers.models.modeling_deepseek import (
 from ktransformers.operators.base_operator import BaseInjectedModule
 from ktransformers.util.custom_loader import GGUFLoader
 from ktransformers.util.inference_state import InferenceState
+from ktransformers.util.grad_wrapper import maybe_no_grad
 from transformers.configuration_utils import PretrainedConfig
 import torch
 
@@ -77,7 +78,7 @@ class RotaryEmbeddingV3(BaseInjectedModule):
         self.generate_device = generate_device
         self.prefill_device = prefill_device
     
-    @torch.no_grad()
+    @maybe_no_grad()
     def forward(self, x, position_ids):
         # x: [bs, num_attention_heads, seq_len, head_size]
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
@@ -256,7 +257,7 @@ class YarnRotaryEmbeddingV3(BaseInjectedModule):
             **kwargs,
         )
 
-    @torch.no_grad()
+    @maybe_no_grad()
     def forward(self, x, position_ids):
         # x: [bs, num_attention_heads, seq_len, head_size]
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
@@ -380,7 +381,7 @@ class RotaryEmbeddingV4(BaseInjectedModule):
         self.generate_device = generate_device
         self.prefill_device = prefill_device
     
-    @torch.no_grad()
+    @maybe_no_grad()
     def forward(self, x, position_ids):
         # x: [bs, num_attention_heads, seq_len, head_size]
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)

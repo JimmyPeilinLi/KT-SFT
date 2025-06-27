@@ -31,6 +31,7 @@ from ..base import ThreadContext, BackendInterfaceBase
 from ktransformers.server.config.log import logger
 from ..args import ConfigArgs, default_args
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled, MLAWrapperSingleton
+from ktransformers.util.grad_wrapper import maybe_no_grad
 
 # This TextStreamer is a modified version from https://github.com/huggingface/transformers/blob/main/src/transformers/generation/streamers.py
 class TextStreamer:
@@ -315,7 +316,7 @@ class TransformersInterface(BackendInterfaceBase):
 
         return self.logits_to_token(logits)
 
-    @torch.no_grad
+    @maybe_no_grad
     def prefill(self, input_ids: torch.Tensor, is_new: bool, temperature: Optional[float] = None, top_p: Optional[float] = None, max_tokens: Optional[float] = None, max_completion_tokens: Optional[float] = None):
         input_ids_length = input_ids.shape[-1]
         logger.debug(f"input_ids: {input_ids.shape}")
@@ -392,7 +393,7 @@ class TransformersInterface(BackendInterfaceBase):
         self.max_new_tokens = min(max_new_tokens, self.args.cache_lens - self.seq_length) - 1 
         yield self.append_new_tokens(next_token)
 
-    @torch.no_grad
+    @maybe_no_grad
     def generate(self):
         logger.info(f"args.max_new_tokens: {self.args.max_new_tokens}, cache_lens: {self.args.cache_lens}, seq_length: {self.seq_length}")
         if(self.max_new_tokens <= 0):

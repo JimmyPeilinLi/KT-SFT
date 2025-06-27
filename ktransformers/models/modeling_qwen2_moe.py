@@ -59,6 +59,7 @@ from transformers.utils import (
 )
 from transformers.models.qwen2_moe.configuration_qwen2_moe import Qwen2MoeConfig
 
+from ktransformers.util.grad_wrapper import maybe_no_grad
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func, flash_attn_with_kvcache
@@ -192,7 +193,7 @@ class Qwen2MoeRotaryEmbedding(nn.Module):
         # For BC we register cos and sin cached
         self.max_seq_len_cached = max_position_embeddings
 
-    @torch.no_grad()
+    @maybe_no_grad()
     def forward(self, x, position_ids):
         # x: [bs, num_attention_heads, seq_len, head_size]
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)

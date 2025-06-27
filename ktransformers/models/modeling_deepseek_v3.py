@@ -59,6 +59,8 @@ from .configuration_deepseek_v3 import DeepseekV3Config
 import torch.distributed as dist
 import numpy as np
 
+from ktransformers.util.grad_wrapper import maybe_no_grad
+
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
@@ -533,7 +535,7 @@ class DeepseekV3MoE(nn.Module):
             y = y + self.shared_experts(identity)
         return y
 
-    @torch.no_grad()
+    @maybe_no_grad()
     def moe_infer(self, x, topk_ids, topk_weight):
         cnts = topk_ids.new_zeros((topk_ids.shape[0], len(self.experts)))
         cnts.scatter_(1, topk_ids, 1)

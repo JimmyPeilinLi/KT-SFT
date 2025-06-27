@@ -18,6 +18,7 @@ from ktransformers.util.utils import get_device
 from typing import Optional
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled, MLAWrapperSingleton
 from ktransformers.server.schemas.endpoints.chat import RawUsage
+from ktransformers.util.grad_wrapper import maybe_no_grad
 
 warm_uped = False
 
@@ -128,7 +129,7 @@ class KTransformersInterface(TransformersInterface):
 
 
 
-    @torch.no_grad
+    @maybe_no_grad
     def prefill(self, input_ids: torch.Tensor, is_new: bool, temperature: Optional[float] = None, top_p: Optional[float] = None, max_tokens: Optional[float] = None, max_completion_tokens: Optional[float] = None):
         input_ids_length = input_ids.shape[-1]
         if max_tokens is not None:

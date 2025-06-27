@@ -70,6 +70,7 @@ if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func, flash_attn_with_kvcache
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
 
+from ktransformers.util.grad_wrapper import maybe_no_grad
 
 # This makes `_prepare_4d_causal_attention_mask` a leaf function in the FX graph.
 # It means that the function will not be traced through and simply appear as a node in the graph.
@@ -132,7 +133,7 @@ class DeepseekV2RotaryEmbedding(nn.Module):
         # For BC we register cos and sin cached
         self.max_seq_len_cached = max_position_embeddings
 
-    @torch.no_grad()
+    @maybe_no_grad()
     def forward(self, x, position_ids):
         # x: [bs, num_attention_heads, seq_len, head_size]
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
@@ -309,7 +310,7 @@ class DeepseekV2YarnRotaryEmbedding(DeepseekV2RotaryEmbedding):
         # For BC we register cos and sin cached
         self.max_seq_len_cached = max_position_embeddings
 
-    @torch.no_grad()
+    @maybe_no_grad()
     def forward(self, x, position_ids):
         # x: [bs, num_attention_heads, seq_len, head_size]
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
@@ -577,7 +578,7 @@ class DeepseekV2MoE(nn.Module):
             y = y + self.shared_experts(identity)
         return y
 
-    @torch.no_grad()
+    @maybe_no_grad()
     def moe_infer(self, x, topk_ids, topk_weight):
         cnts = topk_ids.new_zeros((topk_ids.shape[0], len(self.experts)))
         cnts.scatter_(1, topk_ids, 1)

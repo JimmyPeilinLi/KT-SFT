@@ -42,6 +42,7 @@ from abc import ABC, abstractmethod
 from ktransformers.operators.linear import KLinearMarlin, KLinearTorch, KTransformersLinear
 import time
 from ktransformers.operators.cpuinfer import CPUInfer
+from ktransformers.util.grad_wrapper import maybe_no_grad
 
 H_FIXED = 2048
 M_FIXED = 1408
@@ -1262,12 +1263,12 @@ class KQwen2MoeSparseMoeBlock(BaseInjectedModule, Qwen2MoeSparseMoeBlock):
         y.resize_(*orig_shape)
         return y, router_logits
     
-    # @torch.no_grad()
+    @maybe_no_grad()
     def moe_kexperts(self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor) -> torch.Tensor:
         outs = self.experts(x, topk_ids, topk_weight)
         return outs
 
-    # @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer_simple(self, hidden_states_cpu: torch.Tensor, selected_experts_cpu: torch.Tensor, routing_weights_cpu: torch.Tensor) -> torch.Tensor:
         '''
@@ -1281,7 +1282,7 @@ class KQwen2MoeSparseMoeBlock(BaseInjectedModule, Qwen2MoeSparseMoeBlock):
                 outs[token_idx] += expert.forward(hidden_states_cpu[token_idx]) * routing_weights_cpu[token_idx, expert_idx]
         return outs
     
-    # @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer(self, hidden_states_cpu: torch.Tensor, selected_experts_cpu: torch.Tensor, routing_weights_cpu: torch.Tensor, orig_shape: tuple) -> torch.Tensor:
         
@@ -1352,12 +1353,12 @@ class KDeepseekV2MoE(BaseInjectedModule, DeepseekV2MoE):
             y += y_
         return y
 
-    # @torch.no_grad()
+    @maybe_no_grad()
     def moe_kexperts(self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor) -> torch.Tensor:
         outs = self.experts(x, topk_ids, topk_weight)
         return outs
 
-    # @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer_simple(
         self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor
@@ -1375,7 +1376,7 @@ class KDeepseekV2MoE(BaseInjectedModule, DeepseekV2MoE):
                 )
         return outs
 
-    # @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer(self, x, topk_ids, topk_weight):
         cnts = topk_ids.new_zeros((topk_ids.shape[0], len(self.experts)))
@@ -1452,12 +1453,12 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
             y += y_
         return y
 
-    # @torch.no_grad()
+    @maybe_no_grad()
     def moe_kexperts(self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor) -> torch.Tensor:
         outs = self.experts(x, topk_ids, topk_weight)
         return outs
 
-    # @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer_simple(
         self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor
@@ -1475,7 +1476,7 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
                 )
         return outs
 
-    # @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer(self, x, topk_ids, topk_weight):
         cnts = topk_ids.new_zeros((topk_ids.shape[0], len(self.experts)))
@@ -1558,12 +1559,12 @@ class KMistralSparseMoEBlock(BaseInjectedModule, MixtralSparseMoeBlock):
         y.resize_(*orig_shape)
         return y, router_logits
     
-    # @torch.no_grad()
+    @maybe_no_grad()
     def moe_kexperts(self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor) -> torch.Tensor:
         outs = self.experts(x, topk_ids, topk_weight)
         return outs
 
-    # @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer_simple(self, hidden_states_cpu: torch.Tensor, selected_experts_cpu: torch.Tensor, routing_weights_cpu: torch.Tensor) -> torch.Tensor:
         '''
@@ -1577,7 +1578,7 @@ class KMistralSparseMoEBlock(BaseInjectedModule, MixtralSparseMoeBlock):
                 outs[token_idx] += expert.forward(hidden_states_cpu[token_idx]) * routing_weights_cpu[token_idx, expert_idx]
         return outs
     
-    # @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer(self, hidden_states_cpu: torch.Tensor, selected_experts_cpu: torch.Tensor, routing_weights_cpu: torch.Tensor, orig_shape: tuple) -> torch.Tensor:
         
@@ -1650,13 +1651,13 @@ class KDeepseekV3MoEV2(BaseInjectedModule, DeepseekV3MoE):
             y += y_
         return y
 
-    @torch.no_grad()
+    @maybe_no_grad()
     def moe_on_cpuinfer(self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor, bsz_tensor, cuda_graph_idx=0) -> torch.Tensor:
         outs = torch.empty_like(x)
         outs = self.experts(x, topk_ids, topk_weight, bsz_tensor, cuda_graph_idx)
         return outs
 
-    @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer_simple(
         self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor
@@ -1674,7 +1675,7 @@ class KDeepseekV3MoEV2(BaseInjectedModule, DeepseekV3MoE):
                 )
         return outs
 
-    @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer(self, x, topk_ids, topk_weight):
         cnts = topk_ids.new_zeros((topk_ids.shape[0], len(self.experts)))
@@ -1836,13 +1837,13 @@ class KQwen2MoeSparseMoeBlockV2(BaseInjectedModule, Qwen2MoeSparseMoeBlock):
         y += y_
         return y
 
-    @torch.no_grad()
+    @maybe_no_grad()
     def moe_on_cpuinfer(self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor, bsz_tensor, cuda_graph_idx=0) -> torch.Tensor:
         outs = torch.empty_like(x)
         outs = self.experts(x, topk_ids, topk_weight, bsz_tensor, cuda_graph_idx)
         return outs
 
-    @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer_simple(
         self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor
@@ -1860,7 +1861,7 @@ class KQwen2MoeSparseMoeBlockV2(BaseInjectedModule, Qwen2MoeSparseMoeBlock):
                 )
         return outs
 
-    @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer(self, x, topk_ids, topk_weight):
         cnts = topk_ids.new_zeros((topk_ids.shape[0], len(self.experts)))
@@ -1958,13 +1959,13 @@ class KQwen3MoeSparseMoeBlockV2(BaseInjectedModule, Qwen3MoeSparseMoeBlock):
         # y += y_
         return y
 
-    @torch.no_grad()
+    @maybe_no_grad()
     def moe_on_cpuinfer(self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor, bsz_tensor, cuda_graph_idx=0) -> torch.Tensor:
         outs = torch.empty_like(x)
         outs = self.experts(x, topk_ids, topk_weight, bsz_tensor, cuda_graph_idx)
         return outs
 
-    @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer_simple(
         self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor
@@ -1982,7 +1983,7 @@ class KQwen3MoeSparseMoeBlockV2(BaseInjectedModule, Qwen3MoeSparseMoeBlock):
                 )
         return outs
 
-    @torch.no_grad()
+    @maybe_no_grad()
     # TODO may bugs here
     def moe_infer(self, x, topk_ids, topk_weight):
         cnts = topk_ids.new_zeros((topk_ids.shape[0], len(self.experts)))

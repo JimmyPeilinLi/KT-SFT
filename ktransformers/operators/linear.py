@@ -158,7 +158,7 @@ class KLinearTorch(KLinearBase):
         dtype = x.dtype
         out_device = x.device
 
-        if (not x.requires_grad) and GLOBAL_CONFIG["mod"] == "sft":
+        if (not x.requires_grad) and GLOBAL_CONFIG._config["mod"] == "sft":
             x = x.requires_grad_(True)
         # TODO: support CUDA Graph when using cpu, but CPUInfer is recommended.
         x = x.to(device=self.device, dtype=self.dtype)
@@ -174,7 +174,7 @@ class KLinearTorch(KLinearBase):
         if w is None: w = self.load_weight(device=device)
         # else: self.out_features = w.shape[0], self.in_features = w.shape[1]
         
-        if GLOBAL_CONFIG["mod"] == "infer":
+        if GLOBAL_CONFIG._config["mod"] == "infer":
             if isinstance(w, nn.Parameter):
                 try:
                     self.weight = w.to(dtype=self.dtype).view(self.out_features, self.in_features).T
@@ -191,7 +191,7 @@ class KLinearTorch(KLinearBase):
             else:
                 raise ValueError("Invalid weight type")
 
-        elif GLOBAL_CONFIG["mod"] == "sft":
+        elif GLOBAL_CONFIG._config["mod"] == "sft":
             if isinstance(w, nn.Parameter):
                 try:
                     self.weight = nn.Parameter(w.to(dtype=self.dtype).view(self.out_features, self.in_features).T, requires_grad=True)
