@@ -436,6 +436,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
         assert device.lower() == "cpu", "KExpertsCPU can only be loaded on CPU"
         self.n_routed_experts = n_routed_experts
         self.out_device = out_device
+        self.backend = kwargs.get("backend", "llamafile")
 
         self.key = key
         self.config = config
@@ -471,26 +472,73 @@ class KSFTExpertsCPU(torch.autograd.Function):
         #print(self.gate_type, self.up_type, self.down_type)
         n_routed_experts = self.n_routed_experts
         # n_routed_experts = len(self.orig_module)
-        sft_moe_config = SFT_MOEConfig(
-            n_routed_experts,
-            self.config.num_experts_per_tok,
-            self.config.hidden_size,
-            self.config.moe_intermediate_size,
-            64,
-            10,
-            1024,
-            gate_ptr,
-            up_ptr,
-            down_ptr,
-            self.gate_type,
-            self.up_type,
-            self.down_type,
-            30, # TODO: get from model.dtype
-        )
+        self.cpu_infer = KSFTExpertsCPU.CPU_INFER
+        
+        model_dtype = torch.get_default_dtype()
+        if torch.xpu.is_available() and model_dtype == torch.float16:
+            hidden_type = 1 # fp16
+        else:
+            hidden_type = 30 # bf16
+        if self.backend == "llamafile":
+            print("GO INTO LLAMAFILE!!")
+            moe_config = SFT_MOEConfig(
+                n_routed_experts,
+                self.config.num_experts_per_tok,
+                self.config.hidden_size,
+                self.config.moe_intermediate_size,
+                64,
+                10,
+                1024,
+                gate_ptr,
+                up_ptr,
+                down_ptr,
+                self.gate_type,
+                self.up_type,
+                self.down_type,
+                hidden_type, # TODO: get from model.dtype
+            )
+            self.moe = SFT_MOE(moe_config)
+        elif self.backend == "AMXBF16":
+            print("GO INTO AMXBF16!!")
+            from cpuinfer_ext.sft_moe import SFT_AMX_MOEConfig, SFT_AMXBF16_MOE
+            assert self.gate_type == GGMLQuantizationType.BF16
+            assert self.up_type == GGMLQuantizationType.BF16
+            assert self.down_type == GGMLQuantizationType.BF16
+            moe_config = SFT_AMX_MOEConfig(
+                n_routed_experts,
+                self.config.num_experts_per_tok,
+                self.config.hidden_size,
+                self.config.moe_intermediate_size,
+                max(cuda_graphs) if isinstance(cuda_graphs, list) else Config().chunk_size,
+                gate_ptr,
+                up_ptr,
+                down_ptr,
+            )
+            self.moe = SFT_AMXBF16_MOE(moe_config)
+            self.cpu_infer.submit(self.moe.load_weights())
+            self.cpu_infer.sync()
+        elif self.backend == "AMXInt8":
+            print("GO INTO AMXInt8!!")
+            from cpuinfer_ext.sft_moe import SFT_AMX_MOEConfig, SFT_AMXInt8_MOE
+            assert self.gate_type == GGMLQuantizationType.BF16
+            assert self.up_type == GGMLQuantizationType.BF16
+            assert self.down_type == GGMLQuantizationType.BF16
+            moe_config = SFT_AMX_MOEConfig(
+                n_routed_experts,
+                self.config.num_experts_per_tok,
+                self.config.hidden_size,
+                self.config.moe_intermediate_size,
+                max(cuda_graphs) if isinstance(cuda_graphs, list) else Config().chunk_size,
+                gate_ptr,
+                up_ptr,
+                down_ptr,
+            )
+            self.moe = SFT_AMXInt8_MOE(moe_config)
+            self.cpu_infer.submit(self.moe.load_weights())
+            self.cpu_infer.sync()
+
         # print(n_routed_experts, hidden_size, moe_intermediate_size)
         num_experts_per_tok = self.config.num_experts_per_tok
-        self.moe = SFT_MOE(sft_moe_config)
-        self.cpu_infer = KSFTExpertsCPU.CPU_INFER
         if warmup:
             self.cpu_infer.submit(self.moe.warm_up())
             self.cpu_infer.sync()

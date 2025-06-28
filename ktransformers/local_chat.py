@@ -308,7 +308,7 @@ if __name__ == "__main__":
             cpu_infer=64,
             max_new_tokens=1000,
             force_think=True,
-            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft.yaml",
+            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx.yaml",
             is_sft=True,
             sft_data_path="/home/lpl/KT-SFT/tmp/demo_test_10example.json",
             save_adapter_path="/home/lpl/KT-SFT/test_adapter/demo_adapter_KT_target_kv",
