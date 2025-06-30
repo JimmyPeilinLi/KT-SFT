@@ -76,7 +76,6 @@ class SFT_MOE {
     uint8_t* gate_proj_t_;  // [expert_num * hidden_size * intermediate_size]
     uint8_t* up_proj_t_;    // [expert_num * hidden_size * intermediate_size]
     uint8_t* down_proj_t_;  // [expert_num * intermediate_size * hidden_size]
-    int layer_idx_;
 
     #ifdef USE_NUMA
     std::vector<void*> gate_proj_numa_;  // [numa_num, expert_num * intermediate_size * hidden_size ( /32 if quantized)]

@@ -474,41 +474,6 @@ void SFT_MOE::backward_one(int layer_idx, int k, const uint64_t* expert_ids, con
 	// clock_t clk1, clk2, clk3, clk4;
 	// clock_t clkz1, clkz2, clkz3, clkz4, clkz5;
 	// clk1 = clock();
-    if (layer_idx_ != layer_idx) { // FIXME: 每层都要重新取一次转置！
-        layer_idx_ = layer_idx;
-        // Transpose gate_proj_
-        int R_gate = config_.intermediate_size;
-        int C_gate = config_.hidden_size;
-        size_t gate_expert_src_stride_bytes = (size_t)R_gate * C_gate * ggml_type_size(config_.gate_type);
-        size_t gate_expert_dst_t_stride_bytes = (size_t)C_gate * R_gate * ggml_type_size(config_.grad_type);
-        backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
-            void* src_expert = (uint8_t*)gate_proj_ + expert_idx * gate_expert_src_stride_bytes;
-            void* dst_expert_t = (uint8_t*)gate_proj_t_ + expert_idx * gate_expert_dst_t_stride_bytes;
-            transpose_expert_matrix(src_expert, dst_expert_t, R_gate, C_gate, config_.gate_type, config_.grad_type, expert_idx);
-        }, nullptr);
-
-        // Transpose up_proj_
-        int R_up = config_.intermediate_size;
-        int C_up = config_.hidden_size;
-        size_t up_expert_src_stride_bytes = (size_t)R_up * C_up * ggml_type_size(config_.up_type);
-        size_t up_expert_dst_t_stride_bytes = (size_t)C_up * R_up * ggml_type_size(config_.grad_type);
-        backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
-            void* src_expert = (uint8_t*)up_proj_ + expert_idx * up_expert_src_stride_bytes;
-            void* dst_expert_t = (uint8_t*)up_proj_t_ + expert_idx * up_expert_dst_t_stride_bytes;
-            transpose_expert_matrix(src_expert, dst_expert_t, R_up, C_up, config_.up_type, config_.grad_type, expert_idx);
-        }, nullptr);
-
-        // Transpose down_proj_
-        int R_down = config_.hidden_size;
-        int C_down = config_.intermediate_size;
-        size_t down_expert_src_stride_bytes = (size_t)R_down * C_down * ggml_type_size(config_.down_type);
-        size_t down_expert_dst_t_stride_bytes = (size_t)C_down * R_down * ggml_type_size(config_.grad_type);
-        backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
-            void* src_expert = (uint8_t*)down_proj_ + expert_idx * down_expert_src_stride_bytes;
-            void* dst_expert_t = (uint8_t*)down_proj_t_ + expert_idx * down_expert_dst_t_stride_bytes;
-            transpose_expert_matrix(src_expert, dst_expert_t, R_down, C_down, config_.down_type, config_.grad_type, expert_idx);
-        }, nullptr);
-    }
 	// clk2 = clock();
     int nth = config_.intermediate_size / config_.stride;
     backend->do_work_stealing_job(nth * k, nullptr, [&](int task_id) {
@@ -569,9 +534,42 @@ void SFT_MOE::backward_one(int layer_idx, int k, const uint64_t* expert_ids, con
 
 }
 
-// TODO: input参数可以删除
+// TODO: input和layer_idx参数可以删除
 void SFT_MOE::backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights,
                    const void* input, const void* grad_output, void* grad_input, Backend* backend, const SFT_MoEForwardCache* fwd_cache) {
+    // Transpose gate_proj_
+    int R_gate = config_.intermediate_size;
+    int C_gate = config_.hidden_size;
+    size_t gate_expert_src_stride_bytes = (size_t)R_gate * C_gate * ggml_type_size(config_.gate_type);
+    size_t gate_expert_dst_t_stride_bytes = (size_t)C_gate * R_gate * ggml_type_size(config_.grad_type);
+    backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
+        void* src_expert = (uint8_t*)gate_proj_ + expert_idx * gate_expert_src_stride_bytes;
+        void* dst_expert_t = (uint8_t*)gate_proj_t_ + expert_idx * gate_expert_dst_t_stride_bytes;
+        transpose_expert_matrix(src_expert, dst_expert_t, R_gate, C_gate, config_.gate_type, config_.grad_type, expert_idx);
+    }, nullptr);
+
+    // Transpose up_proj_
+    int R_up = config_.intermediate_size;
+    int C_up = config_.hidden_size;
+    size_t up_expert_src_stride_bytes = (size_t)R_up * C_up * ggml_type_size(config_.up_type);
+    size_t up_expert_dst_t_stride_bytes = (size_t)C_up * R_up * ggml_type_size(config_.grad_type);
+    backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
+        void* src_expert = (uint8_t*)up_proj_ + expert_idx * up_expert_src_stride_bytes;
+        void* dst_expert_t = (uint8_t*)up_proj_t_ + expert_idx * up_expert_dst_t_stride_bytes;
+        transpose_expert_matrix(src_expert, dst_expert_t, R_up, C_up, config_.up_type, config_.grad_type, expert_idx);
+    }, nullptr);
+
+    // Transpose down_proj_
+    int R_down = config_.hidden_size;
+    int C_down = config_.intermediate_size;
+    size_t down_expert_src_stride_bytes = (size_t)R_down * C_down * ggml_type_size(config_.down_type);
+    size_t down_expert_dst_t_stride_bytes = (size_t)C_down * R_down * ggml_type_size(config_.grad_type);
+    backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
+        void* src_expert = (uint8_t*)down_proj_ + expert_idx * down_expert_src_stride_bytes;
+        void* dst_expert_t = (uint8_t*)down_proj_t_ + expert_idx * down_expert_dst_t_stride_bytes;
+        transpose_expert_matrix(src_expert, dst_expert_t, R_down, C_down, config_.down_type, config_.grad_type, expert_idx);
+    }, nullptr);
+
     for (int i = 0; i < qlen; i++) {
         backward_one(layer_idx,
 					 k,

@@ -303,17 +303,17 @@ if __name__ == "__main__":
     else:
         local_chat(
             model_path="/mnt/data/models/DeepSeek-V2-Lite-Chat",
-            model_config_path="/home/lpl/KT-SFT/ktransformers/configs/model_config",
+            model_config_path="ktransformers/configs/model_config",
             gguf_path="/mnt/data/models/DeepSeek-V2-Lite-Chat-GGUF-FP16/",
             cpu_infer=64,
             max_new_tokens=1000,
             force_think=True,
             optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft.yaml",
             is_sft=True,
-            sft_data_path="/home/lpl/KT-SFT/tmp/demo_test_10example.json",
-            save_adapter_path="/home/lpl/KT-SFT/test_adapter/demo_adapter_KT_target_kv",
+            sft_data_path="tmp/demo_test_10example.json",
+            save_adapter_path="test_adapter/demo_adapter_KT_target_kv",
             use_adapter=False,
-            use_adapter_path="/home/lpl/KT-SFT/test_adapter/demo_adapter_origin_target_kv"
+            use_adapter_path="test_adapter/demo_adapter_origin_target_kv"
         )
         
         GLOBAL_CONFIG._config["mod"] = "sft"
