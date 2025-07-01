@@ -56,12 +56,14 @@ class SFT_MOE {
     void forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, SFT_MoEForwardCache* fwd_cache);
     void forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, SFT_MoEForwardCache* fwd_cache);
     void forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, SFT_MoEForwardCache* fwd_cache);
-	void backward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const SFT_MoEForwardCache* fwd_cache);
+	void backward_one(int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const SFT_MoEForwardCache* fwd_cache);
+	void backward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const SFT_MoEForwardCache* fwd_cache);
 	void backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights,
               const void* input, const void* grad_output, void* grad_input, Backend* backend, const SFT_MoEForwardCache* fwd_cache); // FIXME: expert backward definition for C++
     
     void transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx);
     void ensure_fwd_cache(int qlen, int k);
+    void get_transpose(Backend* backend);
     SFT_MoEForwardCache* fwd_cache_ptr();
 
    private:
@@ -123,6 +125,30 @@ class SFT_MOE {
     std::vector<float*> m_local_intermediate_fp32_ptr_;  // [expert_num]
     std::vector<uint8_t*> m_local_down_input_ptr_;       // [expert_num]
     std::vector<float*> m_local_down_output_ptr_;        // [expert_num]
+
+    uint8_t* m_local_down_output_grad_;                  // [routed_expert_num * group_max_len * hidden_size * ggml_type_size(grad_type)]
+    float* m_local_down_input_grad_;                     // [routed_expert_num * group_max_len * intermediate_size]
+    float* m_local_gate_output_grad_fp32_;               // [routed_expert_num * group_max_len * intermediate_size]
+    float* m_local_up_output_grad_fp32_;                 // [routed_expert_num * group_max_len * intermediate_size]
+    uint8_t* m_local_gate_output_grad_;                  // [routed_expert_num * group_max_len * intermediate_size * ggml_type_size(grad_type)]
+    uint8_t* m_local_up_output_grad_;                    // [routed_expert_num * group_max_len * intermediate_size * ggml_type_size(grad_type)]
+    float* m_local_gate_input_grad_;                     // [routed_expert_num * group_max_len * hidden_size]
+    float* m_local_up_input_grad_;                       // [routed_expert_num * group_max_len * hidden_size]
+    std::vector<float*> m_grad_input_fp32_;              // [group_max_len, hidden_size]
+
+    std::vector<uint8_t*> m_local_down_output_grad_ptr_;     // [expert_num]
+    std::vector<float*> m_local_down_input_grad_ptr_;        // [expert_num]
+    std::vector<float*> m_local_gate_output_grad_fp32_ptr_;  // [expert_num]
+    std::vector<float*> m_local_up_output_grad_fp32_ptr_;    // [expert_num]
+    std::vector<uint8_t*> m_local_gate_output_grad_ptr_;     // [expert_num]
+    std::vector<uint8_t*> m_local_up_output_grad_ptr_;       // [expert_num]
+    std::vector<float*> m_local_gate_input_grad_ptr_;        // [expert_num]
+    std::vector<float*> m_local_up_input_grad_ptr_;          // [expert_num]
+
+    int* m_local_token_indices_;                             // [routed_expert_num * group_max_len]
+    int* m_local_expert_positions_;                          // [routed_expert_num * group_max_len]
+    std::vector<int*> m_local_token_indices_ptr_;            // [expert_num]
+    std::vector<int*> m_local_expert_positions_ptr_;         // [expert_num]
 
 	std::vector<SFT_MoEForwardCache> fw_cache_; // 持久缓存，便于backward读取到forward_cache
 };

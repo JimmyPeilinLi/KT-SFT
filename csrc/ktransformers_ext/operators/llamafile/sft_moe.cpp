@@ -113,6 +113,22 @@ SFT_MOE::SFT_MOE(SFT_MOEConfig config) {
     for (int i = 0; i < config_.group_max_len; i++) {
         m_mem_requests.push_back({(void**)&m_output_fp32_[i], sizeof(float) * config_.hidden_size});
     }
+    
+    m_mem_requests.push_back({(void**)&m_local_down_output_grad_, config_.routed_expert_num * config_.group_max_len * config_.hidden_size * ggml_type_size(config_.grad_type)});
+    m_mem_requests.push_back({(void**)&m_local_down_input_grad_, sizeof(float) * config_.routed_expert_num * config_.group_max_len * config_.intermediate_size});
+    m_mem_requests.push_back({(void**)&m_local_gate_output_grad_fp32_, sizeof(float) * config_.routed_expert_num * config_.group_max_len * config_.intermediate_size});
+    m_mem_requests.push_back({(void**)&m_local_up_output_grad_fp32_, sizeof(float) * config_.routed_expert_num * config_.group_max_len * config_.intermediate_size});
+    m_mem_requests.push_back({(void**)&m_local_gate_output_grad_, config_.routed_expert_num * config_.group_max_len * config_.intermediate_size * ggml_type_size(config_.grad_type)});
+    m_mem_requests.push_back({(void**)&m_local_up_output_grad_, config_.routed_expert_num * config_.group_max_len * config_.intermediate_size * ggml_type_size(config_.grad_type)});
+    m_mem_requests.push_back({(void**)&m_local_gate_input_grad_, sizeof(float) * config_.routed_expert_num * config_.group_max_len * config_.hidden_size});
+    m_mem_requests.push_back({(void**)&m_local_up_input_grad_, sizeof(float) * config_.routed_expert_num * config_.group_max_len * config_.hidden_size});
+    m_mem_requests.push_back({(void**)&m_local_token_indices_, sizeof(int) * config_.routed_expert_num * config_.group_max_len});
+    m_mem_requests.push_back({(void**)&m_local_expert_positions_, sizeof(int) * config_.routed_expert_num * config_.group_max_len});
+    m_grad_input_fp32_.resize(config_.group_max_len);
+    for (int i = 0; i < config_.group_max_len; i++) {
+        m_mem_requests.push_back({(void**)&m_grad_input_fp32_[i], sizeof(float) * config_.hidden_size});
+    }
+    
     shared_mem_buffer.alloc(this, m_mem_requests);
 
     m_local_pos_.resize(config_.group_max_len);
@@ -127,6 +143,20 @@ SFT_MOE::SFT_MOE(SFT_MOEConfig config) {
     m_local_intermediate_fp32_ptr_.resize(config_.expert_num);
     m_local_down_input_ptr_.resize(config_.expert_num);
     m_local_down_output_ptr_.resize(config_.expert_num);
+    
+    // backward_many 专用指针数组初始化
+    m_local_down_output_grad_ptr_.resize(config_.expert_num);
+    m_local_down_input_grad_ptr_.resize(config_.expert_num);
+    m_local_gate_output_grad_fp32_ptr_.resize(config_.expert_num);
+    m_local_up_output_grad_fp32_ptr_.resize(config_.expert_num);
+    m_local_gate_output_grad_ptr_.resize(config_.expert_num);
+    m_local_up_output_grad_ptr_.resize(config_.expert_num);
+    m_local_gate_input_grad_ptr_.resize(config_.expert_num);
+    m_local_up_input_grad_ptr_.resize(config_.expert_num);
+    
+    // fwd_cache访问映射指针数组初始化
+    m_local_token_indices_ptr_.resize(config_.expert_num);
+    m_local_expert_positions_ptr_.resize(config_.expert_num);
 }
 
 SFT_MOE::~SFT_MOE() {
@@ -465,12 +495,47 @@ void SFT_MOE::transpose_expert_matrix(const void* src, void* dst, int R, int C, 
             memcpy(
                 (uint8_t*)dst + (c * R + r) * ggml_type_size(dst_type),
                 (uint8_t*)transpose_buffer_ + (R * C * expert_idx + r * C + c) * ggml_type_size(dst_type),
-                ggml_type_size(src_type));
+                ggml_type_size(dst_type));
         }
     }
 }
 
-void SFT_MOE::backward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const SFT_MoEForwardCache* fwd_cache) {
+void SFT_MOE::get_transpose(Backend* backend) {
+    // Transpose gate_proj_
+    int R_gate = config_.intermediate_size;
+    int C_gate = config_.hidden_size;
+    size_t gate_expert_src_stride_bytes = (size_t)R_gate * C_gate * ggml_type_size(config_.gate_type);
+    size_t gate_expert_dst_t_stride_bytes = (size_t)C_gate * R_gate * ggml_type_size(config_.grad_type);
+    backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
+        void* src_expert = (uint8_t*)gate_proj_ + expert_idx * gate_expert_src_stride_bytes;
+        void* dst_expert_t = (uint8_t*)gate_proj_t_ + expert_idx * gate_expert_dst_t_stride_bytes;
+        transpose_expert_matrix(src_expert, dst_expert_t, R_gate, C_gate, config_.gate_type, config_.grad_type, expert_idx);
+    }, nullptr);
+
+    // Transpose up_proj_
+    int R_up = config_.intermediate_size;
+    int C_up = config_.hidden_size;
+    size_t up_expert_src_stride_bytes = (size_t)R_up * C_up * ggml_type_size(config_.up_type);
+    size_t up_expert_dst_t_stride_bytes = (size_t)C_up * R_up * ggml_type_size(config_.grad_type);
+    backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
+        void* src_expert = (uint8_t*)up_proj_ + expert_idx * up_expert_src_stride_bytes;
+        void* dst_expert_t = (uint8_t*)up_proj_t_ + expert_idx * up_expert_dst_t_stride_bytes;
+        transpose_expert_matrix(src_expert, dst_expert_t, R_up, C_up, config_.up_type, config_.grad_type, expert_idx);
+    }, nullptr);
+
+    // Transpose down_proj_
+    int R_down = config_.hidden_size;
+    int C_down = config_.intermediate_size;
+    size_t down_expert_src_stride_bytes = (size_t)R_down * C_down * ggml_type_size(config_.down_type);
+    size_t down_expert_dst_t_stride_bytes = (size_t)C_down * R_down * ggml_type_size(config_.grad_type);
+    backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
+        void* src_expert = (uint8_t*)down_proj_ + expert_idx * down_expert_src_stride_bytes;
+        void* dst_expert_t = (uint8_t*)down_proj_t_ + expert_idx * down_expert_dst_t_stride_bytes;
+        transpose_expert_matrix(src_expert, dst_expert_t, R_down, C_down, config_.down_type, config_.grad_type, expert_idx);
+    }, nullptr);
+}
+
+void SFT_MOE::backward_one(int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const SFT_MoEForwardCache* fwd_cache) {
 	// clock_t clk1, clk2, clk3, clk4;
 	// clock_t clkz1, clkz2, clkz3, clkz4, clkz5;
 	// clk1 = clock();
@@ -534,50 +599,139 @@ void SFT_MOE::backward_one(int layer_idx, int k, const uint64_t* expert_ids, con
 
 }
 
+void SFT_MOE::backward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const SFT_MoEForwardCache* fwd_cache) {
+    for (int i = 0; i < config_.expert_num; i++) {
+        m_local_num_[i] = 0;
+    }
+    for (int i = 0; i < qlen; i++) {
+        for (int j = 0; j < k; j++) {
+            m_local_pos_[i][j] = m_local_num_[expert_ids[i * k + j]]++;
+        }
+    }
+    uint64_t offset = 0;
+    for (int i = 0; i < config_.expert_num; i++) {
+        m_local_down_output_grad_ptr_[i] = m_local_down_output_grad_ + offset * config_.hidden_size * ggml_type_size(config_.grad_type);
+        m_local_down_input_grad_ptr_[i] = m_local_down_input_grad_ + offset * config_.intermediate_size;
+        m_local_gate_output_grad_fp32_ptr_[i] = m_local_gate_output_grad_fp32_ + offset * config_.intermediate_size;
+        m_local_up_output_grad_fp32_ptr_[i] = m_local_up_output_grad_fp32_ + offset * config_.intermediate_size;
+        m_local_gate_output_grad_ptr_[i] = m_local_gate_output_grad_ + offset * config_.intermediate_size * ggml_type_size(config_.grad_type);
+        m_local_up_output_grad_ptr_[i] = m_local_up_output_grad_ + offset * config_.intermediate_size * ggml_type_size(config_.grad_type);
+        m_local_gate_input_grad_ptr_[i] = m_local_gate_input_grad_ + offset * config_.hidden_size;
+        m_local_up_input_grad_ptr_[i] = m_local_up_input_grad_ + offset * config_.hidden_size;
+        m_local_token_indices_ptr_[i] = m_local_token_indices_ + offset;
+        m_local_expert_positions_ptr_[i] = m_local_expert_positions_ + offset;
+        offset += m_local_num_[i];
+    }
+
+    backend->do_work_stealing_job(qlen, nullptr, [&](int i) {
+        for (int j = 0; j < k; j++) {
+            uint64_t expert_id = expert_ids[i * k + j];
+            int local_row = m_local_pos_[i][j];
+            memcpy(m_local_down_output_grad_ptr_[expert_id] + local_row * config_.hidden_size * ggml_type_size(config_.grad_type), (uint8_t*)output_grad + i * config_.hidden_size * ggml_type_size(config_.grad_type), config_.hidden_size * ggml_type_size(config_.grad_type));
+            m_local_token_indices_ptr_[expert_id][local_row] = i;
+            m_local_expert_positions_ptr_[expert_id][local_row] = j;
+        }
+    }, nullptr);
+
+    // get_transpose(backend);
+
+    int stride = QK_K;
+    int nth = config_.intermediate_size / stride;
+    backend->do_work_stealing_job(nth * config_.expert_num, nullptr, [&](int task_id) {
+        uint64_t expert_idx = task_id / nth;
+        int ith = task_id % nth;
+        
+        void* down_proj_t_ptr = (uint8_t*)down_proj_t_ + (expert_idx * config_.intermediate_size + ith * stride) * config_.hidden_size * ggml_type_size(config_.grad_type);
+        void* down_output_grad_ptr = m_local_down_output_grad_ptr_[expert_idx];
+        float* down_input_grad_ptr = m_local_down_input_grad_ptr_[expert_idx] + ith * stride;
+                    
+        llamafile_sgemm(stride, m_local_num_[expert_idx], config_.hidden_size, down_proj_t_ptr, config_.hidden_size, down_output_grad_ptr, config_.hidden_size, down_input_grad_ptr, config_.intermediate_size, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.grad_type, config_.grad_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
+        
+        for (int i = 0; i < m_local_num_[expert_idx]; i++) {
+            int token_idx = m_local_token_indices_ptr_[expert_idx][i];
+            int expert_pos = m_local_expert_positions_ptr_[expert_idx][i];
+            float weight = weights[token_idx * k + expert_pos];
+            
+            for (int j = ith * stride; j < (ith + 1) * stride; j++) {
+                m_local_down_input_grad_ptr_[expert_idx][i * config_.intermediate_size + j] *= weight;
+                
+                float down_input_grad = m_local_down_input_grad_ptr_[expert_idx][i * config_.intermediate_size + j];
+                m_local_gate_output_grad_fp32_ptr_[expert_idx][i * config_.intermediate_size + j] = down_input_grad * fwd_cache[token_idx].up_v[expert_pos][j] * act_fn_grad(fwd_cache[token_idx].gate_u[expert_pos][j]);
+                m_local_up_output_grad_fp32_ptr_[expert_idx][i * config_.intermediate_size + j] = down_input_grad * act_fn(fwd_cache[token_idx].gate_u[expert_pos][j]);
+            }
+            
+            float* gate_output_grad_fp32_ptr = m_local_gate_output_grad_fp32_ptr_[expert_idx] + i * config_.intermediate_size + ith * stride;
+            void* gate_output_grad_ptr = m_local_gate_output_grad_ptr_[expert_idx] + (i * config_.intermediate_size + ith * stride) * ggml_type_size(config_.grad_type);
+            from_float(gate_output_grad_fp32_ptr, gate_output_grad_ptr, stride, config_.grad_type);
+            
+            float* up_output_grad_fp32_ptr = m_local_up_output_grad_fp32_ptr_[expert_idx] + i * config_.intermediate_size + ith * stride;
+            void* up_output_grad_ptr = m_local_up_output_grad_ptr_[expert_idx] + (i * config_.intermediate_size + ith * stride) * ggml_type_size(config_.grad_type);
+            from_float(up_output_grad_fp32_ptr, up_output_grad_ptr, stride, config_.grad_type);
+        }
+    }, nullptr);
+    stride = QK_K;
+    nth = config_.hidden_size / stride;
+    backend->do_work_stealing_job(nth * config_.expert_num, nullptr, [&](int task_id) {
+        uint64_t expert_idx = task_id / nth;
+        int ith = task_id % nth;
+        
+        void* gate_proj_t_ptr = (uint8_t*)gate_proj_t_ + (expert_idx * config_.hidden_size + ith * stride) * config_.intermediate_size * ggml_type_size(config_.grad_type);
+        void* up_proj_t_ptr = (uint8_t*)up_proj_t_ + (expert_idx * config_.hidden_size + ith * stride) * config_.intermediate_size * ggml_type_size(config_.grad_type);
+        void* gate_output_grad_ptr = m_local_gate_output_grad_ptr_[expert_idx];
+        void* up_output_grad_ptr = m_local_up_output_grad_ptr_[expert_idx];
+        float* gate_input_grad_ptr = m_local_gate_input_grad_ptr_[expert_idx] + ith * stride;
+        float* up_input_grad_ptr = m_local_up_input_grad_ptr_[expert_idx] + ith * stride;
+        
+        llamafile_sgemm(stride, m_local_num_[expert_idx], config_.intermediate_size, gate_proj_t_ptr, config_.intermediate_size, gate_output_grad_ptr, config_.intermediate_size, gate_input_grad_ptr, config_.hidden_size, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.grad_type, config_.grad_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
+        llamafile_sgemm(stride, m_local_num_[expert_idx], config_.intermediate_size, up_proj_t_ptr, config_.intermediate_size, up_output_grad_ptr, config_.intermediate_size, up_input_grad_ptr, config_.hidden_size, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.grad_type, config_.grad_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
+    }, nullptr);
+    backend->do_work_stealing_job(qlen, nullptr, [&](int i) {
+        for (int e = 0; e < config_.hidden_size; e++) {
+            m_grad_input_fp32_[i][e] = 0;
+        }
+        for (int j = 0; j < k; j++) {
+            for (int e = 0; e < config_.hidden_size; e++) {
+                m_grad_input_fp32_[i][e] += m_local_gate_input_grad_ptr_[expert_ids[i * k + j]][m_local_pos_[i][j] * config_.hidden_size + e] + m_local_up_input_grad_ptr_[expert_ids[i * k + j]][m_local_pos_[i][j] * config_.hidden_size + e];
+            }
+        }
+        from_float(m_grad_input_fp32_[i], (uint8_t*)input_grad + i * config_.hidden_size * ggml_type_size(config_.grad_type), config_.hidden_size, config_.grad_type);
+    }, nullptr);
+}
+
 // TODO: input和layer_idx参数可以删除
 void SFT_MOE::backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights,
                    const void* input, const void* grad_output, void* grad_input, Backend* backend, const SFT_MoEForwardCache* fwd_cache) {
-    // Transpose gate_proj_
-    int R_gate = config_.intermediate_size;
-    int C_gate = config_.hidden_size;
-    size_t gate_expert_src_stride_bytes = (size_t)R_gate * C_gate * ggml_type_size(config_.gate_type);
-    size_t gate_expert_dst_t_stride_bytes = (size_t)C_gate * R_gate * ggml_type_size(config_.grad_type);
-    backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
-        void* src_expert = (uint8_t*)gate_proj_ + expert_idx * gate_expert_src_stride_bytes;
-        void* dst_expert_t = (uint8_t*)gate_proj_t_ + expert_idx * gate_expert_dst_t_stride_bytes;
-        transpose_expert_matrix(src_expert, dst_expert_t, R_gate, C_gate, config_.gate_type, config_.grad_type, expert_idx);
-    }, nullptr);
 
-    // Transpose up_proj_
-    int R_up = config_.intermediate_size;
-    int C_up = config_.hidden_size;
-    size_t up_expert_src_stride_bytes = (size_t)R_up * C_up * ggml_type_size(config_.up_type);
-    size_t up_expert_dst_t_stride_bytes = (size_t)C_up * R_up * ggml_type_size(config_.grad_type);
-    backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
-        void* src_expert = (uint8_t*)up_proj_ + expert_idx * up_expert_src_stride_bytes;
-        void* dst_expert_t = (uint8_t*)up_proj_t_ + expert_idx * up_expert_dst_t_stride_bytes;
-        transpose_expert_matrix(src_expert, dst_expert_t, R_up, C_up, config_.up_type, config_.grad_type, expert_idx);
-    }, nullptr);
-
-    // Transpose down_proj_
-    int R_down = config_.hidden_size;
-    int C_down = config_.intermediate_size;
-    size_t down_expert_src_stride_bytes = (size_t)R_down * C_down * ggml_type_size(config_.down_type);
-    size_t down_expert_dst_t_stride_bytes = (size_t)C_down * R_down * ggml_type_size(config_.grad_type);
-    backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
-        void* src_expert = (uint8_t*)down_proj_ + expert_idx * down_expert_src_stride_bytes;
-        void* dst_expert_t = (uint8_t*)down_proj_t_ + expert_idx * down_expert_dst_t_stride_bytes;
-        transpose_expert_matrix(src_expert, dst_expert_t, R_down, C_down, config_.down_type, config_.grad_type, expert_idx);
-    }, nullptr);
-
-    for (int i = 0; i < qlen; i++) {
-        backward_one(layer_idx,
-					 k,
-                     expert_ids + i * k,
-                     weights + i * k,
-                     (uint8_t*)grad_output + i * config_.hidden_size * ggml_type_size(config_.grad_type),
-                     (uint8_t*)grad_input + i * config_.hidden_size * ggml_type_size(config_.grad_type),
-                     backend,
-					 fwd_cache + i);
+    get_transpose(backend);
+    int remaining_qlen = qlen;
+    int processed_offset = 0;
+    
+    while (remaining_qlen > 0) {
+        // config_.group_min_len = 10000000;
+        if (remaining_qlen < config_.group_min_len) {
+            for (int i = 0; i < remaining_qlen; i++) {
+                backward_one(k,
+                             expert_ids + (processed_offset + i) * k,
+                             weights + (processed_offset + i) * k,
+                             (uint8_t*)grad_output + (processed_offset + i) * config_.hidden_size * ggml_type_size(config_.grad_type),
+                             (uint8_t*)grad_input + (processed_offset + i) * config_.hidden_size * ggml_type_size(config_.grad_type),
+                             backend,
+                             fwd_cache + processed_offset + i);
+            }
+            break;
+        } else {
+            int backward_len = std::min(config_.group_max_len, remaining_qlen);
+            backward_many(backward_len, 
+                         k, 
+                         expert_ids + processed_offset * k, 
+                         weights + processed_offset * k, 
+                         (uint8_t*)grad_output + processed_offset * config_.hidden_size * ggml_type_size(config_.grad_type), 
+                         (uint8_t*)grad_input + processed_offset * config_.hidden_size * ggml_type_size(config_.grad_type), 
+                         backend, 
+                         fwd_cache + processed_offset);
+            
+            remaining_qlen -= backward_len;
+            processed_offset += backward_len;
+        }
     }
 }
