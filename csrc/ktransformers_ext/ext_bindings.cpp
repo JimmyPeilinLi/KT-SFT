@@ -21,6 +21,7 @@
 
 #if defined(__x86_64__) && defined(__HAS_AVX512F__) && defined(__HAS_AMX__)
 #include "operators/amx/moe.hpp"
+#include "operators/amx/sft_moe.hpp"
 #endif
 
 #include "pybind11/functional.h"
@@ -796,76 +797,76 @@ class AMX_MOEBindings {
 };
 #endif
 
-// #if defined(__x86_64__) && defined(__HAS_AVX512F__) && defined(__HAS_AMX__)
-// template<class T>
-// class SFT_AMX_MOEBindings {
-//   public:
-//     class WarmUpBindings {
-//       public:
-//         struct Args {
-//             CPUInfer *cpuinfer;
-//             SFT_AMX_MOE<T> *moe;
-//         };
-//         static void inner(void *args) {
-//             Args *args_ = (Args *)args;
-//             args_->cpuinfer->enqueue(&SFT_AMX_MOE<T>::warm_up, args_->moe);
-//         }
-//         static std::pair<intptr_t, intptr_t> cpuinfer_interface(SFT_AMX_MOE<T> &moe) {
-//             Args *args = new Args{nullptr, &moe};
-//             return std::make_pair((intptr_t)&inner, (intptr_t)args);
-//         }
-//     };
-//     class LoadWeightsBindings {
-//       public:
-//         struct Args {
-//             CPUInfer *cpuinfer;
-//             SFT_AMX_MOE<T> *moe;
-//         };
-//         static void inner(void *args) {
-//             Args *args_ = (Args *)args;
-//             args_->cpuinfer->enqueue(&SFT_AMX_MOE<T>::load_weights, args_->moe);
-//         }
-//         static std::pair<intptr_t, intptr_t> cpuinfer_interface(SFT_AMX_MOE<T> &moe) {
-//             Args *args = new Args{nullptr, &moe};
-//             return std::make_pair((intptr_t)&inner, (intptr_t)args);
-//         }
-//     };
-//     class ForwardBindings {
-//       public:
-//         struct Args {
-//             CPUInfer *cpuinfer;
-//             SFT_AMX_MOE<T> *moe;
-//             int qlen;
-//             int k;
-//             const uint64_t *expert_ids;
-//             const float *weights;
-//             const void *input;
-//             void *output;
-//             int *batch_size_tensor;
-//         };
-//         static void inner(void *args) {
-//             Args *args_ = (Args *)args;
-//             args_->cpuinfer->enqueue(
-//                 &SFT_AMX_MOE<T>::forward, args_->moe, args_->qlen, args_->k,
-//                 args_->expert_ids, args_->weights, args_->input, args_->output, args_->batch_size_tensor);
-//         }
-//         static std::pair<intptr_t, intptr_t>
-//         cpuinfer_interface(SFT_AMX_MOE<T> &moe, int qlen, int k, intptr_t expert_ids,
-//                         intptr_t weights, intptr_t input, intptr_t output, intptr_t batch_size_tensor) {
-//             Args *args = new Args{nullptr,
-//                                 &moe,
-//                                 qlen,
-//                                 k,
-//                                 (const uint64_t *)expert_ids,
-//                                 (const float *)weights,
-//                                 (const void *)input,
-//                                 (void *)output,
-//                                 (int *)batch_size_tensor};
-//             return std::make_pair((intptr_t)&inner, (intptr_t)args);
-//         }
-//     };
-// };
-// #endif
+#if defined(__x86_64__) && defined(__HAS_AVX512F__) && defined(__HAS_AMX__)
+template<class T>
+class SFT_AMX_MOEBindings {
+  public:
+    class WarmUpBindings {
+      public:
+        struct Args {
+            CPUInfer *cpuinfer;
+            SFT_AMX_MOE<T> *moe;
+        };
+        static void inner(void *args) {
+            Args *args_ = (Args *)args;
+            args_->cpuinfer->enqueue(&SFT_AMX_MOE<T>::warm_up, args_->moe);
+        }
+        static std::pair<intptr_t, intptr_t> cpuinfer_interface(SFT_AMX_MOE<T> &moe) {
+            Args *args = new Args{nullptr, &moe};
+            return std::make_pair((intptr_t)&inner, (intptr_t)args);
+        }
+    };
+    class LoadWeightsBindings {
+      public:
+        struct Args {
+            CPUInfer *cpuinfer;
+            SFT_AMX_MOE<T> *moe;
+        };
+        static void inner(void *args) {
+            Args *args_ = (Args *)args;
+            args_->cpuinfer->enqueue(&SFT_AMX_MOE<T>::load_weights, args_->moe);
+        }
+        static std::pair<intptr_t, intptr_t> cpuinfer_interface(SFT_AMX_MOE<T> &moe) {
+            Args *args = new Args{nullptr, &moe};
+            return std::make_pair((intptr_t)&inner, (intptr_t)args);
+        }
+    };
+    class ForwardBindings {
+      public:
+        struct Args {
+            CPUInfer *cpuinfer;
+            SFT_AMX_MOE<T> *moe;
+            int qlen;
+            int k;
+            const uint64_t *expert_ids;
+            const float *weights;
+            const void *input;
+            void *output;
+            int *batch_size_tensor;
+        };
+        static void inner(void *args) {
+            Args *args_ = (Args *)args;
+            args_->cpuinfer->enqueue(
+                &SFT_AMX_MOE<T>::forward, args_->moe, args_->qlen, args_->k,
+                args_->expert_ids, args_->weights, args_->input, args_->output, args_->batch_size_tensor);
+        }
+        static std::pair<intptr_t, intptr_t>
+        cpuinfer_interface(SFT_AMX_MOE<T> &moe, int qlen, int k, intptr_t expert_ids,
+                        intptr_t weights, intptr_t input, intptr_t output, intptr_t batch_size_tensor) {
+            Args *args = new Args{nullptr,
+                                &moe,
+                                qlen,
+                                k,
+                                (const uint64_t *)expert_ids,
+                                (const float *)weights,
+                                (const void *)input,
+                                (void *)output,
+                                (int *)batch_size_tensor};
+            return std::make_pair((intptr_t)&inner, (intptr_t)args);
+        }
+    };
+};
+#endif
 
 PYBIND11_MODULE(cpuinfer_ext, m) {
     py::class_<CPUInfer>(m, "CPUInfer")
@@ -970,30 +971,30 @@ PYBIND11_MODULE(cpuinfer_ext, m) {
 
     #endif
 
-	// #if defined(__x86_64__) && defined(__HAS_AVX512F__) && defined(__HAS_AMX__)
-    // py::class_<SFT_AMX_MOEConfig>(moe_module, "SFT_AMX_MOEConfig")
-    //     .def(py::init([](int expert_num, int routed_expert_num, int hidden_size,
-    //                      int intermediate_size,
-    //                      int max_len, intptr_t gate_proj,
-    //                      intptr_t up_proj, intptr_t down_proj) {
-    //         return SFT_AMX_MOEConfig(expert_num, routed_expert_num, hidden_size,
-    //                              intermediate_size, 
-    //                              max_len, (void *)gate_proj,
-    //                              (void *)up_proj, (void *)down_proj);
-    //     }));
+	#if defined(__x86_64__) && defined(__HAS_AVX512F__) && defined(__HAS_AMX__)
+    py::class_<SFT_AMX_MOEConfig>(moe_module, "SFT_AMX_MOEConfig")
+        .def(py::init([](int expert_num, int routed_expert_num, int hidden_size,
+                         int intermediate_size,
+                         int max_len, intptr_t gate_proj,
+                         intptr_t up_proj, intptr_t down_proj) {
+            return SFT_AMX_MOEConfig(expert_num, routed_expert_num, hidden_size,
+                                 intermediate_size, 
+                                 max_len, (void *)gate_proj,
+                                 (void *)up_proj, (void *)down_proj);
+        }));
 
-    // py::class_<SFT_AMX_MOE<amx::GemmKernel224BF>>(moe_module, "AMXBF16_MOE")
-    //     .def(py::init<SFT_AMX_MOEConfig>())
-    //     .def("warm_up", &SFT_AMX_MOEBindings<amx::GemmKernel224BF>::WarmUpBindings::cpuinfer_interface)
-    //     .def("load_weights", &SFT_AMX_MOEBindings<amx::GemmKernel224BF>::LoadWeightsBindings::cpuinfer_interface)
-    //     .def("forward", &SFT_AMX_MOEBindings<amx::GemmKernel224BF>::ForwardBindings::cpuinfer_interface);
-    // py::class_<SFT_AMX_MOE<amx::GemmKernel224Int8>>(moe_module, "AMXInt8_MOE")
-    //     .def(py::init<SFT_AMX_MOEConfig>())
-    //     .def("warm_up", &SFT_AMX_MOEBindings<amx::GemmKernel224Int8>::WarmUpBindings::cpuinfer_interface)
-    //     .def("load_weights", &SFT_AMX_MOEBindings<amx::GemmKernel224Int8>::LoadWeightsBindings::cpuinfer_interface)
-    //     .def("forward", &SFT_AMX_MOEBindings<amx::GemmKernel224Int8>::ForwardBindings::cpuinfer_interface);
+    py::class_<SFT_AMX_MOE<amx::GemmKernel224BF>>(moe_module, "SFT_AMXBF16_MOE")
+        .def(py::init<SFT_AMX_MOEConfig>())
+        .def("warm_up", &SFT_AMX_MOEBindings<amx::GemmKernel224BF>::WarmUpBindings::cpuinfer_interface)
+        .def("load_weights", &SFT_AMX_MOEBindings<amx::GemmKernel224BF>::LoadWeightsBindings::cpuinfer_interface)
+        .def("forward", &SFT_AMX_MOEBindings<amx::GemmKernel224BF>::ForwardBindings::cpuinfer_interface);
+    py::class_<SFT_AMX_MOE<amx::GemmKernel224Int8>>(moe_module, "SFT_AMXInt8_MOE")
+        .def(py::init<SFT_AMX_MOEConfig>())
+        .def("warm_up", &SFT_AMX_MOEBindings<amx::GemmKernel224Int8>::WarmUpBindings::cpuinfer_interface)
+        .def("load_weights", &SFT_AMX_MOEBindings<amx::GemmKernel224Int8>::LoadWeightsBindings::cpuinfer_interface)
+        .def("forward", &SFT_AMX_MOEBindings<amx::GemmKernel224Int8>::ForwardBindings::cpuinfer_interface);
 
-    // #endif
+    #endif
 
     auto kvcache_module = m.def_submodule("kvcache");
 

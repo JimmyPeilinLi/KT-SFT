@@ -201,7 +201,6 @@ def local_chat(
     if model.generation_config.pad_token_id is None:
         model.generation_config.pad_token_id = model.generation_config.eos_token_id
     model.eval()
-    GLOBAL_CONFIG._config["mod"] = "infer"
     logging.basicConfig(level=logging.INFO)
 
     system = platform.system()
@@ -210,6 +209,9 @@ def local_chat(
     #     os.system("cls")
     # else:
     #     os.system("clear")
+    
+    if (GLOBAL_CONFIG._config["mod"] == "sft") :
+        model.model.embed_tokens.to("cpu")
 
     while True:
         content = input("Chat: ")
@@ -305,9 +307,9 @@ if __name__ == "__main__":
             model_path="/mnt/data/models/DeepSeek-V2-Lite-Chat",
             model_config_path="ktransformers/configs/model_config",
             gguf_path="/mnt/data/models/DeepSeek-V2-Lite-Chat-GGUF-FP16/",
-            cpu_infer=64,
+            cpu_infer=112,
             max_new_tokens=1000,
-            force_think=True,
+            force_think=False,
             optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft.yaml",
             is_sft=True,
             sft_data_path="tmp/demo_test_10example.json",
