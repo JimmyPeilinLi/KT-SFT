@@ -480,7 +480,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
         else:
             hidden_type = 30 # bf16
         if self.backend == "llamafile":
-            print("GO INTO LLAMAFILE!!")
+            # print("GO INTO LLAMAFILE!!")
             moe_config = SFT_MOEConfig(
                 n_routed_experts,
                 self.config.num_experts_per_tok,
@@ -583,7 +583,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
             expert_ids = expert_ids.contiguous().cpu()
             weights = weights.contiguous().to(torch.float32).cpu()
             output = torch.empty_like(input_tensor).contiguous()
-            print("success record")
+            # print("success record")
             # 记录开始时间
             wall_t0 = time.time()
             cpu_infer.submit(
@@ -617,10 +617,10 @@ class KSFTExpertsCPU(torch.autograd.Function):
         # 把 qlen / k 留给 backward
         ctx.saved_dims = (qlen, k)
         ctx._time_fwd  = t_fwd
-        print(f"qlen ,k:{qlen}, {k}")
+        # print(f"qlen ,k:{qlen}, {k}")
         
-        print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
-              f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
+        # print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
+        #       f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
 
         return result
         
@@ -631,7 +631,11 @@ class KSFTExpertsCPU(torch.autograd.Function):
         
         # Pick back the middle results
         input_tensor, expert_ids, weights = ctx.saved_tensors
-        layer_idx   = ctx.layer_idx
+        import random
+        layer_idx = random.randint(0, 10000)
+        # print(f"layer_idx:{layer_idx}")
+        # layer_idx   = ctx.layer_idx
+        
         # cpu_infer  = ctx.cpu_infer
         # moe        = ctx.moe
         # out_device = ctx.out_device
@@ -663,10 +667,10 @@ class KSFTExpertsCPU(torch.autograd.Function):
         qlen, k  = ctx.saved_dims          # 正确的 q / k
         flops_bw = 18 * qlen * k * H_FIXED * M_FIXED
         tflops_b = flops_bw / t_bw / 1e12
-        print(f"qlen:{qlen}, k:{k}")
+        # print(f"qlen:{qlen}, k:{k}")
 
-        print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
-              f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
+        # print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
+            #   f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
         
         return grad_input.to(device=ctx.out_device), None, None, None, None, None, None
     

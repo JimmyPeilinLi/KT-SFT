@@ -378,7 +378,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
         ],
         r=8,
         lora_alpha=32,
-        lora_dropout=0.1, # TODO: FOR consist TEST, origin=0.1
+        lora_dropout=0.1,
     )
 
     training_args = TrainingArguments(

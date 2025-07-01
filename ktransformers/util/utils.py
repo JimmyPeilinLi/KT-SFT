@@ -337,10 +337,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         if mode == "long_context":
             inputs_embeds = model.model.embed_tokens(inputs.to("cpu"))
         else:
-            if (GLOBAL_CONFIG._config["mod"] == "infer"):
-                inputs_embeds = model.model.embed_tokens(inputs.to("cpu")).to(torch_device)
-            elif (GLOBAL_CONFIG._config["mod"] == "sft"):
-                inputs_embeds = model.model.embed_tokens(inputs.to(model.model.embed_tokens.weight.device)).to(torch_device)
+            inputs_embeds = model.model.embed_tokens(inputs.to("cpu")).to(torch_device)
         if use_flashinfer_mla:
             MLAWrapperSingleton.update_buffer(past_key_values.max_pages)
             MLAWrapperSingleton.need_plan_all()
@@ -486,7 +483,7 @@ def simple_prefill_and_generate_for_test(model, tokenizer, inputs, max_new_token
         else:
             # custom_stream = torch.cuda.Stream()
             torch.cuda.set_device(torch_device)
-            inputs_embeds = model.model.embed_tokens(cur_token.to("cpu")).to(torch_device)
+            inputs_embeds = model.model.embed_tokens(inputs.to("cpu")).to(torch_device)
             # with torch.cuda.stream(custom_stream):
             logits=model(inputs_embeds=inputs_embeds,
                         position_ids=position_ids,
@@ -514,8 +511,8 @@ def simple_prefill_and_generate_for_test(model, tokenizer, inputs, max_new_token
     def chunk_prefill(inputs, cache_position, past_key_values):
         if mode == "long_context":
             inputs_embeds = model.model.embed_tokens(inputs.to("cpu"))
-        else: # TODO: not verify the inputs.to(xxx), origin is 'cpu', but not on same device for lora model.
-            inputs_embeds = model.model.embed_tokens(inputs.to(model.model.embed_tokens.weight.device)).to(torch_device)
+        else:
+            inputs_embeds = model.model.embed_tokens(inputs.to("cpu")).to(torch_device)
         if use_flashinfer_mla:
             MLAWrapperSingleton.update_buffer(past_key_values.max_pages)
             MLAWrapperSingleton.need_plan_all()
@@ -622,7 +619,7 @@ def simple_prefill_and_generate_for_test(model, tokenizer, inputs, max_new_token
     tokens_generated = len(tokens)
     tokens_per_second = tokens_generated / total_time
     
-	
+    
     print("")
 
     print(f"prompt eval count:    {prefill_count} token(s)")

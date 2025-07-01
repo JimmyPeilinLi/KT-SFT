@@ -572,8 +572,6 @@ void SFT_MOE::backward_one(int layer_idx, int k, const uint64_t* expert_ids, con
 // TODO: input参数可以删除
 void SFT_MOE::backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights,
                    const void* input, const void* grad_output, void* grad_input, Backend* backend, const SFT_MoEForwardCache* fwd_cache) {
-	std::cout << "I am the sft of operator moe" << std::endl;
-	return;
     for (int i = 0; i < qlen; i++) {
         backward_one(layer_idx,
 					 k,

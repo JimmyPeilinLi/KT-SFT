@@ -983,12 +983,12 @@ PYBIND11_MODULE(cpuinfer_ext, m) {
                                  (void *)up_proj, (void *)down_proj);
         }));
 
-    py::class_<SFT_AMX_MOE<amx::GemmKernel224BF>>(moe_module, "AMXBF16_MOE")
+    py::class_<SFT_AMX_MOE<amx::GemmKernel224BF>>(moe_module, "SFT_AMXBF16_MOE")
         .def(py::init<SFT_AMX_MOEConfig>())
         .def("warm_up", &SFT_AMX_MOEBindings<amx::GemmKernel224BF>::WarmUpBindings::cpuinfer_interface)
         .def("load_weights", &SFT_AMX_MOEBindings<amx::GemmKernel224BF>::LoadWeightsBindings::cpuinfer_interface)
         .def("forward", &SFT_AMX_MOEBindings<amx::GemmKernel224BF>::ForwardBindings::cpuinfer_interface);
-    py::class_<SFT_AMX_MOE<amx::GemmKernel224Int8>>(moe_module, "AMXInt8_MOE")
+    py::class_<SFT_AMX_MOE<amx::GemmKernel224Int8>>(moe_module, "SFT_AMXInt8_MOE")
         .def(py::init<SFT_AMX_MOEConfig>())
         .def("warm_up", &SFT_AMX_MOEBindings<amx::GemmKernel224Int8>::WarmUpBindings::cpuinfer_interface)
         .def("load_weights", &SFT_AMX_MOEBindings<amx::GemmKernel224Int8>::LoadWeightsBindings::cpuinfer_interface)
