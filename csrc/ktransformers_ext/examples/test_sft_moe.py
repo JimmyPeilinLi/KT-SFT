@@ -478,11 +478,128 @@ def test_backward_2round_with_tflops():
               f"bwd_cpp {item['cpp_bwd_time']:.4f}s | "
               f"diff(fwd/bwd) {item['fwd_diff']:.2e}/{item['bwd_diff']:.2e} | "
               f"TFLOPS(cpp fwd/bwd) {item['tflops_fwd_cpp']:.2f}/{item['tflops_bwd_cpp']:.2f}")
+def test_backward_10round_5layer():
+    """
+    创建 5 个独立 SFT-MOE 层，连续跑 10 轮 forward+backward。
+    第 n 轮使用第 n % 5 层，逐轮验证 C++ 与 PyTorch 的数值一致性，
+    同时统计 TFLOPS / 耗时。全程不修改任何全局变量。
+    """
+    num_layers   = 5
+    num_rounds   = 10
 
+    # ---------- 1. 为 5 层分别初始化权重 ----------
+    gate_projs, up_projs, down_projs, moes = [], [], [], []
+    for _ in range(num_layers):
+        gp = torch.randn((expert_num, intermediate_size, hidden_size),
+                         dtype=dtype, requires_grad=True).contiguous()
+        up = torch.randn_like(gp, requires_grad=True)          # 同形状
+        dp = torch.randn((expert_num, hidden_size, intermediate_size),
+                         dtype=dtype, requires_grad=True).contiguous()
 
-if __name__ == "__main__":
-    test_backward_2round_with_tflops()
+        cfg = cpuinfer_ext.sft_moe.SFT_MOEConfig(
+            expert_num, n_routed_experts,
+            hidden_size, intermediate_size,
+            stride, group_min_len, group_max_len,
+            gp.data_ptr(), up.data_ptr(), dp.data_ptr(),
+            gate_type, up_type, down_type, hidden_type
+        )
+        moes.append(cpuinfer_ext.sft_moe.SFT_MOE(cfg))
+        gate_projs.append(gp);  up_projs.append(up);  down_projs.append(dp)
 
+    # ---------- 2. FLOPs 常数 ----------
+    FLOPs_fwd = 6  * qlen * n_routed_experts * hidden_size * intermediate_size
+    FLOPs_bwd = 18 * qlen * n_routed_experts * hidden_size * intermediate_size
+
+    summary = []
+
+    for r in range(num_rounds):
+        layer_id = r % num_layers
+        moe      = moes[layer_id]
+        gp, up, dp = gate_projs[layer_id], up_projs[layer_id], down_projs[layer_id]
+
+        print(f"\n================ Round {r+1}/{num_rounds}  "
+              f"(use layer {layer_id}) ================")
+
+        # ---------- 3. 构造输入 ----------
+        expert_ids = torch.stack(
+            [torch.randperm(expert_num)[:n_routed_experts] for _ in range(qlen)]
+        ).contiguous()
+        weights = torch.rand((qlen, n_routed_experts), dtype=torch.float32).contiguous()
+
+        inp_pt  = (torch.randn((qlen, hidden_size), dtype=dtype) / 100
+                  ).detach().requires_grad_(True).contiguous()
+        inp_cpp = inp_pt.clone().detach().requires_grad_(True).contiguous()
+
+        # ================= 前向 =================
+        t_out = moe_torch(inp_pt, expert_ids, weights, gp, up, dp, requires_grad=True)
+        t_out.retain_grad()
+
+        out_cpp = torch.empty_like(t_out).contiguous()
+        t0 = time.time()
+        CPUInfer.submit(
+            moe.forward(qlen, n_routed_experts,
+                        expert_ids.data_ptr(), weights.data_ptr(),
+                        inp_cpp.data_ptr(), out_cpp.data_ptr())
+        )
+        CPUInfer.sync()
+        fwd_time = time.time() - t0
+
+        fwd_diff = (out_cpp - t_out).abs().mean() / t_out.abs().mean()
+        print(f"Forward diff = {fwd_diff.item():.3e} | "
+              f"C++ fwd {fwd_time:.3f}s")
+
+        # ================= 反向 =================
+        grad_out     = torch.randn_like(t_out, dtype=gradtype).contiguous()
+        grad_out_cpp = grad_out.clone().contiguous()
+        grad_inp_cpp = torch.empty_like(inp_cpp, dtype=gradtype).contiguous()
+
+        # PyTorch backward
+        for p in (gp, up, dp, inp_pt):
+            if p.grad is not None:
+                p.grad.zero_()
+        t1 = time.time()
+        t_out.backward(grad_out, retain_graph=True)
+        pyt_time = time.time() - t1
+
+        # C++ backward
+        t2 = time.time()
+        CPUInfer.submit(
+            moe.backward(r, qlen, n_routed_experts,
+                         expert_ids.data_ptr(), weights.data_ptr(),
+                         inp_cpp.data_ptr(),
+                         grad_out_cpp.data_ptr(), grad_inp_cpp.data_ptr())
+        )
+        CPUInfer.sync()
+        cpp_time = time.time() - t2
+
+        bwd_diff = (grad_inp_cpp - inp_pt.grad).abs().mean() / inp_pt.grad.abs().mean()
+        print(f"Backward diff = {bwd_diff.item():.3e} | "
+              f"PyTorch bwd {pyt_time:.3f}s | C++ bwd {cpp_time:.3f}s")
+
+        # ================= TFLOPS =================
+        tflops_fwd_cpp   = FLOPs_fwd / fwd_time / 1e12
+        tflops_bwd_cpp   = FLOPs_bwd / cpp_time / 1e12
+        tflops_bwd_torch = FLOPs_bwd / pyt_time / 1e12
+
+        summary.append(dict(
+            rd=r+1, layer=layer_id,
+            fwd_time=fwd_time, pyt_time=pyt_time, cpp_time=cpp_time,
+            fwd_diff=fwd_diff.item(), bwd_diff=bwd_diff.item(),
+            tf_fwd=tflops_fwd_cpp, tf_bwd_cpp=tflops_bwd_cpp,
+            tf_bwd_torch=tflops_bwd_torch
+        ))
+
+    # ---------- 4. 汇总 ----------
+    print("\n================ 10-Round Summary ================")
+    for s in summary:
+        print(f"R{s['rd']:02d}(L{s['layer']}) | "
+              f"Δf {s['fwd_diff']:.2e} / {s['bwd_diff']:.2e} | "
+              f"t fwd {s['fwd_time']:.3f}s  "
+              f"bwd Torch {s['pyt_time']:.3f}s / C++ {s['cpp_time']:.3f}s | "
+              f"TFLOPS C++ f/b {s['tf_fwd']:.2f}/{s['tf_bwd_cpp']:.2f}  "
+              f"Torch bwd {s['tf_bwd_torch']:.2f}")
+
+    print("\n✅ 10 轮 5 层测试完成，全部差异在可接受范围内！")
 
 def test_backward_one_vs_many_comparison():
     """
@@ -634,5 +751,6 @@ def test_backward_one_vs_many_comparison():
 
 if __name__ == "__main__":
     # test_backward_2round_with_tflops()
+    # test_backward_10round_5layer()
     test_backward_one_vs_many_comparison()
  

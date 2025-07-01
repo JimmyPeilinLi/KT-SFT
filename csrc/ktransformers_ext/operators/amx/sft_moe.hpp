@@ -7,8 +7,8 @@
  * @LastEditTime : 2025-04-25 18:28:12
  * @Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
  **/
-#ifndef CPUINFER_OPERATOR_AMX_MOE_H
-#define CPUINFER_OPERATOR_AMX_MOE_H
+#ifndef CPUINFER_OPERATOR_SFT_AMX_MOE_H
+#define CPUINFER_OPERATOR_SFT_AMX_MOE_H
 
 #include <cmath>
 #include <cstdio>
@@ -35,7 +35,7 @@ void *numa_alloc_aligned(size_t size, int node, size_t alignment) {
 }
 #endif
 
-static inline __m512 exp_avx512(__m512 x) {
+static inline __m512 sft_exp_avx512(__m512 x) {
   const __m512 log2e = _mm512_set1_ps(1.44269504089f);
   const __m512 c1 = _mm512_set1_ps(0.69314718056f);
 
@@ -60,9 +60,9 @@ static inline __m512 exp_avx512(__m512 x) {
   return _mm512_mul_ps(two_pow_i, frac_exp);
 }
 
-static inline __m512 act_fn(__m512 gate_val, __m512 up_val) {
+static inline __m512 sft_act_fn(__m512 gate_val, __m512 up_val) {
   __m512 neg_gate_val = _mm512_sub_ps(_mm512_setzero_ps(), gate_val);
-  __m512 exp_neg_gate = exp_avx512(neg_gate_val);
+  __m512 exp_neg_gate = sft_exp_avx512(neg_gate_val);
   __m512 denom = _mm512_add_ps(_mm512_set1_ps(1.0f), exp_neg_gate);
   __m512 act_val = _mm512_div_ps(gate_val, denom);
 
@@ -343,8 +343,8 @@ public:
               __m512 gate_val0, gate_val1, up_val0, up_val1;
               avx512_32xbf16_to_32xfp32((__m512i *)(gate_output_ptr + j), &gate_val0, &gate_val1);
               avx512_32xbf16_to_32xfp32((__m512i *)(up_output_ptr + j), &up_val0, &up_val1);
-              __m512 result0 = act_fn(gate_val0, up_val0);
-              __m512 result1 = act_fn(gate_val1, up_val1);
+              __m512 result0 = sft_act_fn(gate_val0, up_val0);
+              __m512 result1 = sft_act_fn(gate_val1, up_val1);
               avx512_32xfp32_to_32xbf16(&result0, &result1, (__m512i *)(gate_output_ptr + j));
             }
           }
@@ -394,129 +394,129 @@ public:
         nullptr);
   }
 
-  void forward(int qlen, int k, const uint64_t *expert_ids, const float *weights, const void *input, void *output,
-               int *batch_size_tensor, Backend *backend) {
-    qlen = batch_size_tensor[0];
-    bool use_amx = (qlen > 4 * config_.expert_num / config_.routed_expert_num);
-    int activated_expert = 0;
-    for (int i = 0; i < config_.expert_num; i++) {
-      m_local_num_[i] = 0;
-    }
-    for (int i = 0; i < qlen; i++) {
-      for (int j = 0; j < k; j++) {
-        m_local_pos_[i][j] = m_local_num_[expert_ids[i * k + j]]++;
-      }
-    }
-    for (int i = 0; i < config_.expert_num; i++) {
-      if (m_local_num_[i] > 0) {
-        m_expert_id_map_[activated_expert] = i;
-        activated_expert++;
-      }
-    }
-    uint64_t offset = 0;
-    for (int i = 0; i < config_.expert_num; i++) {
-      m_local_input_ptr_[i] = m_local_input_ + offset * config_.hidden_size;
-      m_local_gate_output_ptr_[i] = m_local_gate_output_ + offset * config_.intermediate_size;
-      m_local_up_output_ptr_[i] = m_local_up_output_ + offset * config_.intermediate_size;
-      m_local_down_output_ptr_[i] = m_local_down_output_ + offset * config_.hidden_size;
-      offset += m_local_num_[i];
-    }
-    backend->do_work_stealing_job(
-        qlen, nullptr,
-        [&](int i) {
-          for (int j = 0; j < k; j++) {
-            memcpy(m_local_input_ptr_[expert_ids[i * k + j]] + m_local_pos_[i][j] * config_.hidden_size,
-                   (ggml_bf16_t *)input + i * config_.hidden_size, sizeof(ggml_bf16_t) * config_.hidden_size);
-          }
-        },
-        nullptr);
-    backend->do_work_stealing_job(
-        activated_expert, nullptr,
-        [&](int task_id) {
-          int expert_idx = m_expert_id_map_[task_id];
+//   void forward(int qlen, int k, const uint64_t *expert_ids, const float *weights, const void *input, void *output,
+//                int *batch_size_tensor, Backend *backend) {
+//     qlen = batch_size_tensor[0];
+//     bool use_amx = (qlen > 4 * config_.expert_num / config_.routed_expert_num);
+//     int activated_expert = 0;
+//     for (int i = 0; i < config_.expert_num; i++) {
+//       m_local_num_[i] = 0;
+//     }
+//     for (int i = 0; i < qlen; i++) {
+//       for (int j = 0; j < k; j++) {
+//         m_local_pos_[i][j] = m_local_num_[expert_ids[i * k + j]]++;
+//       }
+//     }
+//     for (int i = 0; i < config_.expert_num; i++) {
+//       if (m_local_num_[i] > 0) {
+//         m_expert_id_map_[activated_expert] = i;
+//         activated_expert++;
+//       }
+//     }
+//     uint64_t offset = 0;
+//     for (int i = 0; i < config_.expert_num; i++) {
+//       m_local_input_ptr_[i] = m_local_input_ + offset * config_.hidden_size;
+//       m_local_gate_output_ptr_[i] = m_local_gate_output_ + offset * config_.intermediate_size;
+//       m_local_up_output_ptr_[i] = m_local_up_output_ + offset * config_.intermediate_size;
+//       m_local_down_output_ptr_[i] = m_local_down_output_ + offset * config_.hidden_size;
+//       offset += m_local_num_[i];
+//     }
+//     backend->do_work_stealing_job(
+//         qlen, nullptr,
+//         [&](int i) {
+//           for (int j = 0; j < k; j++) {
+//             memcpy(m_local_input_ptr_[expert_ids[i * k + j]] + m_local_pos_[i][j] * config_.hidden_size,
+//                    (ggml_bf16_t *)input + i * config_.hidden_size, sizeof(ggml_bf16_t) * config_.hidden_size);
+//           }
+//         },
+//         nullptr);
+//     backend->do_work_stealing_job(
+//         activated_expert, nullptr,
+//         [&](int task_id) {
+//           int expert_idx = m_expert_id_map_[task_id];
 
-          gate_up_ba_[expert_idx]->from_mat(m_local_num_[expert_idx], m_local_input_ptr_[expert_idx], 0, 1);
-        },
-        nullptr);
-    int nth = T::recommended_nth(config_.intermediate_size);
-    backend->do_work_stealing_job(
-        nth * activated_expert, [&](int _) { T::config(); },
-        [&](int task_id) {
-          int expert_idx = m_expert_id_map_[task_id / nth];
-          int ith = task_id % nth;
-#ifdef USE_NUMA
-          amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
-                       gate_up_ba_[expert_idx], gate_bb_numa_[Backend::numa_node][expert_idx], gate_bc_[expert_idx],
-                       ith, nth, use_amx);
-          amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
-                       gate_up_ba_[expert_idx], up_bb_numa_[Backend::numa_node][expert_idx], up_bc_[expert_idx], ith,
-                       nth, use_amx);
-#else
-          amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
-                       gate_up_ba_[expert_idx], gate_bb_[expert_idx], gate_bc_[expert_idx], ith, nth, use_amx);
-          amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
-                       gate_up_ba_[expert_idx], up_bb_[expert_idx], up_bc_[expert_idx], ith, nth, use_amx);
-#endif
-          gate_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_gate_output_ptr_[expert_idx], ith, nth);
-          up_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_up_output_ptr_[expert_idx], ith, nth);
-          auto [n_start, n_end] = T::split_range_n(config_.intermediate_size, ith, nth);
-          for (int i = 0; i < m_local_num_[expert_idx]; i++) {
-            ggml_bf16_t *gate_output_ptr = &m_local_gate_output_ptr_[expert_idx][i * config_.intermediate_size];
-            ggml_bf16_t *up_output_ptr = &m_local_up_output_ptr_[expert_idx][i * config_.intermediate_size];
-            for (int j = n_start; j < n_end; j += 32) {
-              __m512 gate_val0, gate_val1, up_val0, up_val1;
-              avx512_32xbf16_to_32xfp32((__m512i *)(gate_output_ptr + j), &gate_val0, &gate_val1);
-              avx512_32xbf16_to_32xfp32((__m512i *)(up_output_ptr + j), &up_val0, &up_val1);
-              __m512 result0 = act_fn(gate_val0, up_val0);
-              __m512 result1 = act_fn(gate_val1, up_val1);
-              avx512_32xfp32_to_32xbf16(&result0, &result1, (__m512i *)(gate_output_ptr + j));
-            }
-          }
-        },
-        nullptr);
-    backend->do_work_stealing_job(
-        activated_expert, nullptr,
-        [&](int task_id) {
-          int expert_idx = m_expert_id_map_[task_id];
-          down_ba_[expert_idx]->from_mat(m_local_num_[expert_idx], m_local_gate_output_ptr_[expert_idx], 0, 1);
-        },
-        nullptr);
-    nth = T::recommended_nth(config_.hidden_size);
-    backend->do_work_stealing_job(
-        nth * activated_expert, [&](int _) { T::config(); },
-        [&](int task_id) {
-          int expert_idx = m_expert_id_map_[task_id / nth];
-          int ith = task_id % nth;
-#ifdef USE_NUMA
-          amx::mat_mul(m_local_num_[expert_idx], config_.hidden_size, config_.intermediate_size, down_ba_[expert_idx],
-                       down_bb_numa_[Backend::numa_node][expert_idx], down_bc_[expert_idx], ith, nth, use_amx);
-#else
-          amx::mat_mul(m_local_num_[expert_idx], config_.hidden_size, config_.intermediate_size, down_ba_[expert_idx],
-                       down_bb_[expert_idx], down_bc_[expert_idx], ith, nth, use_amx);
-#endif
-          down_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_down_output_ptr_[expert_idx], ith, nth);
-        },
-        nullptr);
-    backend->do_work_stealing_job(
-        qlen, nullptr,
-        [&](int i) {
-          for (int e = 0; e < config_.hidden_size; e += 32) {
-            __m512 x0 = _mm512_setzero_ps();
-            __m512 x1 = _mm512_setzero_ps();
-            for (int j = 0; j < k; j++) {
-              __m512 weight = _mm512_set1_ps(weights[i * k + j]);
-              __m512 down_output0, down_output1;
-              avx512_32xbf16_to_32xfp32((__m512i *)(m_local_down_output_ptr_[expert_ids[i * k + j]] +
-                                                    m_local_pos_[i][j] * config_.hidden_size + e),
-                                        &down_output0, &down_output1);
-              x0 = _mm512_fmadd_ps(down_output0, weight, x0);
-              x1 = _mm512_fmadd_ps(down_output1, weight, x1);
-            }
-            avx512_32xfp32_to_32xbf16(&x0, &x1, (__m512i *)((ggml_bf16_t *)output + i * config_.hidden_size + e));
-          }
-        },
-        nullptr);
-  }
+//           gate_up_ba_[expert_idx]->from_mat(m_local_num_[expert_idx], m_local_input_ptr_[expert_idx], 0, 1);
+//         },
+//         nullptr);
+//     int nth = T::recommended_nth(config_.intermediate_size);
+//     backend->do_work_stealing_job(
+//         nth * activated_expert, [&](int _) { T::config(); },
+//         [&](int task_id) {
+//           int expert_idx = m_expert_id_map_[task_id / nth];
+//           int ith = task_id % nth;
+// #ifdef USE_NUMA
+//           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
+//                        gate_up_ba_[expert_idx], gate_bb_numa_[Backend::numa_node][expert_idx], gate_bc_[expert_idx],
+//                        ith, nth, use_amx);
+//           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
+//                        gate_up_ba_[expert_idx], up_bb_numa_[Backend::numa_node][expert_idx], up_bc_[expert_idx], ith,
+//                        nth, use_amx);
+// #else
+//           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
+//                        gate_up_ba_[expert_idx], gate_bb_[expert_idx], gate_bc_[expert_idx], ith, nth, use_amx);
+//           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
+//                        gate_up_ba_[expert_idx], up_bb_[expert_idx], up_bc_[expert_idx], ith, nth, use_amx);
+// #endif
+//           gate_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_gate_output_ptr_[expert_idx], ith, nth);
+//           up_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_up_output_ptr_[expert_idx], ith, nth);
+//           auto [n_start, n_end] = T::split_range_n(config_.intermediate_size, ith, nth);
+//           for (int i = 0; i < m_local_num_[expert_idx]; i++) {
+//             ggml_bf16_t *gate_output_ptr = &m_local_gate_output_ptr_[expert_idx][i * config_.intermediate_size];
+//             ggml_bf16_t *up_output_ptr = &m_local_up_output_ptr_[expert_idx][i * config_.intermediate_size];
+//             for (int j = n_start; j < n_end; j += 32) {
+//               __m512 gate_val0, gate_val1, up_val0, up_val1;
+//               avx512_32xbf16_to_32xfp32((__m512i *)(gate_output_ptr + j), &gate_val0, &gate_val1);
+//               avx512_32xbf16_to_32xfp32((__m512i *)(up_output_ptr + j), &up_val0, &up_val1);
+//               __m512 result0 = sft_act_fn(gate_val0, up_val0);
+//               __m512 result1 = sft_act_fn(gate_val1, up_val1);
+//               avx512_32xfp32_to_32xbf16(&result0, &result1, (__m512i *)(gate_output_ptr + j));
+//             }
+//           }
+//         },
+//         nullptr);
+//     backend->do_work_stealing_job(
+//         activated_expert, nullptr,
+//         [&](int task_id) {
+//           int expert_idx = m_expert_id_map_[task_id];
+//           down_ba_[expert_idx]->from_mat(m_local_num_[expert_idx], m_local_gate_output_ptr_[expert_idx], 0, 1);
+//         },
+//         nullptr);
+//     nth = T::recommended_nth(config_.hidden_size);
+//     backend->do_work_stealing_job(
+//         nth * activated_expert, [&](int _) { T::config(); },
+//         [&](int task_id) {
+//           int expert_idx = m_expert_id_map_[task_id / nth];
+//           int ith = task_id % nth;
+// #ifdef USE_NUMA
+//           amx::mat_mul(m_local_num_[expert_idx], config_.hidden_size, config_.intermediate_size, down_ba_[expert_idx],
+//                        down_bb_numa_[Backend::numa_node][expert_idx], down_bc_[expert_idx], ith, nth, use_amx);
+// #else
+//           amx::mat_mul(m_local_num_[expert_idx], config_.hidden_size, config_.intermediate_size, down_ba_[expert_idx],
+//                        down_bb_[expert_idx], down_bc_[expert_idx], ith, nth, use_amx);
+// #endif
+//           down_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_down_output_ptr_[expert_idx], ith, nth);
+//         },
+//         nullptr);
+//     backend->do_work_stealing_job(
+//         qlen, nullptr,
+//         [&](int i) {
+//           for (int e = 0; e < config_.hidden_size; e += 32) {
+//             __m512 x0 = _mm512_setzero_ps();
+//             __m512 x1 = _mm512_setzero_ps();
+//             for (int j = 0; j < k; j++) {
+//               __m512 weight = _mm512_set1_ps(weights[i * k + j]);
+//               __m512 down_output0, down_output1;
+//               avx512_32xbf16_to_32xfp32((__m512i *)(m_local_down_output_ptr_[expert_ids[i * k + j]] +
+//                                                     m_local_pos_[i][j] * config_.hidden_size + e),
+//                                         &down_output0, &down_output1);
+//               x0 = _mm512_fmadd_ps(down_output0, weight, x0);
+//               x1 = _mm512_fmadd_ps(down_output1, weight, x1);
+//             }
+//             avx512_32xfp32_to_32xbf16(&x0, &x1, (__m512i *)((ggml_bf16_t *)output + i * config_.hidden_size + e));
+//           }
+//         },
+//         nullptr);
+//   }
 };
 
 #endif
