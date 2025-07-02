@@ -353,9 +353,9 @@ struct GemmKernel224BF {
   static const int TILE_N = 16;
   static const int VNNI_BLK = 2;
 
-  static const int M_STEP = TILE_M * 2;
-  static const int N_STEP = TILE_N * 2;
-  static const int K_STEP = TILE_K;
+  static inline constexpr int M_STEP = TILE_M * 2;
+  static inline constexpr int N_STEP = TILE_N * 2;
+  static inline constexpr int K_STEP = TILE_K;
 
   static inline const int N_BLOCK = 256;
   static inline const int K_BLOCK = 1792;
@@ -526,6 +526,25 @@ struct GemmKernel224BF {
       }
     }
 
+	void from_mat_transpose_backward(ggml_bf16_t *src, int ith, int nth) {
+		auto [n_start, n_end] = split_range_n(n, ith, nth);
+		int n_block_begin = n_start;
+		int n_block_size  = n_end - n_block_begin;
+
+		for (int n_begin = 0; n_begin < n_block_size; n_begin += N_STEP) {
+			for (int k_block_begin = 0; k_block_begin < k; k_block_begin += K_BLOCK) {
+				int k_block_size = std::min(K_BLOCK, k - k_block_begin);
+				for (int k_begin = 0; k_begin < k_block_size; k_begin += K_STEP) {
+					for (int i = 0; i < N_STEP; ++i) {
+						__m512i *s = (__m512i *)(src + (n_block_begin + n_begin + i) * k + k_block_begin + k_begin);
+						__m512i *d = (__m512i *)(b   + n_block_begin * k + k_block_begin * n_block_size + n_begin * k_block_size + k_begin * N_STEP + i * K_STEP);
+						avx512_copy_32xbf16(s, d);
+					}
+				}
+			}
+		}
+	}
+
     ggml_bf16_t *get_submat(int n, int k, int n_begin, int k_begin) {
       int n_block_begin = n_begin / N_BLOCK * N_BLOCK;
       n_begin -= n_block_begin;
@@ -587,9 +606,9 @@ struct GemmKernel224Int8 {
   static const int TILE_N = 16;
   static const int VNNI_BLK = 4;
 
-  static const int M_STEP = TILE_M * 2;
-  static const int N_STEP = TILE_N * 2;
-  static const int K_STEP = TILE_K;
+  static inline constexpr int M_STEP = TILE_M * 2;
+  static inline constexpr int N_STEP = TILE_N * 2;
+  static inline constexpr int K_STEP = TILE_K;
 
   static inline const int N_BLOCK = 256;
   static inline const int K_BLOCK = 3584;
@@ -794,6 +813,43 @@ struct GemmKernel224Int8 {
         }
       }
     }
+
+	void from_mat_transpose_backward(ggml_bf16_t *src, int ith, int nth) {
+		auto [n_start, n_end] = split_range_n(n, ith, nth);
+		int n_block_begin = n_start;
+		int n_block_size  = n_end - n_block_begin;
+
+		for (int n_begin = 0; n_begin < n_block_size; n_begin += N_STEP) {
+			for (int k_block_begin = 0; k_block_begin < k; k_block_begin += K_BLOCK) {
+				int k_block_size = std::min(K_BLOCK, k - k_block_begin);
+				for (int k_begin = 0; k_begin < k_block_size; k_begin += K_STEP) {
+					for (int i = 0; i < N_STEP; ++i) {
+						float amax = 0.f;
+						__m512 f0, f1;
+						avx512_32xbf16_to_32xfp32(
+							(__m512i *)(src + (n_block_begin + n_begin + i) * k
+												+ k_block_begin + k_begin),
+							&f0, &f1);
+						amax = MAX(amax, _mm512_reduce_max_ps(_mm512_abs_ps(f0)));
+						amax = MAX(amax, _mm512_reduce_max_ps(_mm512_abs_ps(f1)));
+						d[n_block_begin + n_begin + i] = amax / ((1 << 7) - 1);
+
+						__m512 id = _mm512_set1_ps(amax ? 1.f / amax : 0.f);
+						int8_t *dst = b + n_block_begin * k
+										+ k_block_begin * n_block_size
+										+ n_begin * k_block_size + k_begin * N_STEP
+										+ i * K_STEP;
+						__m512i i0 = _mm512_cvtps_epi32(_mm512_mul_ps(f0, id));
+						__m512i i1 = _mm512_cvtps_epi32(_mm512_mul_ps(f1, id));
+						__m128i s0 = _mm512_cvtsepi32_epi8(i0);
+						__m128i s1 = _mm512_cvtsepi32_epi8(i1);
+						_mm_storeu_si128((__m128i *)dst, s0);
+						_mm_storeu_si128((__m128i *)(dst + 16), s1);
+					}
+				}
+			}
+		}
+	}
 
     int8_t *get_submat(int n, int k, int n_begin, int k_begin) {
       int n_block_begin = n_begin / N_BLOCK * N_BLOCK;

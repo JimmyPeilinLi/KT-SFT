@@ -617,10 +617,10 @@ class KSFTExpertsCPU(torch.autograd.Function):
         # 把 qlen / k 留给 backward
         ctx.saved_dims = (qlen, k)
         ctx._time_fwd  = t_fwd
-        # print(f"qlen ,k:{qlen}, {k}")
+        print(f"qlen ,k:{qlen}, {k}")
         
-        # print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
-        #       f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
+        print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
+              f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
 
         return result
         
@@ -667,10 +667,10 @@ class KSFTExpertsCPU(torch.autograd.Function):
         qlen, k  = ctx.saved_dims          # 正确的 q / k
         flops_bw = 18 * qlen * k * H_FIXED * M_FIXED
         tflops_b = flops_bw / t_bw / 1e12
-        # print(f"qlen:{qlen}, k:{k}")
+        print(f"qlen:{qlen}, k:{k}")
 
-        # print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
-            #   f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
+        print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
+              f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
         
         return grad_input.to(device=ctx.out_device), None, None, None, None, None, None
     
