@@ -35,74 +35,53 @@ void *numa_alloc_aligned(size_t size, int node, size_t alignment) {
 }
 #endif
 
-// static inline __m512 sft_exp_avx512(__m512 x) {
-//   const __m512 log2e = _mm512_set1_ps(1.44269504089f);
-//   const __m512 c1 = _mm512_set1_ps(0.69314718056f);
-
-//   __m512 y = _mm512_mul_ps(x, log2e);
-//   __m512i int_part = _mm512_cvtps_epi32(y);
-//   __m512 frac_part = _mm512_sub_ps(y, _mm512_cvtepi32_ps(int_part));
-
-//   const __m512 poly_1 = _mm512_set1_ps(0.9999999995f);
-//   const __m512 poly_2 = _mm512_set1_ps(0.6931471805f);
-//   const __m512 poly_3 = _mm512_set1_ps(0.2402265069f);
-//   const __m512 poly_4 = _mm512_set1_ps(0.0555041087f);
-//   const __m512 poly_5 = _mm512_set1_ps(0.0096181291f);
-//   const __m512 poly_6 = _mm512_set1_ps(0.0013333558f);
-
-//   __m512 frac_exp = _mm512_fmadd_ps(
-//       frac_part, poly_6,
-//       _mm512_fmadd_ps(frac_part, poly_5,
-//                       _mm512_fmadd_ps(frac_part, poly_4,
-//                                       _mm512_fmadd_ps(frac_part, poly_3, _mm512_fmadd_ps(frac_part, poly_2, poly_1)))));
-
-//   __m512 two_pow_i = _mm512_scalef_ps(_mm512_set1_ps(1.0f), _mm512_cvtepi32_ps(int_part));
-//   return _mm512_mul_ps(two_pow_i, frac_exp);
-// }
-
-// static inline __m512 sft_act_fn(__m512 gate_val, __m512 up_val) {
-//   __m512 neg_gate_val = _mm512_sub_ps(_mm512_setzero_ps(), gate_val);
-//   __m512 exp_neg_gate = sft_exp_avx512(neg_gate_val);
-//   __m512 denom = _mm512_add_ps(_mm512_set1_ps(1.0f), exp_neg_gate);
-//   __m512 act_val = _mm512_div_ps(gate_val, denom);
-
-//   return _mm512_mul_ps(act_val, up_val);
-// }
 static inline __m512 sft_exp_avx512(__m512 x) {
   const __m512 log2e = _mm512_set1_ps(1.44269504089f);
+  const __m512 c1 = _mm512_set1_ps(0.69314718056f);
+
   __m512 y = _mm512_mul_ps(x, log2e);
-  __m512i i = _mm512_cvtps_epi32(y);
-  __m512 f = _mm512_sub_ps(y, _mm512_cvtepi32_ps(i));
-  const __m512 c0 = _mm512_set1_ps(0.9999999995f);
-  const __m512 c1 = _mm512_set1_ps(0.6931471805f);
-  const __m512 c2 = _mm512_set1_ps(0.2402265069f);
-  const __m512 c3 = _mm512_set1_ps(0.0555041087f);
-  const __m512 c4 = _mm512_set1_ps(0.0096181291f);
-  const __m512 c5 = _mm512_set1_ps(0.0013333558f);
-  __m512 poly = _mm512_fmadd_ps(f, c5,
-                 _mm512_fmadd_ps(f, c4,
-                 _mm512_fmadd_ps(f, c3,
-                 _mm512_fmadd_ps(f, c2,
-                 _mm512_fmadd_ps(f, c1, c0)))));
-  __m512 two_i = _mm512_scalef_ps(_mm512_set1_ps(1.0f), _mm512_cvtepi32_ps(i));
-  return _mm512_mul_ps(two_i, poly);
+  __m512i int_part = _mm512_cvtps_epi32(y);
+  __m512 frac_part = _mm512_sub_ps(y, _mm512_cvtepi32_ps(int_part));
+
+  const __m512 poly_1 = _mm512_set1_ps(0.9999999995f);
+  const __m512 poly_2 = _mm512_set1_ps(0.6931471805f);
+  const __m512 poly_3 = _mm512_set1_ps(0.2402265069f);
+  const __m512 poly_4 = _mm512_set1_ps(0.0555041087f);
+  const __m512 poly_5 = _mm512_set1_ps(0.0096181291f);
+  const __m512 poly_6 = _mm512_set1_ps(0.0013333558f);
+
+  __m512 frac_exp = _mm512_fmadd_ps(
+      frac_part, poly_6,
+      _mm512_fmadd_ps(frac_part, poly_5,
+                      _mm512_fmadd_ps(frac_part, poly_4,
+                                      _mm512_fmadd_ps(frac_part, poly_3, _mm512_fmadd_ps(frac_part, poly_2, poly_1)))));
+
+  __m512 two_pow_i = _mm512_scalef_ps(_mm512_set1_ps(1.0f), _mm512_cvtepi32_ps(int_part));
+  return _mm512_mul_ps(two_pow_i, frac_exp);
 }
+
+static inline __m512 sft_act_fn(__m512 gate_val, __m512 up_val) {
+  __m512 neg_gate_val = _mm512_sub_ps(_mm512_setzero_ps(), gate_val);
+  __m512 exp_neg_gate = sft_exp_avx512(neg_gate_val);
+  __m512 denom = _mm512_add_ps(_mm512_set1_ps(1.0f), exp_neg_gate);
+  __m512 act_val = _mm512_div_ps(gate_val, denom);
+
+  return _mm512_mul_ps(act_val, up_val);
+}
+
 static inline __m512 sft_sigmoid(__m512 x) {
   __m512 neg = _mm512_sub_ps(_mm512_setzero_ps(), x);
   __m512 e = sft_exp_avx512(neg);
   __m512 denom = _mm512_add_ps(_mm512_set1_ps(1.0f), e);
   return _mm512_div_ps(_mm512_set1_ps(1.0f), denom);
 }
-static inline __m512 sft_act_fn(__m512 gate_val, __m512 up_val) {
-  __m512 sig = sft_sigmoid(gate_val);
-  __m512 swish = _mm512_mul_ps(gate_val, sig);        // Swish
-  return _mm512_mul_ps(swish, up_val);                // Swish-GLU
-}
 static inline __m512 sft_act_fn_grad(__m512 gate_val) {
-  __m512 sig = sft_sigmoid(gate_val);
-  return _mm512_fmadd_ps(gate_val,
-         _mm512_mul_ps(sig, _mm512_sub_ps(_mm512_set1_ps(1.0f), sig)),
-         sig);                                         // derivative
+  __m512 neg_gate_val = _mm512_sub_ps(_mm512_setzero_ps(), gate_val);
+  __m512 exp_neg_gate = sft_exp_avx512(neg_gate_val);
+  __m512 denom = _mm512_add_ps(_mm512_set1_ps(1.0f), exp_neg_gate);
+  __m512 act_val = _mm512_div_ps(gate_val, denom);
+
+  return _mm512_fmadd_ps(gate_val, _mm512_mul_ps(act_val, _mm512_sub_ps(_mm512_set1_ps(1.0f), act_val)), act_val);
 }
 
 struct SFT_AMX_MOEConfig {
