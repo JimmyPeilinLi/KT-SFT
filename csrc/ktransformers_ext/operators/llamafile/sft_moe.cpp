@@ -8,6 +8,7 @@
  * @Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
  **/
 #include "sft_moe.h"
+#include "debug_sft_moe.hpp"
 #include <iostream>
 #include <cstdint>
 #include <cstring>
@@ -17,6 +18,39 @@
 #include <numa.h>
 #include <numaif.h>
 #endif
+
+// inline void dump_grad_bin(const std::string& base,
+//                           const void*         buf,
+//                           size_t              elem_cnt,
+//                           std::string           dtype)
+// {
+//     if (dtype == "F32") {
+//         dump_bin(base, (float*)buf, elem_cnt);
+//     } 
+// 	else if (dtype == "UINT8") {               // 其余全部按 F32 写
+//         dump_bin(base, (uint8_t*)buf, elem_cnt);
+//     }
+// 	else {
+// 		dump_bin(base, (float*)buf, elem_cnt);
+// 	}
+// }
+
+inline void dump_grad_bin(const std::string &file_name,
+                          const void       *data,
+                          size_t            elem_cnt,
+                          ggml_type         dtype)
+{
+    std::string path = get_env_or_default("SFT_DEBUG_PATH","debug") + "/" + file_name;
+    switch (dtype) {
+        case GGML_TYPE_F32:  path += ".f32";  break;
+        case GGML_TYPE_F16:  path += ".f16";  break;
+        case GGML_TYPE_BF16: path += ".bf16"; break;
+        default:             path += ".raw";  break;
+    }
+    std::ofstream f(path, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(data), elem_cnt * ggml_type_size(dtype));
+    f.close();
+}
 
 SFT_MOE::SFT_MOE(SFT_MOEConfig config) {
     config_ = config;
@@ -192,6 +226,11 @@ void SFT_MOE::warm_up(Backend* backend) {
 
 static float act_fn(float x) {
     return x / (1.0f + expf(-x));
+}
+
+static float act_fn_grad(float x) {
+    float sigmoid_x = 1.0f / (1.0f + expf(-x));
+    return sigmoid_x * (1. + x * (1. - sigmoid_x));
 }
 
 void SFT_MOE::ensure_fwd_cache(int qlen, int k)
@@ -482,11 +521,6 @@ void SFT_MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* 
     forward(qlen - forward_len, k, expert_ids + forward_len * k, weights + forward_len * k, (uint8_t*)input + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend, fwd_cache + forward_len);
 }
 
-static float act_fn_grad(float x) {
-    float sigmoid_x = 1.0f / (1.0f + expf(-x));
-    return sigmoid_x * (1. + x * (1. - sigmoid_x));
-}
-
 void SFT_MOE::transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx) {
     to_float(src, transpose_buffer_fp32_ + (R * C * expert_idx), R * C, src_type);
     from_float(transpose_buffer_fp32_ + (R * C * expert_idx), transpose_buffer_ + (R * C * expert_idx) * ggml_type_size(dst_type), R * C, dst_type);
@@ -575,7 +609,7 @@ void SFT_MOE::backward_one(int k, const uint64_t* expert_ids, const float* weigh
 
             void* gate_proj_t_ptr = (uint8_t*)gate_proj_t_ + (expert_id * config_.hidden_size + ith * config_.stride) * config_.intermediate_size * ggml_type_size(config_.grad_type);
             float* gate_input_grad_ptr = s_gate_input_grad_[expert_idx] + ith * config_.stride;
-            llamafile_sgemm(config_.stride, 1, config_.intermediate_size, gate_proj_t_ptr, config_.intermediate_size, s_gate_output_grad_[expert_idx], config_.intermediate_size, gate_input_grad_ptr, config_.stride, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.grad_type, config_.grad_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
+            llamafile_sgemm(config_.stride, 1, config_.intermediate_size, gate_proj_t_ptr, config_.intermediate_size, s_gate_output_grad_[expert_idx], config_.intermediate_size, gate_input_grad_ptr, config_.stride, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.grad_type, ggml_internal_get_type_traits(config_.grad_type).vec_dot_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
 
             void* up_proj_t_ptr = (uint8_t*)up_proj_t_ + (expert_id * config_.hidden_size + ith * config_.stride) * config_.intermediate_size * ggml_type_size(config_.grad_type);
             float* up_input_grad_ptr = s_up_input_grad_[expert_idx] + ith * config_.stride;
@@ -696,6 +730,60 @@ void SFT_MOE::backward_many(int qlen, int k, const uint64_t* expert_ids, const f
         }
         from_float(m_grad_input_fp32_[i], (uint8_t*)input_grad + i * config_.hidden_size * ggml_type_size(config_.grad_type), config_.hidden_size, config_.grad_type);
     }, nullptr);
+
+    for (uint64_t eid = 0; eid < (uint64_t)config_.expert_num; ++eid) {
+        int rows = m_local_num_[eid];
+        if (rows == 0) continue;
+
+        /* ------------ shape shortcut ------------ */
+        const int H = config_.hidden_size;
+        const int I = config_.intermediate_size;
+        size_t rowsH = (size_t)rows * H;
+        size_t rowsI = (size_t)rows * I;
+
+		std::cout << "config_.grad_type: " << config_.grad_type << std::endl;
+		
+		int layer_idx = 0;
+        dump_grad_bin("layer"+std::to_string(layer_idx)+"_E"+std::to_string(eid)+"_down_out_grad",
+                      m_local_down_output_grad_ptr_[eid],
+                      rowsH,
+                      config_.grad_type);
+
+        dump_grad_bin("layer"+std::to_string(layer_idx)+"_E"+std::to_string(eid)+"_down_in_grad",
+                      m_local_down_input_grad_ptr_[eid],
+                      rowsI,
+                      GGML_TYPE_F32);
+
+        dump_grad_bin("layer"+std::to_string(layer_idx)+"_E"+std::to_string(eid)+"_gate_out_grad",
+                      m_local_gate_output_grad_ptr_[eid],
+                      rowsI,
+                      config_.grad_type);
+
+        dump_grad_bin("layer"+std::to_string(layer_idx)+"_E"+std::to_string(eid)+"_gate_out_grad_fp32",
+                      m_local_gate_output_grad_fp32_ptr_[eid],
+                      rowsI,
+                      GGML_TYPE_F32);
+
+        dump_grad_bin("layer"+std::to_string(layer_idx)+"_E"+std::to_string(eid)+"_gate_in_grad",
+                      m_local_gate_input_grad_ptr_[eid],
+                      rowsH,
+                      GGML_TYPE_F32);
+
+        dump_grad_bin("layer"+std::to_string(layer_idx)+"_E"+std::to_string(eid)+"_up_out_grad",
+                      m_local_up_output_grad_ptr_[eid],
+                      rowsI,
+                      config_.grad_type);
+
+        dump_grad_bin("layer"+std::to_string(layer_idx)+"_E"+std::to_string(eid)+"_up_out_grad_fp32",
+                      m_local_up_output_grad_fp32_ptr_[eid],
+                      rowsI,
+                      GGML_TYPE_F32);
+
+        dump_grad_bin("layer"+std::to_string(layer_idx)+"_E"+std::to_string(eid)+"_up_in_grad",
+                      m_local_up_input_grad_ptr_[eid],
+                      rowsH,
+                      GGML_TYPE_F32);
+    }
 }
 
 // TODO: input和layer_idx参数可以删除

@@ -617,19 +617,19 @@ def test_backward_one_vs_many_comparison():
                             dtype=dtype, requires_grad=True).contiguous()
 
     # 创建两个不同的配置：一个强制使用backward_one，一个使用backward_many
-    config_one = cpuinfer_ext.sft_moe.SFT_MOEConfig(
-        expert_num, n_routed_experts, hidden_size, intermediate_size,
-        stride, 10000000, group_max_len,  # 设置超大的group_min_len强制使用backward_one
-        gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr(),
-        gate_type, up_type, down_type, hidden_type
-    )
+    # config_one = cpuinfer_ext.sft_moe.SFT_MOEConfig(
+    #     expert_num, n_routed_experts, hidden_size, intermediate_size,
+    #     stride, 10000000, group_max_len,  # 设置超大的group_min_len强制使用backward_one
+    #     gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr(),
+    #     gate_type, up_type, down_type, hidden_type
+    # )
     config_many = cpuinfer_ext.sft_moe.SFT_MOEConfig(
         expert_num, n_routed_experts, hidden_size, intermediate_size,
         stride, group_min_len, group_max_len,  # 正常配置使用backward_many
         gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr(),
         gate_type, up_type, down_type, hidden_type
     )
-    moe_one = cpuinfer_ext.sft_moe.SFT_MOE(config_one)
+    # moe_one = cpuinfer_ext.sft_moe.SFT_MOE(config_one)
     moe_many = cpuinfer_ext.sft_moe.SFT_MOE(config_many)
     
     # 固定输入数据
@@ -644,17 +644,17 @@ def test_backward_one_vs_many_comparison():
     input_many = input_one.clone().detach().requires_grad_(True).contiguous()
     
     # Forward passes (应该是一样的)
-    output_one = torch.empty((qlen, hidden_size), dtype=dtype).contiguous()
+    # output_one = torch.empty((qlen, hidden_size), dtype=dtype).contiguous()
     output_many = torch.empty((qlen, hidden_size), dtype=dtype).contiguous()
     
-    CPUInfer.submit(
-        moe_one.forward(
-            qlen, n_routed_experts,
-            expert_ids.data_ptr(), weights.data_ptr(),
-            input_one.data_ptr(), output_one.data_ptr()
-        )
-    )
-    CPUInfer.sync()
+    # CPUInfer.submit(
+    #     moe_one.forward(
+    #         qlen, n_routed_experts,
+    #         expert_ids.data_ptr(), weights.data_ptr(),
+    #         input_one.data_ptr(), output_one.data_ptr()
+    #     )
+    # )
+    # CPUInfer.sync()
     
     CPUInfer.submit(
         moe_many.forward(
@@ -665,41 +665,48 @@ def test_backward_one_vs_many_comparison():
     )
     CPUInfer.sync()
     
-    print(f"Forward outputs identical: {torch.allclose(output_one, output_many, atol=1e-6)}")
-    if not torch.allclose(output_one, output_many, atol=1e-6):
-        print(f"Forward diff: {torch.mean(torch.abs(output_one - output_many))}")
+    many_has_nan = torch.isnan(output_many).any()
+    print(f"forward_many result has NaN: {many_has_nan}")
+    if many_has_nan:
+        print(f"forward_many NaN count: {torch.isnan(output_many).sum().item()}/{output_many.numel()}")
+    else:
+        print(f"forward_many output_many stats: min={output_many.min():.6f}, max={output_many.max():.6f}, mean={output_many.mean():.6f}")
+    
+    # print(f"Forward outputs identical: {torch.allclose(output_one, output_many, atol=1e-6)}")
+    # if not torch.allclose(output_one, output_many, atol=1e-6):
+    #     print(f"Forward diff: {torch.mean(torch.abs(output_one - output_many))}")
     
     # Backward passes
-    grad_output = torch.randn_like(output_one, dtype=gradtype).contiguous()
-    grad_output_one = grad_output.clone().contiguous()
+    grad_output = torch.randn_like(output_many, dtype=gradtype).contiguous()
+    # grad_output_one = grad_output.clone().contiguous()
     grad_output_many = grad_output.clone().contiguous()
     
-    grad_input_one = torch.zeros_like(input_one, dtype=gradtype).contiguous()
+    # grad_input_one = torch.zeros_like(input_one, dtype=gradtype).contiguous()
     grad_input_many = torch.zeros_like(input_many, dtype=gradtype).contiguous()
     
     print("\n--- Testing backward_one (force group_min_len = 10000000) ---")
     
-    CPUInfer.submit(
-        moe_one.backward(
-            0,  # layer_idx
-            qlen, n_routed_experts,
-            expert_ids.data_ptr(), weights.data_ptr(),
-            input_one.data_ptr(),
-            grad_output_one.data_ptr(),
-            grad_input_one.data_ptr()
-        )
-    )
-    CPUInfer.sync()
+    # CPUInfer.submit(
+    #     moe_one.backward(
+    #         0,  # layer_idx
+    #         qlen, n_routed_experts,
+    #         expert_ids.data_ptr(), weights.data_ptr(),
+    #         input_one.data_ptr(),
+    #         grad_output_one.data_ptr(),
+    #         grad_input_one.data_ptr()
+    #     )
+    # )
+    # CPUInfer.sync()
     
     # 检查backward_one结果
-    one_has_nan = torch.isnan(grad_input_one).any()
-    print(f"backward_one result has NaN: {one_has_nan}")
-    if one_has_nan:
-        print(f"backward_one NaN count: {torch.isnan(grad_input_one).sum().item()}/{grad_input_one.numel()}")
-    else:
-        print(f"backward_one grad_input stats: min={grad_input_one.min():.6f}, max={grad_input_one.max():.6f}, mean={grad_input_one.mean():.6f}")
+    # one_has_nan = torch.isnan(grad_input_one).any()
+    # print(f"backward_one result has NaN: {one_has_nan}")
+    # if one_has_nan:
+    #     print(f"backward_one NaN count: {torch.isnan(grad_input_one).sum().item()}/{grad_input_one.numel()}")
+    # else:
+    #     print(f"backward_one grad_input stats: min={grad_input_one.min():.6f}, max={grad_input_one.max():.6f}, mean={grad_input_one.mean():.6f}")
     
-    print("\n--- Testing backward_many (normal group_min_len) ---")
+    # print("\n--- Testing backward_many (normal group_min_len) ---")
     
     CPUInfer.submit(
         moe_many.backward(
@@ -722,35 +729,35 @@ def test_backward_one_vs_many_comparison():
         print(f"backward_many grad_input stats: min={grad_input_many.min():.6f}, max={grad_input_many.max():.6f}, mean={grad_input_many.mean():.6f}")
     
     # 对比结果
-    if not one_has_nan and not many_has_nan:
-        print(f"\n--- Comparison ---")
-        grad_one_fp32 = grad_input_one.to(torch.float32)
-        grad_many_fp32 = grad_input_many.to(torch.float32)
-        print(f"Results identical: {torch.allclose(grad_one_fp32, grad_many_fp32, atol=1e-6)}")
-        diff = torch.abs(grad_one_fp32 - grad_many_fp32)
-        print(f"Max absolute difference: {diff.max():.6f}")
-        print(f"Mean absolute difference: {diff.mean():.6f}")
+    # if not one_has_nan and not many_has_nan:
+    #     print(f"\n--- Comparison ---")
+    #     grad_one_fp32 = grad_input_one.to(torch.float32)
+    #     grad_many_fp32 = grad_input_many.to(torch.float32)
+    #     print(f"Results identical: {torch.allclose(grad_one_fp32, grad_many_fp32, atol=1e-6)}")
+    #     diff = torch.abs(grad_one_fp32 - grad_many_fp32)
+    #     print(f"Max absolute difference: {diff.max():.6f}")
+    #     print(f"Mean absolute difference: {diff.mean():.6f}")
         
-        # 找到最大差异的位置
-        max_diff_idx = torch.argmax(diff.flatten())
-        token_idx = max_diff_idx // hidden_size
-        feature_idx = max_diff_idx % hidden_size
-        print(f"Max diff at token {token_idx}, feature {feature_idx}: "
-              f"one={grad_one_fp32.flatten()[max_diff_idx]:.6f}, "
-              f"many={grad_many_fp32.flatten()[max_diff_idx]:.6f}")
-    elif not one_has_nan and many_has_nan:
-        print(f"\n--- backward_one正常，backward_many有NaN ---")
-        print("这确认了问题出在backward_many实现上")
-    elif one_has_nan and not many_has_nan:
-        print(f"\n--- backward_one有NaN，backward_many正常 ---")
-        print("这很奇怪，需要进一步调查")
-    else:
-        print(f"\n--- 两者都有NaN ---")
-        print("问题可能在更基础的地方")
+    #     # 找到最大差异的位置
+    #     max_diff_idx = torch.argmax(diff.flatten())
+    #     token_idx = max_diff_idx // hidden_size
+    #     feature_idx = max_diff_idx % hidden_size
+    #     print(f"Max diff at token {token_idx}, feature {feature_idx}: "
+    #           f"one={grad_one_fp32.flatten()[max_diff_idx]:.6f}, "
+    #           f"many={grad_many_fp32.flatten()[max_diff_idx]:.6f}")
+    # elif not one_has_nan and many_has_nan:
+    #     print(f"\n--- backward_one正常，backward_many有NaN ---")
+    #     print("这确认了问题出在backward_many实现上")
+    # elif one_has_nan and not many_has_nan:
+    #     print(f"\n--- backward_one有NaN，backward_many正常 ---")
+    #     print("这很奇怪，需要进一步调查")
+    # else:
+    #     print(f"\n--- 两者都有NaN ---")
+    #     print("问题可能在更基础的地方")
 
 
 if __name__ == "__main__":
-    # test_backward_2round_with_tflops()
+    test_backward_2round_with_tflops()
     # test_backward_10round_5layer()
-    test_backward_one_vs_many_comparison()
+    # test_backward_one_vs_many_comparison()
  

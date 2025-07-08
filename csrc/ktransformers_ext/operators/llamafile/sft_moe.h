@@ -7,8 +7,13 @@
  * @LastEditTime : 2024-07-25 10:35:10
  * @Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
  **/
+ #pragma once
 #ifndef CPUINFER_OPERATOR_SFT_MOE_H
 #define CPUINFER_OPERATOR_SFT_MOE_H
+
+#ifndef SFT_DUMP_BWD
+	#define SFT_DUMP_BWD 0
+#endif
 
 #include <cmath>
 #include <cstdio>
