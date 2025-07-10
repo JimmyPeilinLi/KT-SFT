@@ -9,6 +9,7 @@ SFT_MOE backward_many() dump 对拍脚本
 """
 
 import os, sys, time, torch, math
+import numpy as np
 from pathlib import Path
 
 # ---------- 1. 绑定 C++ 扩展 ----------
@@ -195,7 +196,41 @@ def load_f32(stub, shape):
     with open(stub+".f32",'rb') as f:
         return torch.frombuffer(f.read(), dtype=torch.float32).view(shape)
 
-def check(eid,name,shape):
+# 通用加载函数
+def load_dump_tensor(eid: int, name: str, shape: tuple, Ename: str = "E_Before"):
+    """
+    根据 eid / name / shape 读取 dump 文件，并返回 torch.Tensor
+    """
+    stub = DUMP_DIR / f"layer{LAYER_IDX}_{Ename}{eid}_{name}"
+    if stub.with_suffix(".bf16").exists():
+        return load_bf16(str(stub), shape)
+    elif stub.with_suffix(".f16").exists():
+        return load_f16(str(stub), shape)
+    elif stub.with_suffix(".f32").exists():
+        return load_f32(str(stub), shape)
+    else:
+        raise FileNotFoundError(f"{stub}（bf16/f16/f32 均不存在）")
+
+def _format_ranges(indices: torch.Tensor) -> str:
+    """
+    将 N×D 的整型坐标压缩成区间表示，形如 "(0-3, 10-15)"。
+    若某维度不连续，则逐个列出（或可自行再做高级压缩）。
+    """
+    dims = indices.size(1)
+    parts = []
+    for d in range(dims):
+        vals = indices[:, d].unique().sort()[0]   # 排序后的唯一值
+        start, end = int(vals[0]), int(vals[-1])
+        # 若 (end - start + 1) == 元素数量，则说明连续
+        if end - start + 1 == vals.numel():
+            # 连续 → 区间
+            parts.append(f"{start}-{end}" if start != end else f"{start}")
+        else:
+            # 不连续 → 逐个列出，可按需再切片或压缩
+            parts.append(", ".join(map(str, vals.tolist())))
+    return "(" + ", ".join(parts) + ")"
+
+def check_torch_cpp(eid,name,shape):
     stub = DUMP_DIR / f"layer{LAYER_IDX}_E{eid}_{name}"
     if stub.with_suffix(".bf16").exists():
         cpp = load_bf16(str(stub), shape)
@@ -206,21 +241,313 @@ def check(eid,name,shape):
     else:
         print("dump 缺失/未知类型"); return
     pt  = ref[(eid,name)]
+    nan_mask = torch.isnan(cpp)
+    if nan_mask.any():
+        nan_count = int(nan_mask.sum())
+        total_cnt = cpp.numel()
+        print(f"[E{eid:02d} {name:18s}] cpp_nan_count {nan_count}/{total_cnt}")
+        
+        # 提取所有 NaN 坐标
+        nan_idx = nan_mask.nonzero(as_tuple=False)
+        # 压缩成区块表示
+        block_str = _format_ranges(nan_idx)
+        print(f"  ▸ NaN block @ {block_str}")
+        print(f"CPP: {cpp}")
+        print(f"PT:  {pt}")
     abs_diff = (cpp - pt).abs()
-    pct_diff = abs_diff / (pt.abs() + EPS) * 100.0     # 百分比
+    pct_diff = abs_diff / (pt.abs() + EPS) * 100.0  # 百分比
+
     print(f"[E{eid:02d} {name:18s}] cpp_max {cpp.max():.3e}  cpp_mean {cpp.mean():.3e}")
-    print(f"[E{eid:02d} {name:18s}] pt_max {pt.max():.3e}  pt_mean {pt.mean():.3e}")
-    print(f"[E{eid:02d} {name:18s}] " f"pct_max {pct_diff.max():8.4f}%  " f"pct_mean {pct_diff.mean():8.4f}%")
+    print(f"[E{eid:02d} {name:18s}] pt_max  {pt.max():.3e}  pt_mean  {pt.mean():.3e}")
+    print(f"[E{eid:02d} {name:18s}] pct_max {pct_diff.max():8.4f}%  pct_mean {pct_diff.mean():8.4f}%")
+
+import torch
+
+def compare_tensors(cpp_bef: torch.Tensor,
+                    cpp_aft: torch.Tensor,
+                    name_bef,
+                    name_aft,
+                    rtol: float = 1e-4,
+                    atol: float = 1e-6,
+                    topk: int = 3) -> bool:
+    """
+    检查两个张量是否一致，并在不一致时打印调试信息。
+    参数说明
+    cpp_aft / cpp_bef : 要比较的两个张量
+    rtol / atol       : torch.allclose 的相对 / 绝对误差容忍度
+    max_mismatch_show : 最多打印多少个不一致的坐标和值
+    返回
+    bool : True → 一致；False → 不一致
+    """
+    
+    print("=" * 60)
+    if cpp_aft.shape != cpp_bef.shape:
+        print(f" shape 不一致: aft={cpp_aft.shape}, bef={cpp_bef.shape}")
+        return False
+    else:
+        print(f" shape : {cpp_aft.shape}")
+    if cpp_aft.dtype != cpp_bef.dtype:
+        print(f" dtype 不一致: aft={cpp_aft.dtype}, bef={cpp_bef.dtype}")
+        return False
+    else:
+        print(f" dtype : {cpp_aft.dtype}")
+
+    for name, t in [(f"{name_aft}", cpp_aft)]:
+        nan_cnt = torch.isnan(t).sum().item()
+        inf_cnt = torch.isinf(t).sum().item()
+        if nan_cnt or inf_cnt:
+            print(f"  {name}含 NaN={nan_cnt}、Inf={inf_cnt}")
+    for name, t in [(f"{name_bef}", cpp_bef)]:
+        nan_cnt = torch.isnan(t).sum().item()
+        inf_cnt = torch.isinf(t).sum().item()
+        if nan_cnt or inf_cnt:
+            print(f"  {name}含 NaN={nan_cnt}、Inf={inf_cnt}")
+
+    # 构造“有限值掩码”：仅比较两边都是有限值的位置
+    finite_mask = torch.isfinite(cpp_aft) & torch.isfinite(cpp_bef)
+    total = cpp_aft.numel()
+    ignored = total - finite_mask.sum().item()
+
+    # 对有限值位置执行逐元素比较
+    diff_mask = ~torch.isclose(
+        cpp_aft[finite_mask], cpp_bef[finite_mask], rtol=rtol, atol=atol
+    )
+    n_diff = diff_mask.sum().item()
+    ok = n_diff == 0
+
+    if ok:
+        print(
+            f"[OK] All finite elements match "
+            f"(ignored {ignored} NaN/Inf out of {total})."
+        )
+        return True
+
+    # ------------- 以下为调试信息 -------------
+    aft_finite = cpp_aft[finite_mask]
+    bef_finite = cpp_bef[finite_mask]
+    abs_err = (aft_finite - bef_finite).abs()
+    rel_err = abs_err / (bef_finite.abs() + 1e-12)
+
+    print(f"[Mismatch] {n_diff}/{finite_mask.sum().item()} "
+          f"finite elements differ "
+          f"(ignored {ignored} NaN/Inf, total {total}).")
+    print(
+        f"Max Abs Err: {abs_err.max():.6g},  "
+        f"Mean Abs Err: {abs_err.mean():.6g}"
+    )
+    print(
+        f"Max Rel Err: {rel_err.max():.6g},  "
+        f"Mean Rel Err: {rel_err.mean():.6g}"
+    )
+
+    # 找到不一致位置索引并打印前 topk 项
+    if topk > 0:
+        mis_idx_flat = diff_mask.nonzero(as_tuple=False).flatten()
+        # 将展平索引还原成多维坐标
+        unraveled = [
+            torch.unravel_index(i, cpp_aft.shape) for i in mis_idx_flat[:topk]
+        ]
+        print(f"First {min(topk, n_diff)} differing positions:")
+        for k, idx in enumerate(unraveled, 1):
+            idx_tuple = tuple(int(j) for j in idx)
+            a_val = cpp_aft[idx_tuple].item()
+            b_val = cpp_bef[idx_tuple].item()
+            print(f"  #{k}: idx={idx_tuple}  aft={a_val:.6g}  bef={b_val:.6g}")
+    print("=" * 60)
+    return False
+
+def check_before(eid,name,shape, Ename="E"):
+    stub1 = DUMP_DIR / f"layer{LAYER_IDX}_{Ename}{eid}_{name}"
+    if stub1.with_suffix(".bf16").exists():
+        cpp_bef = load_bf16(str(stub1), shape)
+    elif stub1.with_suffix(".f16").exists():
+        cpp_bef = load_f16(str(stub1), shape)
+    elif stub1.with_suffix(".f32").exists():
+        cpp_bef = load_f32(str(stub1), shape)
+    else:
+        print("dump 缺失/未知类型"); return
+
+    print(f"{Ename}{eid}_{name}:{cpp_bef}")
+    
+    print(f" shape : {cpp_bef.shape}")
+    print(f" dtype : {cpp_bef.dtype}")
+
+    for nan_name, t in [(f"{Ename}{eid}_{name}", cpp_bef)]:
+        nan_cnt = torch.isnan(t).sum().item()
+        inf_cnt = torch.isinf(t).sum().item()
+        if nan_cnt or inf_cnt:
+            print(f"{Ename}{eid}_{name}含 NaN={nan_cnt}、Inf={inf_cnt}")
+        else:
+            print("NO nan or inf exist")
+
+def check_gemm(eid: int,
+               r: int,          # 行数 = batch rows
+               H: int,          # hidden_size
+               I: int,          # intermediate_size
+               topk: int = 5):
+    """
+    检查 up_out_grad  @  up_proj_t.T  是否 ≈  up_in_grad
+
+    up_out_grad : (r, I)
+    up_proj_t   : (H, I)
+    up_in_grad  : (r, H)
+    """
+    # 1. 读取三个张量
+    # proj_stride = 256
+    up_out_grad = load_dump_tensor(eid, "up_out_grad", (r, I), "E_Before")
+    up_proj_t   = load_dump_tensor(eid, "up_proj_t",   (H, I), "E_Before")
+    up_in_grad  = load_dump_tensor(eid, "up_in_grad",  (r, H), "E_aft_gemm")
+    
+    print(f"up_in_grad:{up_in_grad}")
+    for t in [up_in_grad]:
+        nan_cnt = torch.isnan(t).sum().item()
+        inf_cnt = torch.isinf(t).sum().item()
+        if nan_cnt or inf_cnt:
+            print(f"E_aft_gemm{eid}_up_in_grad 含 NaN={nan_cnt}、Inf={inf_cnt}")
+        else:
+            print("NO nan or inf exist in up_in_grad.")
+
+    # 2. 统一转 float32 避免精度差异
+    up_out_grad_f = up_out_grad.float()
+    up_proj_t_f   = up_proj_t.float()
+
+    # 3. GEMM 计算 (r,I) × (I,H) → (r,H)
+    gemm = torch.matmul(up_out_grad_f, up_proj_t_f.t())
+
+    print(f"\n===== 检查 E{eid} ▸ up_out_grad × up_proj_t.T =====")
+    print(f" up_out_grad.shape = {tuple(up_out_grad.shape)}")
+    print(f" up_proj_t.shape   = {tuple(up_proj_t.shape)}")
+    print(f"  ⇒ gemm.shape     = {tuple(gemm.shape)}  (目标)")
+    print(f" up_in_grad.shape  = {tuple(up_in_grad.shape)}")
+
+    # 4. NaN / Inf 差异
+    nan_gemm  = torch.isnan(gemm) | torch.isinf(gemm)
+    nan_input = torch.isnan(up_in_grad) | torch.isinf(up_in_grad)
+
+    only_gemm_nan  = nan_gemm & ~nan_input
+    only_input_nan = ~nan_gemm & nan_input
+    both_nan       = nan_gemm & nan_input
+
+    print("\n── NaN/Inf 统计 ──")
+    print(f"  gemm NaN/Inf : {nan_gemm.sum().item()}")
+    print(f"  up_in_grad NaN/Inf : {nan_input.sum().item()}")
+    print(f"  仅 gemm 为 NaN/Inf : {only_gemm_nan.sum().item()}")
+    print(f"  仅 up_in_grad 为 NaN/Inf : {only_input_nan.sum().item()}")
+    print(f"  两者同为 NaN/Inf : {both_nan.sum().item()}")
+
+    if only_gemm_nan.any():
+        idxs = only_gemm_nan.nonzero(as_tuple=False)[:topk]
+        print(f"  ▸ 仅 gemm 为 NaN/Inf 的前 {len(idxs)} 个坐标: {[tuple(i.tolist()) for i in idxs]}")
+    if only_input_nan.any():
+        idxs = only_input_nan.nonzero(as_tuple=False)[:topk]
+        print(f"  ▸ 仅 up_in_grad 为 NaN/Inf 的前 {len(idxs)} 个坐标: {[tuple(i.tolist()) for i in idxs]}")
+
+    # 5. 非 NaN 区域误差
+    valid = ~(nan_gemm | nan_input)
+    if valid.any():
+        diff = (gemm - up_in_grad).abs()
+        max_diff  = diff[valid].max().item()
+        mean_diff = diff[valid].mean().item()
+
+        print("\n── 非 NaN/Inf 区域数值差异 ──")
+        print(f"  最大绝对误差 : {max_diff:.6e}")
+        print(f"  平均绝对误差 : {mean_diff:.6e}")
+
+        # 打印误差最大 top-k
+        if topk > 0:
+            flat_idx = torch.topk(diff.view(-1), k=min(topk, diff.numel()), largest=True).indices
+            unraveled = [torch.unravel_index(i, diff.shape) for i in flat_idx]
+            print(f"  ▸ 误差 Top-{len(unraveled)} 坐标与误差:")
+            for j, coord in enumerate(unraveled):
+                print(f"     #{j+1}: {coord} → {diff[coord].item():.6e}")
+    else:
+        print("\n☆ 所有元素都是 NaN/Inf，无法比较数值误差 ☆")
+        
+def check_consist(eid,name,shape):
+    stub1 = DUMP_DIR / f"layer{LAYER_IDX}_E{eid}_{name}"
+    stub2 = DUMP_DIR / f"layer{LAYER_IDX}_E_aft_gemm{eid}_{name}"
+    if stub1.with_suffix(".bf16").exists():
+        cpp_aft = load_bf16(str(stub1), shape)
+    elif stub1.with_suffix(".f16").exists():
+        cpp_aft = load_f16(str(stub1), shape)
+    elif stub1.with_suffix(".f32").exists():
+        cpp_aft = load_f32(str(stub1), shape)
+    else:
+        print("dump 缺失/未知类型"); return
+    if stub2.with_suffix(".bf16").exists():
+        cpp_bef = load_bf16(str(stub2), shape)
+    elif stub2.with_suffix(".f16").exists():
+        cpp_bef = load_f16(str(stub2), shape)
+    elif stub2.with_suffix(".f32").exists():
+        cpp_bef = load_f32(str(stub2), shape)
+    else:
+        print("dump 缺失/未知类型"); return
+
+    print(f"cpp_bef:{cpp_bef}")
+    print(f"cpp_aft:{cpp_aft}")
+    
+    if compare_tensors(cpp_bef, cpp_aft, "cpp_bef", "cpp_aft"):
+        print("Consist!")
+    else:
+        print("NOT consist!")
+
+def save_tensor_txt(t: torch.Tensor, file_path: str):
+    """
+    以科学计数法把张量保存为 .txt
+    兼顾大矩阵：逐行写，避免一次性 format 巨量字符串占用内存
+    """
+    path = Path(file_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 确保在 CPU、float64 精度足够；若已是 float16/bf16 转 float32/64
+    arr = t.detach().cpu().to(torch.float32)
+
+    with path.open("w") as f:
+        # numpy 格式化最快
+        for row in arr:
+            np.savetxt(f,                   # 追加写
+                       row.unsqueeze(0).numpy(),
+                       fmt="%.6e",          # 科学计数，6 位小数，可按需修改
+                       delimiter=" ")
+    print(f"⇢ 写入 {path}  (shape={tuple(t.shape)})")
+
+
+def dump_three_mats(eid: int, r: int, H: int, I: int,
+                    root: str = "./debug_txt/"):
+    """
+    加载三个 dump 张量并保存为 txt
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    up_out_grad = load_dump_tensor(eid, "up_out_grad", (r, I), "E_Before")
+    up_proj_t   = load_dump_tensor(eid, "up_proj_t",   (H, I), "E_Before")
+    up_in_grad  = load_dump_tensor(eid, "up_in_grad",  (r, H), "E_aft_gemm")
+
+    save_tensor_txt(up_out_grad, root / f"E{eid}_up_out_grad.txt")
+    save_tensor_txt(up_proj_t,   root / f"E{eid}_up_proj_t.txt")
+    save_tensor_txt(up_in_grad,  root / f"E{eid}_up_in_grad.txt")
 
 # ---------- 10. 对拍结果 ----------
 for eid in range(E):
     r = tok_per_exp[eid].item()
+    print(f"r:{r}")
     if r==0: continue
-    check(eid,"down_out_grad",(r,H))
-    check(eid,"down_in_grad" ,(r,I))
-    check(eid,"gate_out_grad",(r,I))
-    check(eid,"gate_out_grad_fp32",(r,I))
-    check(eid,"gate_in_grad",(r,H))
-    check(eid,"up_out_grad",(r,I))
-    check(eid,"up_out_grad_fp32"  ,(r,I))
-    check(eid,"up_in_grad"  ,(r,H))
+    # check_torch_cpp(eid,"down_out_grad",(r,H))
+    # check_torch_cpp(eid,"down_in_grad" ,(r,I))
+    # check_torch_cpp(eid,"gate_out_grad",(r,I))
+    # check_torch_cpp(eid,"gate_out_grad_fp32",(r,I))
+    # check_torch_cpp(eid,"gate_in_grad",(r,H))
+    # check_torch_cpp(eid,"up_out_grad",(r,I))
+    # check_torch_cpp(eid,"up_out_grad_fp32"  ,(r,I))
+    # check_torch_cpp(eid,"up_in_grad"  ,(r,H))
+    
+    # check_before(eid, "up_in_grad", (r, H), "E_Before")
+    # check_before(eid, "up_out_grad", (r, I), "E_Before")
+    check_before(eid, "up_proj_t", (H, I), "E_Before")
+    check_before(eid, "up_proj_t", (H, I), "E_End")
+    # check_before(eid, "up_in_grad", (r, H), "E_aft_gemm")
+    
+    # check_gemm(eid=eid, r=r, H=H, I=I)
+    
+    # dump_three_mats(eid=eid, r=r, H=H, I=I)
