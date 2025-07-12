@@ -195,6 +195,9 @@ def load_f16(stub, shape):
 def load_f32(stub, shape):
     with open(stub+".f32",'rb') as f:
         return torch.frombuffer(f.read(), dtype=torch.float32).view(shape)
+def load_uint8(stub, shape):
+    with open(stub+".uint8",'rb') as f:
+        return torch.frombuffer(f.read(), dtype=torch.uint8).view(shape)
 
 # 通用加载函数
 def load_dump_tensor(eid: int, name: str, shape: tuple, Ename: str = "E_Before"):
@@ -208,6 +211,8 @@ def load_dump_tensor(eid: int, name: str, shape: tuple, Ename: str = "E_Before")
         return load_f16(str(stub), shape)
     elif stub.with_suffix(".f32").exists():
         return load_f32(str(stub), shape)
+    elif stub.with_suffix(".uint8").exists():
+        return load_uint8(str(stub), shape)
     else:
         raise FileNotFoundError(f"{stub}（bf16/f16/f32 均不存在）")
 
@@ -356,7 +361,7 @@ def compare_tensors(cpp_bef: torch.Tensor,
     print("=" * 60)
     return False
 
-def check_before(eid,name,shape, Ename="E"):
+def check_nan(eid,name,shape, Ename="E"):
     stub1 = DUMP_DIR / f"layer{LAYER_IDX}_{Ename}{eid}_{name}"
     if stub1.with_suffix(".bf16").exists():
         cpp_bef = load_bf16(str(stub1), shape)
@@ -368,17 +373,26 @@ def check_before(eid,name,shape, Ename="E"):
         print("dump 缺失/未知类型"); return
 
     print(f"{Ename}{eid}_{name}:{cpp_bef}")
-    
     print(f" shape : {cpp_bef.shape}")
     print(f" dtype : {cpp_bef.dtype}")
+
+    finite_mask = torch.isfinite(cpp_bef)
+    if finite_mask.any():
+        t_finite = cpp_bef[finite_mask]
+        t_max = t_finite.max().item()
+        t_min = t_finite.min().item()
+        print(f" max   : {t_max:.6e}")
+        print(f" min   : {t_min:.6e}")
+    else:
+        print(" max/min: 所有元素均为 NaN / Inf")
 
     for nan_name, t in [(f"{Ename}{eid}_{name}", cpp_bef)]:
         nan_cnt = torch.isnan(t).sum().item()
         inf_cnt = torch.isinf(t).sum().item()
         if nan_cnt or inf_cnt:
-            print(f"{Ename}{eid}_{name}含 NaN={nan_cnt}、Inf={inf_cnt}")
+            print(f"{Ename}{eid}_{name} 含 NaN={nan_cnt}、Inf={inf_cnt}")
         else:
-            print("NO nan or inf exist")
+            print("NO NaN or Inf exist")
 
 def check_gemm(eid: int,
                r: int,          # 行数 = batch rows
@@ -491,6 +505,67 @@ def check_consist(eid,name,shape):
     else:
         print("NOT consist!")
 
+def load_tensor_by_stub(stub, shape):
+    """按 stub 自动探测 .bf16/.f16/.f32 并读取张量"""
+    if stub.with_suffix(".bf16").exists():
+        return load_bf16(str(stub), shape)
+    elif stub.with_suffix(".f16").exists():
+        return load_f16(str(stub), shape)
+    elif stub.with_suffix(".f32").exists():
+        return load_f32(str(stub), shape)
+    else:
+        raise FileNotFoundError(f"{stub}*.bf16/.f16/.f32 均不存在")
+
+def check_transpose_diff(eid, base_name, shape_a, shape_b, Ename="E_End", name_transpose=""):
+    """
+    检查 base_name 与 base_name+'_t' 是否真正互为转置；
+    若有 NaN/Inf，统计数量；再在有效元素上计算差值。
+    """
+    stub_a = DUMP_DIR / f"layer{LAYER_IDX}_{Ename}{eid}_{base_name}"
+    if name_transpose == "":
+        stub_t = DUMP_DIR / f"layer{LAYER_IDX}_{Ename}{eid}_{base_name}_t"
+    else:
+        stub_t = DUMP_DIR / f"layer{LAYER_IDX}_{Ename}{eid}_{name_transpose}"
+        
+    # 1. 加载两个矩阵
+    A = load_tensor_by_stub(stub_a, shape_a)
+    B = load_tensor_by_stub(stub_t, shape_b)
+
+    # 2. 判断是否需要转置
+    if A.shape == B.shape[::-1]:
+        B_aligned = B.t()
+    elif A.shape == B.shape:
+        B_aligned = B
+    else:
+        print(f"[警告] 形状不匹配：A{A.shape}, B{B.shape}，无法比较")
+        return
+    print(f"原矩阵：{A}，\nTT矩阵：{B_aligned}")
+    # 3. 统计 NaN / Inf
+    nan_A, inf_A = torch.isnan(A).sum().item(), torch.isinf(A).sum().item()
+    nan_B, inf_B = torch.isnan(B).sum().item(), torch.isinf(B).sum().item()
+    print(f"{Ename}{eid}_{base_name}: NaN={nan_A}, Inf={inf_A}")
+    print(f"{Ename}{eid}_{base_name}_t: NaN={nan_B}, Inf={inf_B}")
+
+    # 4. 构造有效掩码
+    valid_mask = ~(torch.isnan(A) | torch.isinf(A) |
+                   torch.isnan(B_aligned) | torch.isinf(B_aligned))
+    valid_cnt = valid_mask.sum().item()
+    if valid_cnt == 0:
+        print("全部为 NaN/Inf，无法比较")
+        return
+
+    # 5. 计算差值（仅有效元素）
+    diff = (A - B_aligned)[valid_mask]
+    max_diff = diff.abs().max().item()
+    mean_diff = diff.mean().item()
+    rmse_diff = diff.pow(2).mean().sqrt().item()
+
+    print(f"有效元素: {valid_cnt}")
+    print(f"最大差值: {max_diff:.6e}")
+    print(f"平均差值: {mean_diff:.6e}")
+    print(f"均方根差: {rmse_diff:.6e}")
+    print("-" * 60)
+
 def save_tensor_txt(t: torch.Tensor, file_path: str):
     """
     以科学计数法把张量保存为 .txt
@@ -512,21 +587,16 @@ def save_tensor_txt(t: torch.Tensor, file_path: str):
     print(f"⇢ 写入 {path}  (shape={tuple(t.shape)})")
 
 
-def dump_three_mats(eid: int, r: int, H: int, I: int,
-                    root: str = "./debug_txt/"):
+def dump_mat(eid: int, name, shape, ename="E_End", root: str = "./debug_txt/"):
     """
-    加载三个 dump 张量并保存为 txt
+    加载 dump 张量并保存为 txt
     """
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
 
-    up_out_grad = load_dump_tensor(eid, "up_out_grad", (r, I), "E_Before")
-    up_proj_t   = load_dump_tensor(eid, "up_proj_t",   (H, I), "E_Before")
-    up_in_grad  = load_dump_tensor(eid, "up_in_grad",  (r, H), "E_aft_gemm")
+    tensor_proj  = load_dump_tensor(eid, name, shape, ename)
 
-    save_tensor_txt(up_out_grad, root / f"E{eid}_up_out_grad.txt")
-    save_tensor_txt(up_proj_t,   root / f"E{eid}_up_proj_t.txt")
-    save_tensor_txt(up_in_grad,  root / f"E{eid}_up_in_grad.txt")
+    save_tensor_txt(tensor_proj,  root / f"E{eid}_{name}.txt")
 
 # ---------- 10. 对拍结果 ----------
 for eid in range(E):
@@ -542,12 +612,72 @@ for eid in range(E):
     # check_torch_cpp(eid,"up_out_grad_fp32"  ,(r,I))
     # check_torch_cpp(eid,"up_in_grad"  ,(r,H))
     
-    # check_before(eid, "up_in_grad", (r, H), "E_Before")
-    # check_before(eid, "up_out_grad", (r, I), "E_Before")
-    check_before(eid, "up_proj_t", (H, I), "E_Before")
-    check_before(eid, "up_proj_t", (H, I), "E_End")
-    # check_before(eid, "up_in_grad", (r, H), "E_aft_gemm")
+    # check_nan(eid, "up_in_grad", (r, H), "E_Before")
+    # check_nan(eid, "up_out_grad", (r, I), "E_Before")
+    # check_nan(eid, "up_proj_t", (H, I), "E_Before")
+    # check_nan(eid, "up_proj_t", (I, H), "E_End")
+    # check_nan(eid, "up_proj", (H, I), "E_End")
+    # check_nan(eid, "gate_proj_t", (I, H), "E_End")
+    # check_nan(eid, "gate_proj", (H, I), "E_End")
+    # check_nan(eid, "down_proj_t", (H, I), "E_End")
+    # check_nan(eid, "down_proj", (I, H), "E_End")
+    # check_nan(eid, "up_in_grad", (r, H), "E_aft_gemm")
+    
+    # check_nan(eid, "up_proj_src_", (I, H), "E_End")
+    # check_nan(eid, "up_proj_f32_", (I, H), "E_End")
+    # check_nan(eid, "up_proj_out_trans_", (H, I), "E_End")
+    # check_nan(eid, "up_proj_dst_", (H, I), "E_End")
+    # check_nan(eid, "down_proj_src_", (H, I), "E_End")
+    # check_nan(eid, "down_proj_f32_", (H, I), "E_End")
+    # check_nan(eid, "down_proj_out_trans_", (I, H), "E_End")
+    # check_nan(eid, "down_proj_dst_", (I, H), "E_End")
+    # check_nan(eid, "gate_proj_src_", (I, H), "E_End")
+    # check_nan(eid, "gate_proj_f32_", (I, H), "E_End")
+    # check_nan(eid, "gate_proj_out_trans_", (H, I), "E_End")
+    # check_nan(eid, "gate_proj_dst_", (H, I), "E_End")
+    # check_nan(eid, "up_proj_t", (H, I), "E_End")
+    # check_nan(eid, "up_proj", (I, H), "E_End")
+    # check_nan(eid, "up_proj_t", (H, I), "E_aft_sgemm")
+    # check_nan(eid, "up_proj", (I, H), "E_aft_sgemm")
+    # check_nan(eid, "up_proj_t", (H, I), "E_bef_sgemm")
+    # check_nan(eid, "up_proj", (I, H), "E_bef_sgemm")
+    # check_nan(eid, "up_proj_t", (H, I), "E_bef_many")
+    # check_nan(eid, "up_proj", (I, H), "E_111")
+    # check_nan(eid, "up_proj_t", (H, I), "E_111")
+    # check_nan(eid, "up_proj", (I, H), "E_222")
+    # check_nan(eid, "up_proj_t", (H, I), "E_222")
+    # check_nan(eid, "up_proj", (I, H), "E_333")
+    # check_nan(eid, "up_proj", (I, H), "E_444")
+    check_nan(eid, "up_proj_t", (H, I), "E_333")
+    check_nan(eid, "up_proj_t", (H, I), "E_444")
+    check_nan(eid, "gate_proj_t", (H, I), "E_333")
+    check_nan(eid, "gate_proj_t", (H, I), "E_444")
+    check_nan(eid, "down_proj_t", (I, H), "E_333")
+    check_nan(eid, "down_proj_t", (I, H), "E_444")
+    # check_nan(eid, "up_proj", (I, H), "E_bef_many")
+    # check_nan(eid, "up_proj_t", (H, I), "E_aft_many")
+    # check_nan(eid, "up_proj", (I, H), "E_aft_many")
+    
+    # check_nan(eid, "up_proj", (I, H), "E_Forward")
+    # check_nan(eid, "gate_proj", (I, H), "E_Forward")
+    # check_nan(eid, "down_proj", (H, I), "E_Forward")
     
     # check_gemm(eid=eid, r=r, H=H, I=I)
     
-    # dump_three_mats(eid=eid, r=r, H=H, I=I)
+    dump_mat(eid, "up_proj_t", (H, I), "E_333")
+    dump_mat(eid, "up_proj_t", (H, I), "E_444")
+    
+    # check_transpose_diff(eid, "up_proj",   (I, H), (H, I))
+    # check_transpose_diff(eid, "gate_proj", (I, H), (H, I))
+    # check_transpose_diff(eid, "down_proj", (H, I), (I, H))
+    
+    
+    # check_transpose_diff(eid, "up_proj_bf16_",   (I, H), (H, I), name_transpose="up_proj_dst_")
+    # check_transpose_diff(eid, "gate_proj_bf16_", (I, H), (H, I), name_transpose="gate_proj_dst_")
+    # check_transpose_diff(eid, "down_proj_bf16_", (H, I), (I, H), name_transpose="down_proj_dst_")
+    
+    
+    # not use this, WRONG!!
+    # check_transpose_diff(eid, "up_proj",   (H, I), (I, H))
+    # check_transpose_diff(eid, "gate_proj", (H, I), (I, H))
+    # check_transpose_diff(eid, "down_proj", (I, H), (H, I))

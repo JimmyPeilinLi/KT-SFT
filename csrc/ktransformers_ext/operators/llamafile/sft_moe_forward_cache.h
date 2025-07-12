@@ -8,7 +8,7 @@ struct SFT_MoEForwardCache {
     // 若希望反向直接用 z = σ(u)⊙v，则再加一份
     // std::vector<std::vector<float>> z;
     void init(int k, int inter_size) {
-        /* ---- 只增不减：capacity 不够时才增，永不缩小，避免多线程情况下的use-after-free ---- */
+        // 只增不减：capacity 不够时才增，永不缩小，避免多线程情况下的use-after-free
        if (k > (int)gate_u.size()) {
             gate_u.resize(k);
             up_v  .resize(k);
