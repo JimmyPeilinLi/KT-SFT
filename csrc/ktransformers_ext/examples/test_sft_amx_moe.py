@@ -29,10 +29,11 @@ n_routed_experts = 2
 qlen = 30
 layer_num = 10
 num_threads = 112
-validation_iter = 2
+validation_iter = 1
 
-dtype = torch.float16
+dtype = torch.bfloat16
 gradtype = torch.bfloat16
+torch.backends.cuda.matmul.allow_tf32 = False
 
 def act_fn(x):
     return x / (1.0 + torch.exp(-x))
@@ -99,46 +100,46 @@ def moe_torch(x, eid, w, gate, up, down, req_grad=False):
 def test_amx_moe_two_round():
     # ------------ 构造权重 (FP16) ------------
     gate_proj = torch.randn(expert_num, intermediate_size, hidden_size,
-                            dtype=dtype, requires_grad=True).contiguous()
-    up_proj   = torch.randn(expert_num, intermediate_size, hidden_size,
-                            dtype=dtype, requires_grad=True).contiguous()
+                            dtype=torch.bfloat16, requires_grad=True).contiguous()
+    up_proj   = torch.randn_like(gate_proj)
     down_proj = torch.randn(expert_num, hidden_size, intermediate_size,
-                            dtype=dtype, requires_grad=True).contiguous()
+                            dtype=torch.bfloat16, requires_grad=True).contiguous()
 
     # ------------ SFT-AMX 对象 ------------
-    SFT_NS   = cpuinfer_ext.sft_moe       # C++ 命名空间
-    cfg = SFT_NS.SFT_AMX_MOEConfig(
+    cfg = cpuinfer_ext.sft_moe.SFT_AMX_MOEConfig(
         expert_num, n_routed_experts,
         hidden_size, intermediate_size,
         group_max_len,          # max_len
         gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr()
     )
-    moe_cpp = SFT_NS.SFT_AMXInt8_MOE(cfg)
-    # CPUInfer (线程池)
-    pool = cpuinfer_ext.CPUInfer(num_threads)
+    moe_cpp = cpuinfer_ext.sft_moe.SFT_AMXInt8_MOE(cfg)
+    
+    cpu_infer = cpuinfer_ext.CPUInfer(num_threads)
 
     # FLOPs 估计（只看 GEMM 部分；粗略）
     flop_fwd = 6  * qlen * n_routed_experts * hidden_size * intermediate_size
     flop_bwd = 18 * qlen * n_routed_experts * hidden_size * intermediate_size
+    
+    cpu_infer.submit(moe_cpp.load_weights())
+    cpu_infer.sync() # ATTENTION: DO NOT FORGET sync after load weights
+    
+    # moe_cpp.warm_up(backend)
 
     for rnd in range(validation_iter):
         print(f"\n=========== Round {rnd+1}/{validation_iter} ===========")
         # ---- 随机 inputs / routing ----
         expert_ids = torch.stack(
-            [torch.randperm(expert_num)[:n_routed_experts]
-             for _ in range(qlen)]
-        ).to(torch.int64).contiguous()
+            [torch.randperm(expert_num)[:n_routed_experts] for _ in range(qlen)]).contiguous()
 
-        weights = torch.rand(qlen, n_routed_experts,
-                             dtype=torch.float32).contiguous()
+        weights = torch.rand(qlen, n_routed_experts, dtype=torch.float32).contiguous()
 
-        inp_pt  = torch.randn(qlen, hidden_size, dtype=dtype,
-                              requires_grad=True).contiguous()
-        inp_cpp = inp_pt.detach().clone().requires_grad_(True).contiguous()
+        input_pt  = (torch.randn((qlen, hidden_size), dtype=dtype) / 100)\
+                    .detach().requires_grad_(True).contiguous()
+        input_cpp = input_pt.detach().clone().requires_grad_(True).contiguous()
 
         # ------------- forward -------------
         # Torch reference
-        out_ref = moe_torch(inp_pt, expert_ids, weights,
+        out_ref = moe_torch(input_pt, expert_ids, weights,
                             gate_proj, up_proj, down_proj, True)
         out_ref.retain_grad()
         
@@ -147,24 +148,39 @@ def test_amx_moe_two_round():
         # C++ AMX forward
         out_cpp = torch.empty_like(out_ref, dtype=dtype).contiguous()
         t0 = time.time()
-        pool.submit(moe_cpp.forward(
+        cpu_infer.submit(moe_cpp.forward(
             qlen, n_routed_experts,
             expert_ids.data_ptr(), weights.data_ptr(),
-            inp_cpp.data_ptr(), out_cpp.data_ptr(), batch_size_tensor.data_ptr()))
-        pool.sync()
+            input_cpp.data_ptr(), out_cpp.data_ptr(), batch_size_tensor.data_ptr()))
+        cpu_infer.sync()
         t1 = time.time()
         diff_fwd = (out_cpp.to(torch.float32) - out_ref.to(torch.float32)).abs()
+        print(f"out_cpp.to(torch.float32):{out_cpp.to(torch.float32)}, out_ref.to(torch.float32):{out_ref.to(torch.float32)}")
         rel_fwd  = diff_fwd.mean() / out_ref.abs().mean()
         print(f"Forward   diff: {rel_fwd.item():.3e} | time {t1-t0:.4f}s | "
               f"TFLOPS {flop_fwd/(t1-t0)/1e12:.2f}")
+        
+        # out_cpp_ori = torch.empty_like(out_ref, dtype=dtype).contiguous()
+        # t00 = time.time()
+        # cpu_infer_ori.submit(moe_cpp_ori.forward(
+        #     qlen, n_routed_experts,
+        #     expert_ids.data_ptr(), weights.data_ptr(),
+        #     input_cpp.data_ptr(), out_cpp_ori.data_ptr(), batch_size_tensor.data_ptr()))
+        # cpu_infer_ori.sync()
+        # t01 = time.time()
+        # diff_fwd = (out_cpp_ori.to(torch.float32) - out_ref.to(torch.float32)).abs()
+        # print(f"out_cpp_ori.to(torch.float32):{out_cpp_ori.to(torch.float32)}, out_ref.to(torch.float32):{out_ref.to(torch.float32)}")
+        # rel_fwd  = diff_fwd.mean() / out_ref.abs().mean()
+        # print(f"Forward   diff: {rel_fwd.item():.3e} | time {t01-t00:.4f}s | "
+        #       f"TFLOPS {flop_fwd/(t01-t00)/1e12:.2f}")
 
         # ------------- backward -------------
         grad_out = torch.randn_like(out_ref, dtype=gradtype).contiguous()
         grad_out_cpp = grad_out.clone().contiguous()
-        grad_in_cpp  = torch.zeros_like(inp_cpp, dtype=gradtype).contiguous()
+        grad_in_cpp  = torch.zeros_like(input_cpp, dtype=gradtype).contiguous()
 
         # Torch backward
-        for p in (gate_proj, up_proj, down_proj, inp_pt):
+        for p in (gate_proj, up_proj, down_proj, input_pt):
             if p.grad is not None:
                 p.grad.zero_()
         t2 = time.time()
@@ -175,19 +191,20 @@ def test_amx_moe_two_round():
 
         # C++ backward
         t4 = time.time()
-        pool.submit(moe_cpp.backward(
+        cpu_infer.submit(moe_cpp.backward(
             qlen, n_routed_experts,
             expert_ids.data_ptr(), weights.data_ptr(),
             grad_out_cpp.data_ptr(),
             grad_in_cpp.data_ptr()))
-        pool.sync()
+        cpu_infer.sync()
         t5 = time.time()
         print(f"C++      backward time {t5-t4:.4f}s | "
               f"TFLOPS {flop_bwd/(t5-t4)/1e12:.2f}")
 
         # diff (grad wrt input)
         gcpp = grad_in_cpp.to(torch.float32)
-        gref = inp_pt.grad.to(torch.float32)
+        gref = input_pt.grad.to(torch.float32)
+        print(f"C++ AMX backward:{gcpp}, pytorch backward:{gref}")
         rel_bwd = (gcpp - gref).abs().mean() / gref.abs().mean()
         print(f"Backward diff: {rel_bwd.item():.3e}")
 

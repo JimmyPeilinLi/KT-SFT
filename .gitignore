@@ -70,3 +70,5 @@ ktransformers/ktransformers_ext/Makefile
 
 *.txt
 *.pt
+
+debug/*
