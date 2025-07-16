@@ -596,7 +596,7 @@ def dump_mat(eid: int, name, shape, ename="E_End", root: str = "./debug_txt/"):
 
     tensor_proj  = load_dump_tensor(eid, name, shape, ename)
 
-    save_tensor_txt(tensor_proj,  root / f"E{eid}_{name}.txt")
+    save_tensor_txt(tensor_proj,  root / f"E{eid}_{name}_{ename}.txt")
 
 # ---------- 10. 对拍结果 ----------
 for eid in range(E):

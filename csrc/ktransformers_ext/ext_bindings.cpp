@@ -573,7 +573,7 @@ class MOEBindings {
 namespace {
 	inline void sft_moe_forward_wrapper(
 			SFT_MOE& self,
-			int qlen, int k,
+			int layer_idx, int qlen, int k,
 			const uint64_t* expert_ids,
 			const float*     weights,
 			const void*      input,
@@ -581,7 +581,7 @@ namespace {
 			Backend*         backend)
 	{
 		self.ensure_fwd_cache(qlen, k);
-		self.forward(qlen, k, expert_ids, weights,
+		self.forward(layer_idx, qlen, k, expert_ids, weights,
 					input, output,
 					backend,
 					self.fwd_cache_ptr());
@@ -593,13 +593,12 @@ namespace {
 			int qlen, int k,
 			const uint64_t* expert_ids,
 			const float*     weights,
-			const void*      input,
 			const void*      grad_output,
 			void*            grad_input,
 			Backend*         backend)
 	{
 		self.backward(layer_idx, qlen, k, expert_ids, weights,
-					input, grad_output, grad_input,
+					grad_output, grad_input,
 					backend,
 					self.fwd_cache_ptr());
 	}
@@ -627,6 +626,7 @@ class SFT_MOEBindings {
         struct Args {
             CPUInfer *cpuinfer;
             SFT_MOE *moe;
+			int layer_idx;
             int qlen;
             int k;
             const uint64_t *expert_ids;
@@ -643,8 +643,9 @@ class SFT_MOEBindings {
 		static void inner(void *args) {
 			Args *args_ = static_cast<Args *>(args);
 			args_->cpuinfer->enqueue(
-				&sft_moe_forward_wrapper,   // 使用包装函数
+				&sft_moe_forward_wrapper,
 				args_->moe, 
+				args_->layer_idx,
 				args_->qlen, args_->k,
 				args_->expert_ids,
 				args_->weights,
@@ -652,12 +653,9 @@ class SFT_MOEBindings {
 				args_->output);
 		}
         static std::pair<intptr_t, intptr_t>
-        cpuinfer_interface(SFT_MOE &moe, int qlen, int k, intptr_t expert_ids,
-                           intptr_t weights, intptr_t input, intptr_t output) {
+        cpuinfer_interface(SFT_MOE &moe, int layer_idx, int qlen, int k, intptr_t expert_ids, intptr_t weights, intptr_t input, intptr_t output) {
             Args *args = new Args{nullptr,
-                                  &moe,
-                                  qlen,
-                                  k,
+                                  &moe, layer_idx, qlen, k,
                                   (const uint64_t *)expert_ids,
                                   (const float *)weights,
                                   (const void *)input,
@@ -676,46 +674,30 @@ class SFT_MOEBindings {
 			int k;
 			const uint64_t* expert_ids;
 			const float* weights;
-			const void* input;
 			const void* grad_output;
 			void* grad_input;
 		};
 
-        // static void inner(void* args) {
-        //     Args* args_ = static_cast<Args*>(args);
-        //     args_->cpuinfer->enqueue(&SFT_MOE::backward, args_->moe, 
-        //         args_->qlen, args_->k,
-        //         args_->expert_ids, args_->weights,
-		// 		args_->input,
-		// 		args_->grad_output,
-		// 		args_->grad_input);
-        // }
-
 		static void inner(void *args) {
 			Args *args_ = static_cast<Args *>(args);
 			args_->cpuinfer->enqueue(
-				&sft_moe_backward_wrapper,  // 使用包装函数
+				&sft_moe_backward_wrapper,
 				args_->moe,
 				args_->layer_idx,
 				args_->qlen, args_->k,
 				args_->expert_ids,
 				args_->weights,
-				args_->input,
 				args_->grad_output,
 				args_->grad_input);
 		}
 
-        static std::pair<intptr_t, intptr_t> cpuinfer_interface(
-            SFT_MOE& moe, int layer_idx, int qlen, int k, 
-            intptr_t expert_ids, intptr_t weights,
-    		intptr_t input,
-            intptr_t grad_output, intptr_t grad_input) {
+        static std::pair<intptr_t, intptr_t> 
+		cpuinfer_interface( SFT_MOE& moe, int layer_idx, int qlen, int k, intptr_t expert_ids, intptr_t weights, intptr_t grad_output, intptr_t grad_input) {
             
             Args* args = new Args{
 				nullptr, &moe, layer_idx, qlen, k,
 				reinterpret_cast<const uint64_t*>(expert_ids),
 				reinterpret_cast<const float*>(weights),
-				reinterpret_cast<const void*>(input), 
 				reinterpret_cast<const void*>(grad_output),
 				reinterpret_cast<void*>(grad_input)
 			};

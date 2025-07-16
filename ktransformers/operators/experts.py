@@ -588,6 +588,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
             wall_t0 = time.time()
             cpu_infer.submit(
                 moe.forward(
+                    layer_idx,
                     expert_ids.size(0), 
                     expert_ids.size(1), 
                     expert_ids.data_ptr(), 
@@ -631,10 +632,10 @@ class KSFTExpertsCPU(torch.autograd.Function):
         
         # Pick back the middle results
         input_tensor, expert_ids, weights = ctx.saved_tensors
-        import random
-        layer_idx = random.randint(0, 10000)
+        # import random
+        # layer_idx = random.randint(0, 10000)
         # print(f"layer_idx:{layer_idx}")
-        # layer_idx   = ctx.layer_idx
+        layer_idx   = ctx.layer_idx
         
         # cpu_infer  = ctx.cpu_infer
         # moe        = ctx.moe
@@ -653,7 +654,6 @@ class KSFTExpertsCPU(torch.autograd.Function):
                 expert_ids.size(1),   # k
                 expert_ids.data_ptr(),
                 weights.data_ptr(),
-                input_tensor.data_ptr(), 
                 grad_output.data_ptr(),
                 grad_input.data_ptr()
             )
