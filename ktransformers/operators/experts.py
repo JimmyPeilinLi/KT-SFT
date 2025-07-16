@@ -619,8 +619,8 @@ class KSFTExpertsCPU(torch.autograd.Function):
         ctx._time_fwd  = t_fwd
         # print(f"qlen ,k:{qlen}, {k}")
         
-        # print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
-        #       f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
+        print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
+              f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
 
         return result
         
@@ -669,8 +669,8 @@ class KSFTExpertsCPU(torch.autograd.Function):
         tflops_b = flops_bw / t_bw / 1e12
         # print(f"qlen:{qlen}, k:{k}")
 
-        # print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
-            #   f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
+        print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
+              f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
         
         return grad_input.to(device=ctx.out_device), None, None, None, None, None, None
     

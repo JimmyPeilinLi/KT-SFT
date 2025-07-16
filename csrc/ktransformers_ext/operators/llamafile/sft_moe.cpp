@@ -208,7 +208,6 @@ void SFT_MOE::warm_up(Backend* backend) {
         input_fp32[i] = 0;
     }
     from_float(input_fp32.data(), input.data(), config_.hidden_size, config_.hidden_type);
-	/* ---------- 仅用于占位的 ForwardCache ---------- */
     SFT_MoEForwardCache dummy_cache; // 内容无用，只为满足接口
 	dummy_cache.init(/*k=*/1, config_.intermediate_size);
     for (int i = 0; i < config_.expert_num; i++) {
@@ -579,7 +578,7 @@ void SFT_MOE::get_transpose(Backend* backend) {
 	for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
 		// std::cout << "dst_expert_t:" << static_cast<const void*>((uint8_t*)dst_expert_t) << ", expert_idx: " << expert_idx << ", gate_expert_dst_t_stride_bytes: " << gate_expert_dst_t_stride_bytes << std::endl;
 		dump_grad_bin("layer0_E_End"+std::to_string(expert_idx)+"_gate_proj_out_trans_", (uint8_t*)gate_proj_t_ + expert_idx * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.grad_type), config_.hidden_size * config_.intermediate_size, config_.grad_type);
-		std::cout << "gate_proj_t_:" << static_cast<const void*>((uint8_t*)gate_proj_t_ + expert_idx * config_.hidden_size * config_.intermediate_size) << ", grad_type: " << config_.grad_type << std::endl;
+		// std::cout << "gate_proj_t_:" << static_cast<const void*>((uint8_t*)gate_proj_t_ + expert_idx * config_.hidden_size * config_.intermediate_size) << ", grad_type: " << config_.grad_type << std::endl;
 	}
 
     // Transpose up_proj_
@@ -590,7 +589,7 @@ void SFT_MOE::get_transpose(Backend* backend) {
     // backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
 	
 	for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-		std::cout << "expert_idx: " << expert_idx << std::endl;
+		// std::cout << "expert_idx: " << expert_idx << std::endl;
         void* src_expert = (uint8_t*)up_proj_ + expert_idx * up_expert_src_stride_bytes;
         void* dst_expert_t = (uint8_t*)up_proj_t_ + expert_idx * up_expert_dst_t_stride_bytes;
         transpose_expert_matrix(src_expert, dst_expert_t, R_up, C_up, config_.up_type, config_.grad_type, expert_idx, "up");
@@ -599,7 +598,7 @@ void SFT_MOE::get_transpose(Backend* backend) {
 		
 		// std::cout << "dst_expert_t:" << static_cast<const void*>((uint8_t*)dst_expert_t) << ", expert_idx: " << expert_idx << ", up_expert_dst_t_stride_bytes: " << up_expert_dst_t_stride_bytes << std::endl;
 		dump_grad_bin("layer0_E_End"+std::to_string(expert_idx)+"_up_proj_out_trans_", (uint8_t*)up_proj_t_ + expert_idx * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.grad_type), config_.hidden_size * config_.intermediate_size, config_.grad_type);
-		std::cout << "up_proj_t_:" << static_cast<const void*>((uint8_t*)up_proj_t_ + expert_idx * config_.hidden_size * config_.intermediate_size) << ", grad_type: " << config_.grad_type << std::endl;
+		// std::cout << "up_proj_t_:" << static_cast<const void*>((uint8_t*)up_proj_t_ + expert_idx * config_.hidden_size * config_.intermediate_size) << ", grad_type: " << config_.grad_type << std::endl;
     // }, nullptr);
 	}
 
@@ -611,7 +610,7 @@ void SFT_MOE::get_transpose(Backend* backend) {
     // backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
 	
 	for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-		std::cout << "expert_idx: " << expert_idx << std::endl;
+		// std::cout << "expert_idx: " << expert_idx << std::endl;
         void* src_expert = (uint8_t*)down_proj_ + expert_idx * down_expert_src_stride_bytes;
         void* dst_expert_t = (uint8_t*)down_proj_t_ + expert_idx * down_expert_dst_t_stride_bytes;
         transpose_expert_matrix(src_expert, dst_expert_t, R_down, C_down, config_.down_type, config_.grad_type, expert_idx, "down");
@@ -620,7 +619,7 @@ void SFT_MOE::get_transpose(Backend* backend) {
 		
 		// std::cout << "dst_expert_t:" << static_cast<const void*>((uint8_t*)dst_expert_t) << ", expert_idx: " << expert_idx << ", down_expert_dst_t_stride_bytes: " << down_expert_dst_t_stride_bytes << std::endl;
 		dump_grad_bin("layer0_E_End"+std::to_string(expert_idx)+"_down_proj_out_trans_", (uint8_t*)down_proj_t_ + expert_idx * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.grad_type), config_.hidden_size * config_.intermediate_size, config_.grad_type);
-		std::cout << "down_proj_t_:" << static_cast<const void*>((uint8_t*)down_proj_t_ + expert_idx * config_.hidden_size * config_.intermediate_size) << ", grad_type: " << config_.grad_type << std::endl;
+		// std::cout << "down_proj_t_:" << static_cast<const void*>((uint8_t*)down_proj_t_ + expert_idx * config_.hidden_size * config_.intermediate_size) << ", grad_type: " << config_.grad_type << std::endl;
     // }, nullptr);
 	}
 }
@@ -738,7 +737,7 @@ void SFT_MOE::backward_many(int qlen, int k, const uint64_t* expert_ids, const f
 		dump_grad_bin("layer0_E_333"+std::to_string(eid)+"_gate_proj_t", (uint8_t*)gate_proj_t_ + eid * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.grad_type), (size_t)config_.hidden_size * config_.intermediate_size, config_.grad_type);
 		dump_grad_bin("layer0_E_333"+std::to_string(eid)+"_down_proj_t", (uint8_t*)down_proj_t_ + eid * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.grad_type), (size_t)config_.hidden_size * config_.intermediate_size, config_.grad_type);
 	}
-	std::cout << "up_t_333_begin_address: " << static_cast<const void*>((uint8_t*)up_proj_t_) << ", end_address: " << static_cast<const void*>((uint8_t*)up_proj_t_ + (uint64_t)config_.expert_num * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.up_type)) << std::endl;
+	// std::cout << "up_t_333_begin_address: " << static_cast<const void*>((uint8_t*)up_proj_t_) << ", end_address: " << static_cast<const void*>((uint8_t*)up_proj_t_ + (uint64_t)config_.expert_num * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.up_type)) << std::endl;
 
     // get_transpose(backend);
 
@@ -858,7 +857,7 @@ void SFT_MOE::backward_many(int qlen, int k, const uint64_t* expert_ids, const f
 		dump_grad_bin("layer0_E_aft_sgemm"+std::to_string(eid)+"_up_proj", (uint8_t*)up_proj_ + eid * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.up_type), (size_t)config_.hidden_size * config_.intermediate_size, config_.up_type);
 	}
 
-	std::cout << "=============================================" << std::endl;
+	// std::cout << "=============================================" << std::endl;
     backend->do_work_stealing_job(qlen, nullptr, [&](int i) {
         for (int e = 0; e < config_.hidden_size; e++) {
             m_grad_input_fp32_[i][e] = 0;
@@ -887,12 +886,12 @@ void SFT_MOE::backward_many(int qlen, int k, const uint64_t* expert_ids, const f
 
 		dump_grad_bin("layer0_E_End"+std::to_string(eid)+"_up_proj", (uint8_t*)up_proj_ + eid * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.up_type), (size_t)config_.hidden_size * config_.intermediate_size, config_.up_type);
 
-		std::cout << "E" << eid << ", up_proj_: " << static_cast<const void*>((uint8_t*)up_proj_ + eid * config_.hidden_size * config_.intermediate_size) << std::endl;
-		std::cout << "E" << eid << ", up_proj_t: " << static_cast<const void*>((uint8_t*)up_proj_t_ + eid * config_.hidden_size * config_.intermediate_size) << std::endl;
-		std::cout << "E" << eid << ", gate_proj_: " << static_cast<const void*>((uint8_t*)gate_proj_ + eid * config_.hidden_size * config_.intermediate_size) << std::endl;
-		std::cout << "E" << eid << ", gate_proj_t: " << static_cast<const void*>((uint8_t*)gate_proj_t_ + eid * config_.hidden_size * config_.intermediate_size) << std::endl;
-		std::cout << "E" << eid << ", down_proj_: " << static_cast<const void*>((uint8_t*)down_proj_ + eid * config_.hidden_size * config_.intermediate_size) << std::endl;
-		std::cout << "E" << eid << ", down_proj_t: " << static_cast<const void*>((uint8_t*)down_proj_t_ + eid * config_.hidden_size * config_.intermediate_size) << std::endl;
+		// std::cout << "E" << eid << ", up_proj_: " << static_cast<const void*>((uint8_t*)up_proj_ + eid * config_.hidden_size * config_.intermediate_size) << std::endl;
+		// std::cout << "E" << eid << ", up_proj_t: " << static_cast<const void*>((uint8_t*)up_proj_t_ + eid * config_.hidden_size * config_.intermediate_size) << std::endl;
+		// std::cout << "E" << eid << ", gate_proj_: " << static_cast<const void*>((uint8_t*)gate_proj_ + eid * config_.hidden_size * config_.intermediate_size) << std::endl;
+		// std::cout << "E" << eid << ", gate_proj_t: " << static_cast<const void*>((uint8_t*)gate_proj_t_ + eid * config_.hidden_size * config_.intermediate_size) << std::endl;
+		// std::cout << "E" << eid << ", down_proj_: " << static_cast<const void*>((uint8_t*)down_proj_ + eid * config_.hidden_size * config_.intermediate_size) << std::endl;
+		// std::cout << "E" << eid << ", down_proj_t: " << static_cast<const void*>((uint8_t*)down_proj_t_ + eid * config_.hidden_size * config_.intermediate_size) << std::endl;
 
 
 		dump_grad_bin("layer0_E_End"+std::to_string(eid)+"_gate_proj_t", (uint8_t*)gate_proj_t_ + eid * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.grad_type), (size_t)config_.hidden_size * config_.intermediate_size, config_.grad_type);
