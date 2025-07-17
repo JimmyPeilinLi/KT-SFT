@@ -875,8 +875,10 @@ class SFT_AMX_MOEBindings {
 			int k;
 			const uint64_t* expert_ids;
 			const float* weights;
-			const void* grad_output;
-			void* grad_input;
+            const void* input;
+			const void* output_grad;
+			void* input_grad;
+            int *batch_size_tensor;
 		};
 
 		static void inner(void *args) {
@@ -887,21 +889,26 @@ class SFT_AMX_MOEBindings {
 				args_->qlen, args_->k,
 				args_->expert_ids,
 				args_->weights,
-				args_->grad_output,
-				args_->grad_input);
+                args_->input,
+				args_->output_grad,
+				args_->input_grad,
+                args_->batch_size_tensor);
 		}
 
         static std::pair<intptr_t, intptr_t> cpuinfer_interface(
             SFT_AMX_MOE<T> &moe, int qlen, int k, 
             intptr_t expert_ids, intptr_t weights,
-            intptr_t grad_output, intptr_t grad_input) {
+            intptr_t input,
+            intptr_t output_grad, intptr_t input_grad, intptr_t batch_size_tensor) {
             
             Args* args = new Args{
 				nullptr, &moe, qlen, k,
 				(const uint64_t*)expert_ids,
 				(const float*)weights,
-				(const void*)grad_output,
-				(void*)grad_input
+                (const void*)input,
+				(const void*)output_grad,
+				(void*)input_grad,
+                (int *)batch_size_tensor
 			};
             return std::make_pair(
                 (intptr_t)&inner,

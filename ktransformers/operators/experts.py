@@ -626,7 +626,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
         
     # FIXME: expert backward for python
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, output_grad):
         # print("Go into the backward!!")
         
         # Pick back the middle results
@@ -641,21 +641,22 @@ class KSFTExpertsCPU(torch.autograd.Function):
         # out_device = ctx.out_device
 
         # ready for computing gradient
-        grad_output = grad_output.contiguous().cpu()
-        grad_input = torch.empty_like(input_tensor).contiguous()
+        output_grad = output_grad.contiguous().cpu()
+        input_grad = torch.empty_like(input_tensor).contiguous()
         # print(dir(cpuinfer_ext.moe.MOE))
         # 调用C++后端
         bw_start = time.time()
         ctx.cpu_infer.submit(
             ctx.moe.backward(
                 layer_idx,
-                grad_output.size(0),  # qlen
+                output_grad.size(0),  # qlen
                 expert_ids.size(1),   # k
                 expert_ids.data_ptr(),
                 weights.data_ptr(),
                 input_tensor.data_ptr(), 
-                grad_output.data_ptr(),
-                grad_input.data_ptr()
+                output_grad.data_ptr(),
+                input_grad.data_ptr(),
+                []
             )
         )
         ctx.cpu_infer.sync()
@@ -672,7 +673,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
         print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
               f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
         
-        return grad_input.to(device=ctx.out_device), None, None, None, None, None, None
+        return input_grad.to(device=ctx.out_device), None, None, None, None, None, None
     
     def unload(self):
         return

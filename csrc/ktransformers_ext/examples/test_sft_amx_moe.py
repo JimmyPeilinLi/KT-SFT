@@ -193,9 +193,9 @@ def test_amx_moe_two_round():
         t4 = time.time()
         cpu_infer.submit(moe_cpp.backward(
             qlen, n_routed_experts,
-            expert_ids.data_ptr(), weights.data_ptr(),
+            expert_ids.data_ptr(), weights.data_ptr(), input_cpp.data_ptr(),
             grad_out_cpp.data_ptr(),
-            grad_in_cpp.data_ptr()))
+            grad_in_cpp.data_ptr(), batch_size_tensor.data_ptr()))
         cpu_infer.sync()
         t5 = time.time()
         print(f"C++      backward time {t5-t4:.4f}s | "

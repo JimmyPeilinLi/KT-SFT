@@ -41,66 +41,66 @@ void *numa_alloc_aligned(size_t size, int node, size_t alignment) {
 		std::cout << "gate_proj_t_:" << static_cast<const void*>((uint8_t*)gate_proj_t_ + expert_idx * config_.hidden_size * config_.intermediate_size) << ", grad_type: " << config_.grad_type << std::endl;
 	}
 */
-inline void dump_grad_bin(const std::string &file_name,
-                          const void       *data,
-                          size_t            elem_cnt,
-                          ggml_type         dtype,
-						  std::streamoff    offset_bytes = 0)
-{
-    std::string path = get_env_or_default("SFT_DEBUG_PATH","debug") + "/" + file_name;
-    switch (dtype) {
-        case GGML_TYPE_F32:  path += ".f32";  break;
-        case GGML_TYPE_F16:  path += ".f16";  break;
-        case GGML_TYPE_BF16: path += ".bf16"; break;
-        default:             path += ".raw";  break;
-    }
-	std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
-    if (!f.is_open()) {
-        std::ofstream tmp(path, std::ios::out | std::ios::binary);
-        tmp.close();
-        f.open(path, std::ios::in | std::ios::out | std::ios::binary);
-    }
+// inline void dump_grad_bin(const std::string &file_name,
+//                           const void       *data,
+//                           size_t            elem_cnt,
+//                           ggml_type         dtype,
+// 						  std::streamoff    offset_bytes = 0)
+// {
+//     std::string path = get_env_or_default("SFT_DEBUG_PATH","debug") + "/" + file_name;
+//     switch (dtype) {
+//         case GGML_TYPE_F32:  path += ".f32";  break;
+//         case GGML_TYPE_F16:  path += ".f16";  break;
+//         case GGML_TYPE_BF16: path += ".bf16"; break;
+//         default:             path += ".raw";  break;
+//     }
+// 	std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
+//     if (!f.is_open()) {
+//         std::ofstream tmp(path, std::ios::out | std::ios::binary);
+//         tmp.close();
+//         f.open(path, std::ios::in | std::ios::out | std::ios::binary);
+//     }
 
-    f.seekp(offset_bytes * ggml_type_size(dtype));
-	// std::cout << "seekp: " << offset_bytes * ggml_type_size(dtype) << std::endl;
+//     f.seekp(offset_bytes * ggml_type_size(dtype));
+// 	// std::cout << "seekp: " << offset_bytes * ggml_type_size(dtype) << std::endl;
 
-    f.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(elem_cnt * ggml_type_size(dtype)));
-    f.close();
-}
+//     f.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(elem_cnt * ggml_type_size(dtype)));
+//     f.close();
+// }
 
-static inline __m512 exp_avx512(__m512 x) {
-  const __m512 log2e = _mm512_set1_ps(1.44269504089f);
-  const __m512 c1 = _mm512_set1_ps(0.69314718056f);
+// static inline __m512 exp_avx512(__m512 x) {
+//   const __m512 log2e = _mm512_set1_ps(1.44269504089f);
+//   const __m512 c1 = _mm512_set1_ps(0.69314718056f);
 
-  __m512 y = _mm512_mul_ps(x, log2e);
-  __m512i int_part = _mm512_cvtps_epi32(y);
-  __m512 frac_part = _mm512_sub_ps(y, _mm512_cvtepi32_ps(int_part));
+//   __m512 y = _mm512_mul_ps(x, log2e);
+//   __m512i int_part = _mm512_cvtps_epi32(y);
+//   __m512 frac_part = _mm512_sub_ps(y, _mm512_cvtepi32_ps(int_part));
 
-  const __m512 poly_1 = _mm512_set1_ps(0.9999999995f);
-  const __m512 poly_2 = _mm512_set1_ps(0.6931471805f);
-  const __m512 poly_3 = _mm512_set1_ps(0.2402265069f);
-  const __m512 poly_4 = _mm512_set1_ps(0.0555041087f);
-  const __m512 poly_5 = _mm512_set1_ps(0.0096181291f);
-  const __m512 poly_6 = _mm512_set1_ps(0.0013333558f);
+//   const __m512 poly_1 = _mm512_set1_ps(0.9999999995f);
+//   const __m512 poly_2 = _mm512_set1_ps(0.6931471805f);
+//   const __m512 poly_3 = _mm512_set1_ps(0.2402265069f);
+//   const __m512 poly_4 = _mm512_set1_ps(0.0555041087f);
+//   const __m512 poly_5 = _mm512_set1_ps(0.0096181291f);
+//   const __m512 poly_6 = _mm512_set1_ps(0.0013333558f);
 
-  __m512 frac_exp = _mm512_fmadd_ps(
-      frac_part, poly_6,
-      _mm512_fmadd_ps(frac_part, poly_5,
-                      _mm512_fmadd_ps(frac_part, poly_4,
-                                      _mm512_fmadd_ps(frac_part, poly_3, _mm512_fmadd_ps(frac_part, poly_2, poly_1)))));
+//   __m512 frac_exp = _mm512_fmadd_ps(
+//       frac_part, poly_6,
+//       _mm512_fmadd_ps(frac_part, poly_5,
+//                       _mm512_fmadd_ps(frac_part, poly_4,
+//                                       _mm512_fmadd_ps(frac_part, poly_3, _mm512_fmadd_ps(frac_part, poly_2, poly_1)))));
 
-  __m512 two_pow_i = _mm512_scalef_ps(_mm512_set1_ps(1.0f), _mm512_cvtepi32_ps(int_part));
-  return _mm512_mul_ps(two_pow_i, frac_exp);
-}
+//   __m512 two_pow_i = _mm512_scalef_ps(_mm512_set1_ps(1.0f), _mm512_cvtepi32_ps(int_part));
+//   return _mm512_mul_ps(two_pow_i, frac_exp);
+// }
 
-static inline __m512 act_fn(__m512 gate_val, __m512 up_val) {
-  __m512 neg_gate_val = _mm512_sub_ps(_mm512_setzero_ps(), gate_val);
-  __m512 exp_neg_gate = exp_avx512(neg_gate_val);
-  __m512 denom = _mm512_add_ps(_mm512_set1_ps(1.0f), exp_neg_gate);
-  __m512 act_val = _mm512_div_ps(gate_val, denom);
+// static inline __m512 act_fn(__m512 gate_val, __m512 up_val) {
+//   __m512 neg_gate_val = _mm512_sub_ps(_mm512_setzero_ps(), gate_val);
+//   __m512 exp_neg_gate = exp_avx512(neg_gate_val);
+//   __m512 denom = _mm512_add_ps(_mm512_set1_ps(1.0f), exp_neg_gate);
+//   __m512 act_val = _mm512_div_ps(gate_val, denom);
 
-  return _mm512_mul_ps(act_val, up_val);
-}
+//   return _mm512_mul_ps(act_val, up_val);
+// }
 
 static inline __m512 sigmoid(__m512 x) {
   __m512 neg = _mm512_sub_ps(_mm512_setzero_ps(), x);
@@ -214,7 +214,7 @@ private:
   std::vector<int *> m_local_expert_positions_ptr_;             // [expert_num]
 
 public:
-  SFT_AMX_MOE(AMX_MOEConfig config) {
+  SFT_AMX_MOE(SFT_AMX_MOEConfig config) {
     config_ = config;
     gate_proj_ = config_.gate_proj;
     up_proj_ = config_.up_proj;
@@ -391,7 +391,27 @@ public:
 
   ~SFT_AMX_MOE() { shared_mem_buffer.dealloc(this); }
 
+  void transpose_expert(const void* src, void* dst, int R, int C, Backend* backend) {
+    backend->do_work_stealing_job(
+        config_.expert_num, nullptr,
+        [&](uint64_t expert_idx) {
+          for (int r = 0; r < R; ++r) {
+            for (int c = 0; c < C; ++c) {
+                memcpy(
+                    (uint8_t*)dst + (expert_idx * R * C + (c * R + r)) * sizeof(ggml_bf16_t),
+                    (uint8_t*)src + (expert_idx * R * C + (r * C + c)) * sizeof(ggml_bf16_t),
+                    sizeof(ggml_bf16_t));
+            }
+          }
+        },
+        nullptr);
+  }
+  
   void load_weights(Backend *backend) {
+    transpose_expert(config_.gate_proj, gate_proj_t_, config_.hidden_size, config_.intermediate_size, backend);
+    transpose_expert(config_.up_proj, up_proj_t_, config_.hidden_size, config_.intermediate_size, backend);
+    transpose_expert(config_.down_proj, down_proj_t_, config_.intermediate_size, config_.hidden_size, backend);
+
     int nth = T::recommended_nth(config_.intermediate_size);
     backend->do_work_stealing_job(
         nth * config_.expert_num, nullptr,
@@ -415,6 +435,9 @@ public:
           up_bb_[expert_idx]->from_mat(
               (ggml_bf16_t *)config_.up_proj + expert_idx * config_.intermediate_size * config_.hidden_size, ith, nth);
 #endif
+          down_t_bb_[expert_idx]->from_mat((ggml_bf16_t *)down_proj_t_ +
+                                             expert_idx * config_.intermediate_size * config_.hidden_size,
+                                         ith, nth);
         },
         nullptr);
     nth = T::recommended_nth(config_.hidden_size);
@@ -435,10 +458,14 @@ public:
                                              expert_idx * config_.hidden_size * config_.intermediate_size,
                                          ith, nth);
 #endif
+          up_t_bb_[expert_idx]->from_mat((ggml_bf16_t *)up_proj_t_ +
+                                             expert_idx * config_.hidden_size * config_.intermediate_size,
+                                         ith, nth);
+          gate_t_bb_[expert_idx]->from_mat((ggml_bf16_t *)gate_proj_t_ +
+                                             expert_idx * config_.hidden_size * config_.intermediate_size,
+                                         ith, nth);
         },
         nullptr);
-
-    // FIXME: load transpose weights
   }
 
   void warm_up(Backend *backend) {}
@@ -567,7 +594,7 @@ public:
         nullptr);
   }
 
-  void backward(int qlen, int k, const uint64_t *expert_ids, const float *weights, void* input, const void *output_grad, void *input_grad,
+  void backward(int qlen, int k, const uint64_t *expert_ids, const float *weights, const void* input, const void *output_grad, void *input_grad,
                int *batch_size_tensor, Backend *backend) {
     qlen = batch_size_tensor[0];
     bool use_amx = (qlen > 4 * config_.expert_num / config_.routed_expert_num);
