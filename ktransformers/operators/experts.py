@@ -489,6 +489,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
                 64,
                 10,
                 1024,
+                self.config.num_hidden_layers,
                 gate_ptr,
                 up_ptr,
                 down_ptr,

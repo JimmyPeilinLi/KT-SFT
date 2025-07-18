@@ -98,7 +98,7 @@ up_proj = torch.randn(E, I, H, dtype=dtype_fwd).contiguous()
 down_proj = torch.randn(E, H, I, dtype=dtype_fwd).contiguous()
 
 cfg = cpuinfer_ext.sft_moe.SFT_MOEConfig(
-    E, k, H, I, stride, gmin, gmax,
+    E, k, H, I, stride, gmin, gmax, 2,
     gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr(),
     GGML_F16, GGML_F16, GGML_F16, GGML_F16
 )
@@ -117,7 +117,7 @@ grad_out   = torch.randn(qlen, H, dtype=dtype_grad).contiguous()
 out_cpp = torch.empty_like(input_cpp)
 CPUInfer.submit(
     moe_cpp.forward(
-        qlen, k,
+        LAYER_IDX, qlen, k,
         expert_ids.data_ptr(), weights.data_ptr(),
         input_cpp.data_ptr(), out_cpp.data_ptr()
     )
@@ -131,7 +131,6 @@ CPUInfer.submit(
         LAYER_IDX,
         qlen, k,
         expert_ids.data_ptr(), weights.data_ptr(),
-        input_cpp.data_ptr(),
         grad_out.data_ptr(),
         grad_in_cpp.data_ptr()
     )

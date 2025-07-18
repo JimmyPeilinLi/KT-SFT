@@ -38,6 +38,7 @@ struct SFT_MOEConfig {
     int stride;
     int group_min_len;
     int group_max_len;
+	int layer_max_num;
     void* gate_proj;
     void* up_proj;
     void* down_proj;
@@ -49,8 +50,8 @@ struct SFT_MOEConfig {
 
     SFT_MOEConfig() {}
 
-    SFT_MOEConfig(int expert_num, int routed_expert_num, int hidden_size, int intermediate_size, int stride, int group_min_len, int group_max_len, void* gate_proj, void* up_proj, void* down_proj, ggml_type gate_type, ggml_type up_type, ggml_type down_type, ggml_type hidden_type)
-        : expert_num(expert_num), routed_expert_num(routed_expert_num), hidden_size(hidden_size), intermediate_size(intermediate_size), stride(stride), group_min_len(group_min_len), group_max_len(group_max_len), gate_proj(gate_proj), up_proj(up_proj), down_proj(down_proj), gate_type(gate_type), up_type(up_type), down_type(down_type), hidden_type(hidden_type) {}
+    SFT_MOEConfig(int expert_num, int routed_expert_num, int hidden_size, int intermediate_size, int stride, int group_min_len, int group_max_len, int layer_max_num, void* gate_proj, void* up_proj, void* down_proj, ggml_type gate_type, ggml_type up_type, ggml_type down_type, ggml_type hidden_type)
+        : expert_num(expert_num), routed_expert_num(routed_expert_num), hidden_size(hidden_size), intermediate_size(intermediate_size), stride(stride), group_min_len(group_min_len), group_max_len(group_max_len), layer_max_num(layer_max_num), gate_proj(gate_proj), up_proj(up_proj), down_proj(down_proj), gate_type(gate_type), up_type(up_type), down_type(down_type), hidden_type(hidden_type) {}
 };
 
 class SFT_MOE {
@@ -155,6 +156,13 @@ class SFT_MOE {
     std::vector<int*> m_local_expert_positions_ptr_;         // [expert_num]
 
 	std::vector<SFT_MoEForwardCache> fw_cache_; // 持久缓存，便于backward读取到forward_cache
+
+	float* m_local_fw_cache_gate_u_;						// [routed_expert_num * intermediate_size * sizeof(float) * group_max_len * layer_max_num]
+	float* m_local_fw_cache_up_v_;							// [routed_expert_num * intermediate_size * sizeof(float)]
+	std::vector<float*> m_local_fw_cache_gate_u_token_ptr_; // [group_max_len]
+	std::vector<float*> m_local_fw_cache_up_v_token_ptr_; // [group_max_len]
+	// std::vector<std::vector<float*> > m_local_fw_cache_gate_u_layer_pptr_; // [layer_max_num]
+	// std::vector<std::vector<float*> > m_local_fw_cache_up_v_layer_pptr_; // [layer_max_num]
 };
 
 #endif

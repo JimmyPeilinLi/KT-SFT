@@ -152,6 +152,8 @@ SFT_MOE::SFT_MOE(SFT_MOEConfig config) {
     m_mem_requests.push_back({(void**)&m_local_up_input_grad_, sizeof(float) * config_.routed_expert_num * config_.group_max_len * config_.hidden_size});
     m_mem_requests.push_back({(void**)&m_local_token_indices_, sizeof(int) * config_.routed_expert_num * config_.group_max_len});
     m_mem_requests.push_back({(void**)&m_local_expert_positions_, sizeof(int) * config_.routed_expert_num * config_.group_max_len});
+    m_mem_requests.push_back({(void**)&m_local_fw_cache_gate_u_, sizeof(float) * config_.routed_expert_num * config_.intermediate_size});
+    m_mem_requests.push_back({(void**)&m_local_fw_cache_up_v_, sizeof(float) * config_.routed_expert_num * config_.intermediate_size});
     m_grad_input_fp32_.resize(config_.group_max_len);
     for (int i = 0; i < config_.group_max_len; i++) {
         m_mem_requests.push_back({(void**)&m_grad_input_fp32_[i], sizeof(float) * config_.hidden_size});
@@ -185,6 +187,10 @@ SFT_MOE::SFT_MOE(SFT_MOEConfig config) {
     // fwd_cache访问映射指针数组初始化
     m_local_token_indices_ptr_.resize(config_.expert_num);
     m_local_expert_positions_ptr_.resize(config_.expert_num);
+
+	// fwd_cache重构指针
+    m_local_fw_cache_gate_u_token_ptr_.resize(config_.expert_num);
+    m_local_fw_cache_up_v_token_ptr_.resize(config_.expert_num);
 }
 
 SFT_MOE::~SFT_MOE() {
@@ -228,12 +234,6 @@ static float act_fn_grad(float x) {
 
 void SFT_MOE::ensure_fwd_cache(int qlen, int k)
 {
-	// if ((int)fw_cache_.size() < qlen)
-	// 	fw_cache_.resize(qlen);
-	// /* 只在扩容的那部分做 init，防止重复开辟 */
-	// for (int i = 0; i < qlen; ++i)
-	// 	fw_cache_[i].init(k, config_.intermediate_size);
-
 	int old_sz = fw_cache_.size();
     if (old_sz < qlen)
     {
@@ -241,14 +241,6 @@ void SFT_MOE::ensure_fwd_cache(int qlen, int k)
         for (int i = old_sz; i < qlen; ++i)  // 仅初始化新增元素
             fw_cache_[i].init(k, config_.intermediate_size);
     }
-
-	
-    // if ((int)fw_cache_.size() < qlen)
-    //     fw_cache_.resize(qlen);
-
-    // for (int i = 0; i < qlen; ++i)                          // 每轮都 init
-    //     fw_cache_[i].init(k, config_.intermediate_size);    // 但 无重 alloc
-
 }
 
 SFT_MoEForwardCache* SFT_MOE::fwd_cache_ptr()
@@ -517,6 +509,8 @@ void SFT_MOE::forward(int layer_idx, int qlen, int k, const uint64_t* expert_ids
 	// }
 
 	std::cout << "[forward] layer_idx: " << layer_idx << std::endl;
+	std::cout << "config_.routed_expert_num: " << config_.routed_expert_num << std::endl;
+	std::cout << "config_.expert_num: " << config_.expert_num << std::endl;
 
     if (qlen < config_.group_min_len) {
         for (int i = 0; i < qlen; i++) {

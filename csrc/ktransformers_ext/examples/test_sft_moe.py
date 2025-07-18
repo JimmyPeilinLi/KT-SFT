@@ -107,7 +107,7 @@ def test_forward():
             gate_proj = torch.randn((expert_num, intermediate_size, hidden_size), dtype=dtype, device = "cuda").to("cpu").contiguous()
             up_proj = torch.randn((expert_num, intermediate_size, hidden_size), dtype=dtype, device = "cuda").to("cpu").contiguous()
             down_proj = torch.randn((expert_num, hidden_size, intermediate_size), dtype=dtype, device = "cuda").to("cpu").contiguous()
-            config = cpuinfer_ext.sft_moe.SFT_MOEConfig(expert_num, n_routed_experts, hidden_size, intermediate_size, stride, group_min_len, group_max_len, gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr(), gate_type, up_type, down_type, hidden_type, 0)
+            config = cpuinfer_ext.sft_moe.SFT_MOEConfig(expert_num, n_routed_experts, hidden_size, intermediate_size, stride, group_min_len, group_max_len, 2, gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr(), gate_type, up_type, down_type, hidden_type, 0)
             moe = cpuinfer_ext.sft_moe.SFT_MOE(config)
             gate_projs.append(gate_proj)
             up_projs.append(up_proj)
@@ -156,7 +156,7 @@ def test_backward():
     down_proj = torch.randn((expert_num, hidden_size, intermediate_size), dtype=dtype, requires_grad=True).contiguous()
     # 创建MOE实例
     config = cpuinfer_ext.sft_moe.SFT_MOEConfig(expert_num, n_routed_experts, hidden_size, intermediate_size, 
-                                       stride, group_min_len, group_max_len, 
+                                       stride, group_min_len, group_max_len, 2, 
                                        gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr(), 
                                        gate_type, up_type, down_type, hidden_type)  # 使用float16类型(0=GGML_TYPE_F16)
     moe = cpuinfer_ext.sft_moe.SFT_MOE(config)
@@ -299,7 +299,7 @@ def test_backward_2round_with_tflops():
 
     config = cpuinfer_ext.sft_moe.SFT_MOEConfig(
         expert_num, n_routed_experts, hidden_size, intermediate_size,
-        stride, group_min_len, group_max_len,
+        stride, group_min_len, group_max_len, 2,
         gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr(),
         gate_type, up_type, down_type, hidden_type
     )
@@ -499,7 +499,7 @@ def test_backward_10round_5layer():
         cfg = cpuinfer_ext.sft_moe.SFT_MOEConfig(
             expert_num, n_routed_experts,
             hidden_size, intermediate_size,
-            stride, group_min_len, group_max_len,
+            stride, group_min_len, group_max_len, 7,
             gp.data_ptr(), up.data_ptr(), dp.data_ptr(),
             gate_type, up_type, down_type, hidden_type
         )
@@ -625,7 +625,7 @@ def test_backward_one_vs_many_comparison():
     # )
     config_many = cpuinfer_ext.sft_moe.SFT_MOEConfig(
         expert_num, n_routed_experts, hidden_size, intermediate_size,
-        stride, group_min_len, group_max_len,  # 正常配置使用backward_many
+        stride, group_min_len, group_max_len,  7,
         gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr(),
         gate_type, up_type, down_type, hidden_type
     )
