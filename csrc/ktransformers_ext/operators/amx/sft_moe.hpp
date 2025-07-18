@@ -615,6 +615,10 @@ public:
     }
     uint64_t offset = 0;
     for (int i = 0; i < config_.expert_num; i++) {
+      m_local_input_ptr_[i] = m_local_input_ + offset * config_.hidden_size;
+      m_local_gate_output_ptr_[i] = m_local_gate_output_ + offset * config_.intermediate_size;
+      m_local_up_output_ptr_[i] = m_local_up_output_ + offset * config_.intermediate_size;
+
       m_local_down_output_grad_ptr_[i] = m_local_down_output_grad_ + offset * config_.hidden_size;
       m_local_down_input_grad_ptr_[i] = m_local_down_input_grad_ + offset * config_.intermediate_size;
       m_local_gate_output_grad_ptr_[i] = m_local_gate_output_grad_ + offset * config_.intermediate_size;
@@ -627,18 +631,21 @@ public:
     }
 
     // TODO: cache
-    backend->do_work_stealing_job(qlen, nullptr, [&](int i) {
-      for (int j = 0; j < k; j++) {
-        uint64_t expert_id = expert_ids[i * k + j];
-        int local_row = m_local_pos_[i][j];
-        memcpy(m_local_input_ptr_[expert_id] + local_row * config_.hidden_size,
-          (ggml_bf16_t *)input + i * config_.hidden_size, sizeof(ggml_bf16_t) * config_.hidden_size); // TODO: cache
-        memcpy(m_local_down_output_grad_ptr_[expert_id] + local_row * config_.hidden_size,
-          (ggml_bf16_t *)output_grad + i * config_.hidden_size, sizeof(ggml_bf16_t) * config_.hidden_size);
-        m_local_token_indices_ptr_[expert_id][local_row] = i;
-        m_local_expert_positions_ptr_[expert_id][local_row] = j;
-      }
-    }, nullptr);
+    backend->do_work_stealing_job(
+        qlen, nullptr, 
+        [&](int i) {
+          for (int j = 0; j < k; j++) {
+            uint64_t expert_id = expert_ids[i * k + j];
+            int local_row = m_local_pos_[i][j];
+            memcpy(m_local_input_ptr_[expert_id] + local_row * config_.hidden_size,
+              (ggml_bf16_t *)input + i * config_.hidden_size, sizeof(ggml_bf16_t) * config_.hidden_size); // TODO: cache
+            memcpy(m_local_down_output_grad_ptr_[expert_id] + local_row * config_.hidden_size,
+              (ggml_bf16_t *)output_grad + i * config_.hidden_size, sizeof(ggml_bf16_t) * config_.hidden_size);
+            m_local_token_indices_ptr_[expert_id][local_row] = i;
+            m_local_expert_positions_ptr_[expert_id][local_row] = j;
+          }
+        }, 
+        nullptr);
 
     backend->do_work_stealing_job(
         activated_expert, nullptr,
@@ -649,30 +656,25 @@ public:
         },
         nullptr);
 
-    // TODO: cache
-    int nth = T::recommended_nth(config_.intermediate_size);
+    int nth = T::recommended_nth(config_.intermediate_size);  
     backend->do_work_stealing_job(
         nth * activated_expert, [&](int _) { T::config(); },
         [&](int task_id) {
           int expert_idx = m_expert_id_map_[task_id / nth];
           int ith = task_id % nth;
+
+          // TODO: cache
           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
                       gate_up_ba_[expert_idx], gate_bb_[expert_idx], gate_bc_[expert_idx], ith, nth, use_amx);
           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
                       gate_up_ba_[expert_idx], up_bb_[expert_idx], up_bc_[expert_idx], ith, nth, use_amx);
           gate_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_gate_output_ptr_[expert_idx], ith, nth);
           up_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_up_output_ptr_[expert_idx], ith, nth);
-        },
-        nullptr);
-    
-    backend->do_work_stealing_job(
-        nth * activated_expert, [&](int _) { T::config(); },
-        [&](int task_id) {
-          int expert_idx = m_expert_id_map_[task_id / nth];
-          int ith = task_id % nth;
+
           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
                       down_t_ba_[expert_idx], down_t_bb_[expert_idx], down_t_bc_[expert_idx], ith, nth, use_amx);
           down_t_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_down_input_grad_ptr_[expert_idx], ith, nth);
+
           auto [n_start, n_end] = T::split_range_n(config_.intermediate_size, ith, nth);
           for (int i = 0; i < m_local_num_[expert_idx]; i++) {
             ggml_bf16_t *gate_output_ptr = &m_local_gate_output_ptr_[expert_idx][i * config_.intermediate_size];
@@ -683,7 +685,7 @@ public:
             
             int token_idx = m_local_token_indices_ptr_[expert_idx][i];
             int expert_pos = m_local_expert_positions_ptr_[expert_idx][i];
-            float weight = weights[token_idx * k + expert_pos];
+            __m512 weight = _mm512_set1_ps(weights[token_idx * k + expert_pos]);
             
             for (int j = n_start; j < n_end; j += 32) {
               __m512 gate_val0, gate_val1, up_val0, up_val1, down_input_grad0, down_input_grad1;
@@ -691,9 +693,8 @@ public:
               avx512_32xbf16_to_32xfp32((__m512i *)(up_output_ptr + j), &up_val0, &up_val1);
               avx512_32xbf16_to_32xfp32((__m512i *)(down_input_grad_ptr + j), &down_input_grad0, &down_input_grad1);
               
-              __m512 weight_vec = _mm512_set1_ps(weight);
-              down_input_grad0 = _mm512_mul_ps(down_input_grad0, weight_vec);
-              down_input_grad1 = _mm512_mul_ps(down_input_grad1, weight_vec);
+              down_input_grad0 = _mm512_mul_ps(down_input_grad0, weight);
+              down_input_grad1 = _mm512_mul_ps(down_input_grad1, weight);
               
               // gate_output_grad = δ_zji ⊙ v_ji ⊙ σ'(u_ji)
               __m512 gate_grad0 = _mm512_mul_ps(down_input_grad0, 
