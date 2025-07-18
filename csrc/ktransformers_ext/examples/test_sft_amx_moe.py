@@ -112,7 +112,7 @@ def test_amx_moe_two_round():
         group_max_len,          # max_len
         gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr()
     )
-    moe_cpp = cpuinfer_ext.sft_moe.SFT_AMXInt8_MOE(cfg)
+    moe_cpp = cpuinfer_ext.sft_moe.SFT_AMXBF16_MOE(cfg)
     
     cpu_infer = cpuinfer_ext.CPUInfer(num_threads)
 
