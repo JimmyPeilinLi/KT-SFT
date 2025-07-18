@@ -28,7 +28,6 @@
 #include "llama.cpp/ggml-quants.h"
 #include "llama.cpp/ggml.h"
 #include "llamafile/sgemm.h"
-#include "sft_moe_forward_cache.h"
 
 struct SFT_MOEConfig {
     long expert_num;
@@ -59,17 +58,16 @@ class SFT_MOE {
     SFT_MOE(SFT_MOEConfig);
     ~SFT_MOE();
     void warm_up(Backend* backend);
-    void forward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, SFT_MoEForwardCache* fwd_cache);
-    void forward_many(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, SFT_MoEForwardCache* fwd_cache);
-    void forward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend, SFT_MoEForwardCache* fwd_cache);
-	void backward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const SFT_MoEForwardCache* fwd_cache);
-	void backward_many(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend, const SFT_MoEForwardCache* fwd_cache);
-	void backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* grad_output, void* grad_input, Backend* backend, const SFT_MoEForwardCache* fwd_cache); // FIXME: expert backward definition for C++
+    void forward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
+    void forward_many(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
+    void forward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
+	void backward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend);
+	void backward_many(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend);
+	void backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* grad_output, void* grad_input, Backend* backend); // FIXME: expert backward definition for C++
     
     void transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx, std::string name);
     void ensure_fwd_cache(int qlen, int k);
     void get_transpose(Backend* backend);
-    SFT_MoEForwardCache* fwd_cache_ptr();
 
    private:
     SFT_MOEConfig config_;
@@ -155,14 +153,12 @@ class SFT_MOE {
     std::vector<int*> m_local_token_indices_ptr_;            // [expert_num]
     std::vector<int*> m_local_expert_positions_ptr_;         // [expert_num]
 
-	std::vector<SFT_MoEForwardCache> fw_cache_; // 持久缓存，便于backward读取到forward_cache
-
-	float* m_local_fw_cache_gate_u_;						// [routed_expert_num * intermediate_size * sizeof(float) * group_max_len * layer_max_num]
-	float* m_local_fw_cache_up_v_;							// [routed_expert_num * intermediate_size * sizeof(float)]
-	std::vector<float*> m_local_fw_cache_gate_u_token_ptr_; // [group_max_len]
-	std::vector<float*> m_local_fw_cache_up_v_token_ptr_; // [group_max_len]
-	// std::vector<std::vector<float*> > m_local_fw_cache_gate_u_layer_pptr_; // [layer_max_num]
-	// std::vector<std::vector<float*> > m_local_fw_cache_up_v_layer_pptr_; // [layer_max_num]
+	float* m_local_fw_cache_gate_u_;						// [layer_max_num * group_max_len * routed_expert_num * intermediate_size * sizeof(float)]
+	float* m_local_fw_cache_up_v_;							// [layer_max_num * group_max_len * routed_expert_num * intermediate_size * sizeof(float)]
+	// m_fw_cache_gate_u_layer_ptr_[l][t] -> float*, 其后面依次是 K*I 个 float
+	// 访问第 e 个 expert 第 j 个元素时：ptr[e * I + j]
+	std::vector<std::vector<float*>> m_local_fw_cache_gate_u_layer_ptr_;
+	std::vector<std::vector<float*>> m_local_fw_cache_up_v_layer_ptr_;
 };
 
 #endif

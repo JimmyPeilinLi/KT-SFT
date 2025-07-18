@@ -663,8 +663,8 @@ for eid in range(E):
     
     # check_gemm(eid=eid, r=r, H=H, I=I)
     
-    dump_mat(eid, "up_proj_t", (H, I), "E_333")
-    dump_mat(eid, "up_proj_t", (H, I), "E_444")
+    # dump_mat(eid, "up_proj_t", (H, I), "E_333")
+    # dump_mat(eid, "up_proj_t", (H, I), "E_444")
     
     # check_transpose_diff(eid, "up_proj",   (I, H), (H, I))
     # check_transpose_diff(eid, "gate_proj", (I, H), (H, I))

@@ -580,11 +580,9 @@ namespace {
 			void*            output,
 			Backend*         backend)
 	{
-		self.ensure_fwd_cache(qlen, k);
 		self.forward(layer_idx, qlen, k, expert_ids, weights,
 					input, output,
-					backend,
-					self.fwd_cache_ptr());
+					backend);
 	}
 
 	inline void sft_moe_backward_wrapper(
@@ -599,8 +597,7 @@ namespace {
 	{
 		self.backward(layer_idx, qlen, k, expert_ids, weights,
 					grad_output, grad_input,
-					backend,
-					self.fwd_cache_ptr());
+					backend);
 	}
 }
 
