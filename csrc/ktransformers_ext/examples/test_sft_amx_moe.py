@@ -60,7 +60,7 @@ def mlp_torch(x, gate, up, down, req_grad=False):
     g = torch.mm(x, gate.t())
     u = torch.mm(x, up.t())
     if req_grad:
-        inter = silu(g) * u
+        inter = silu_fwd(g) * u
     else:
         inter = silu_fwd(g) * u
     return torch.mm(inter, down.t())
@@ -98,7 +98,7 @@ def moe_torch(x, eid, w, gate, up, down, req_grad=False):
 
 def moe_backward_python(x, eid, w, gate, up, down, grad_output, gate_u_cache, up_v_cache):
     """
-    Python模拟C++的MoE backward计算
+    Python模拟C++的MoE backward计算 - 完全仿照sft_moe.hpp的实现
     参数:
         x: 输入 [T, hidden_size]
         eid: expert_ids [T, k]
@@ -110,42 +110,165 @@ def moe_backward_python(x, eid, w, gate, up, down, grad_output, gate_u_cache, up
         grad_input: 输入梯度 [T, hidden_size]
     """
     T, k = eid.shape
+    expert_num = gate.shape[0]
+    hidden_size = gate.shape[2]
+    intermediate_size = gate.shape[1]
+    
+    print("\n========== Python Backward详细对拍 ==========")
+    print(f"输入形状: T={T}, k={k}, hidden_size={hidden_size}, intermediate_size={intermediate_size}")
+    print(f"\n--- Python Token 0 ---")
+    print(f"  Expert 0: weight={w[0, 0].item():.6f}")
+    
+    # 初始化梯度
     grad_input = torch.zeros_like(x, dtype=torch.float32)
     
-    # 对每个token进行处理
+    # 按C++的方式组织数据：按expert分组
+    # 1. 统计每个expert处理的token数量
+    expert_token_counts = torch.zeros(expert_num, dtype=torch.int64)
+    for i in range(T):
+        for j in range(k):
+            expert_token_counts[eid[i, j]] += 1
+    
+    # 2. 构建expert到token的映射
+    expert_token_indices = [[] for _ in range(expert_num)]
+    expert_token_positions = [[] for _ in range(expert_num)]
+    
+    for i in range(T):
+        for j in range(k):
+            expert_id = int(eid[i, j].item())
+            expert_token_indices[expert_id].append(i)
+            expert_token_positions[expert_id].append(j)
+    
+    # 3. 为每个expert分配本地存储空间
+    max_tokens_per_expert = int(expert_token_counts.max().item()) if expert_token_counts.max() > 0 else 0
+    
+    # 本地存储空间（模拟C++中的m_local_*_ptr_）
+    local_input = torch.zeros(expert_num, max_tokens_per_expert, hidden_size, dtype=torch.float32)
+    local_gate_output = torch.zeros(expert_num, max_tokens_per_expert, intermediate_size, dtype=torch.float32)
+    local_up_output = torch.zeros(expert_num, max_tokens_per_expert, intermediate_size, dtype=torch.float32)
+    local_down_output_grad = torch.zeros(expert_num, max_tokens_per_expert, hidden_size, dtype=torch.float32)
+    local_down_input_grad = torch.zeros(expert_num, max_tokens_per_expert, intermediate_size, dtype=torch.float32)
+    local_gate_output_grad = torch.zeros(expert_num, max_tokens_per_expert, intermediate_size, dtype=torch.float32)
+    local_up_output_grad = torch.zeros(expert_num, max_tokens_per_expert, intermediate_size, dtype=torch.float32)
+    local_gate_input_grad = torch.zeros(expert_num, max_tokens_per_expert, hidden_size, dtype=torch.float32)
+    local_up_input_grad = torch.zeros(expert_num, max_tokens_per_expert, hidden_size, dtype=torch.float32)
+    
+    # 4. 复制输入数据和梯度到本地存储
+    for expert_id in range(expert_num):
+        for local_idx, (token_idx, expert_pos) in enumerate(zip(expert_token_indices[expert_id], expert_token_positions[expert_id])):
+            local_input[expert_id, local_idx] = x[token_idx].to(torch.float32)
+            local_down_output_grad[expert_id, local_idx] = grad_output[token_idx].to(torch.float32)
+    
+    # 5. 重新计算forward的中间结果（模拟C++中的forward计算）
+    for expert_id in range(expert_num):
+        num_tokens = expert_token_counts[expert_id]
+        if num_tokens == 0:
+            continue
+            
+        # 计算gate和up的输出
+        local_input_expert = local_input[expert_id, :num_tokens]  # [num_tokens, hidden_size]
+        gate_output = torch.mm(local_input_expert, gate[expert_id].to(torch.float32).t())  # [num_tokens, intermediate_size]
+        up_output = torch.mm(local_input_expert, up[expert_id].to(torch.float32).t())      # [num_tokens, intermediate_size]
+        
+        # 应用激活函数
+        gate_output_activated = silu_fwd(gate_output) * up_output
+        
+        local_gate_output[expert_id, :num_tokens] = gate_output
+        local_up_output[expert_id, :num_tokens] = up_output
+    
+    # 6. 计算down_input_grad（模拟C++中的down_t_bc_计算）
+    for expert_id in range(expert_num):
+        num_tokens = expert_token_counts[expert_id]
+        if num_tokens == 0:
+            continue
+            
+        # down_input_grad = down_proj_t @ output_grad
+        down_input_grad = torch.mm(local_down_output_grad[expert_id, :num_tokens], 
+                                  down[expert_id].to(torch.float32))  # [num_tokens, intermediate_size]
+        local_down_input_grad[expert_id, :num_tokens] = down_input_grad
+    
+    # 7. 计算gate_output_grad和up_output_grad（模拟C++中的核心计算）
+    for expert_id in range(expert_num):
+        num_tokens = expert_token_counts[expert_id]
+        if num_tokens == 0:
+            continue
+            
+        for local_idx in range(num_tokens):
+            token_idx = expert_token_indices[expert_id][local_idx]
+            expert_pos = expert_token_positions[expert_id][local_idx]
+            weight = w[token_idx, expert_pos].item()
+            
+            # 只为第一个token的第一个expert输出调试信息
+            should_print = (token_idx == 0 and expert_pos == 0)
+            
+            # 获取当前token的中间结果
+            gate_u = local_gate_output[expert_id, local_idx]  # [intermediate_size]
+            up_v = local_up_output[expert_id, local_idx]      # [intermediate_size]
+            down_input_grad_token = local_down_input_grad[expert_id, local_idx]  # [intermediate_size]
+            
+            # 应用weight
+            down_input_grad_token = down_input_grad_token * weight
+            
+            if should_print:
+                print(f"    down_input_grad前5个值: {down_input_grad_token[:5].tolist()}")
+            
+            # gate_output_grad = down_input_grad * up_v * silu_grad(gate_u)
+            gate_output_grad = down_input_grad_token * up_v * silu_grad(gate_u)
+            
+            # up_output_grad = down_input_grad * silu_fwd(gate_u)
+            up_output_grad = down_input_grad_token * silu_fwd(gate_u)
+            
+            if should_print:
+                print(f"    gate_output_grad前5个值: {gate_output_grad[:5].tolist()}")
+                print(f"    up_output_grad前5个值: {up_output_grad[:5].tolist()}")
+            
+            local_gate_output_grad[expert_id, local_idx] = gate_output_grad
+            local_up_output_grad[expert_id, local_idx] = up_output_grad
+    
+    # 8. 计算gate_input_grad和up_input_grad（模拟C++中的矩阵乘法）
+    for expert_id in range(expert_num):
+        num_tokens = expert_token_counts[expert_id]
+        if num_tokens == 0:
+            continue
+            
+        # gate_input_grad = gate_proj_t @ gate_output_grad
+        gate_input_grad = torch.mm(local_gate_output_grad[expert_id, :num_tokens], 
+                                  gate[expert_id].to(torch.float32))  # [num_tokens, hidden_size]
+        
+        # up_input_grad = up_proj_t @ up_output_grad
+        up_input_grad = torch.mm(local_up_output_grad[expert_id, :num_tokens], 
+                                up[expert_id].to(torch.float32))  # [num_tokens, hidden_size]
+        
+        local_gate_input_grad[expert_id, :num_tokens] = gate_input_grad
+        local_up_input_grad[expert_id, :num_tokens] = up_input_grad
+        
+        # 输出第一个token的调试信息
+        if expert_id == 0 and num_tokens > 0:
+            token_idx = expert_token_indices[expert_id][0]
+            expert_pos = expert_token_positions[expert_id][0]
+            if token_idx == 0 and expert_pos == 0:
+                print(f"    gate_input_grad前5个值: {gate_input_grad[0, :5].tolist()}")
+                print(f"    up_input_grad前5个值: {up_input_grad[0, :5].tolist()}")
+    
+    # 9. 累加所有expert的梯度到最终输出（模拟C++中的最终累加）
     for token_idx in range(T):
-        token_grad_input = torch.zeros(hidden_size, dtype=torch.float32)
+        token_grad = torch.zeros(hidden_size, dtype=torch.float32)
         
         for expert_pos in range(k):
             expert_id = int(eid[token_idx, expert_pos].item())
-            weight = w[token_idx, expert_pos].item()
             
-            # 从cache中获取forward时的中间结果
-            gate_u = gate_u_cache[token_idx][expert_pos]  # [intermediate_size]
-            up_v = up_v_cache[token_idx][expert_pos]      # [intermediate_size]
+            # 找到这个token在expert_id中的本地索引
+            local_idx = expert_token_indices[expert_id].index(token_idx)
             
-            # 1. 计算down_input_grad (对应C++中的down_input_grad)
-            # down_input_grad = down_proj_t @ output_grad * weight
-            down_input_grad = torch.mm(down[expert_id].to(torch.float32).t(), grad_output[token_idx:token_idx+1].t()).squeeze() * weight
-            
-            # 2. 计算gate_output_grad和up_output_grad
-            # gate_output_grad = down_input_grad * up_v * act_fn_grad(gate_u)
-            gate_output_grad = down_input_grad * up_v * silu_grad(gate_u)
-            
-            # up_output_grad = down_input_grad * act_fn(gate_u)
-            up_output_grad = down_input_grad * silu_fwd(gate_u)
-            
-            # 3. 计算gate_input_grad和up_input_grad
-            # gate_input_grad = gate_proj_t @ gate_output_grad
-            gate_input_grad = torch.mm(gate[expert_id].to(torch.float32).t(), gate_output_grad.unsqueeze(1)).squeeze()
-            
-            # up_input_grad = up_proj_t @ up_output_grad
-            up_input_grad = torch.mm(up[expert_id].to(torch.float32).t(), up_output_grad.unsqueeze(1)).squeeze()
-            
-            # 4. 累加到token的输入梯度
-            token_grad_input += gate_input_grad + up_input_grad
+            # 累加gate和up的输入梯度
+            token_grad += local_gate_input_grad[expert_id, local_idx]
+            token_grad += local_up_input_grad[expert_id, local_idx]
         
-        grad_input[token_idx] = token_grad_input
+        grad_input[token_idx] = token_grad
+        
+        # 输出第一个token的最终结果
+        if token_idx == 0:
+            print(f"  Token 0 最终input_grad前5个值: {token_grad[:5].tolist()}")
     
     return grad_input
 
@@ -246,7 +369,7 @@ def test_amx_moe_two_round():
         print(f"PyTorch backward time {t3-t2:.4f}s | "
               f"TFLOPS {flop_bwd/(t3-t2)/1e12:.2f}")
 
-        # Python backward（模拟C++逻辑）
+        # Python backward（模拟C++逻辑）- 详细版本
         t4_py = time.time()
         grad_in_python = moe_backward_python(
             input_pt, expert_ids, weights,
@@ -283,6 +406,12 @@ def test_amx_moe_two_round():
         print(f"Torch vs C++:    {rel_bwd_cpp.item():.3e}")
         print(f"Torch vs Python: {rel_bwd_py.item():.3e}")
         print(f"C++ vs Python:   {rel_bwd_cpp_py.item():.3e}")
+        
+        # 检查是否对拍成功
+        if rel_bwd_cpp_py.item() < 1e-5:
+            print("✅ C++和Python backward对拍成功!")
+        else:
+            print("❌ C++和Python backward对拍失败，存在显著差异")
 
 if __name__ == "__main__":
     torch.manual_seed(42)
