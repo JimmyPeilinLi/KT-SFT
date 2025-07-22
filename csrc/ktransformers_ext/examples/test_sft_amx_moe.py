@@ -15,6 +15,7 @@ sys.path.append(os.path.dirname(__file__) + '/../build')
 import cpuinfer_ext
 import torch
 from pathlib import Path
+import numpy as np
 
 expert_num = 10
 hidden_size = 5120
@@ -31,7 +32,7 @@ DUMP_DIR   = Path(os.getenv("SFT_DEBUG_PATH", "debug"))
 
 dtype = torch.bfloat16
 gradtype = torch.bfloat16
-torch.backends.cuda.matmul.allow_tf32 = False
+# torch.backends.cuda.matmul.allow_tf32 = False
 
 import shutil
 folder_path = "/home/lpl/KT-SFT/debug"
@@ -192,17 +193,35 @@ def moe_backward_python(x, eid, w, gate, up, down, grad_output, gate_u_cache, up
         
         local_gate_output[expert_id, :num_tokens] = gate_output
         local_up_output[expert_id, :num_tokens] = up_output
+        
+    for expert_id in range(expert_num):
+        num_tokens = expert_token_counts[expert_id]
+        if num_tokens == 0:
+            continue
+        # print(f"local_down_output_grad_E_{expert_id}: {local_down_output_grad[expert_id, :num_tokens]}")
+        # print(f"shape:{local_down_output_grad[expert_id, :num_tokens].shape}")
+        # torch.save(local_down_output_grad[expert_id, :num_tokens], f"debug/py_layer0_E_End{expert_id}_down_output_grad_.pt")
+        # torch.save(local_gate_output[expert_id, :num_tokens], f"debug/py_layer0_E_End{expert_id}_gate_output_.pt")
+        # torch.save(local_up_output[expert_id, :num_tokens], f"debug/py_layer0_E_End{expert_id}_up_output_.pt")
     
     # 6. 计算down_input_grad（模拟C++中的down_t_bc_计算）
     for expert_id in range(expert_num):
         num_tokens = expert_token_counts[expert_id]
         if num_tokens == 0:
             continue
-            
         # down_input_grad = down_proj_t @ output_grad
-        down_input_grad = torch.mm(local_down_output_grad[expert_id, :num_tokens], 
-                                  down[expert_id].to(torch.float32))  # [num_tokens, intermediate_size]
+        down_input_grad = torch.mm(local_down_output_grad[expert_id, :num_tokens], down[expert_id].to(torch.float32))  # [num_tokens, intermediate_size]
         local_down_input_grad[expert_id, :num_tokens] = down_input_grad
+            
+    for expert_id in range(expert_num):
+        num_tokens = expert_token_counts[expert_id]
+        if num_tokens == 0:
+            continue
+        # torch.save(local_gate_output_grad[expert_id, :num_tokens], f"debug/py_layer0_E_End{expert_id}_gate_output_grad_.pt")
+        # torch.save(local_up_output_grad[expert_id, :num_tokens], f"debug/py_layer0_E_End{expert_id}_up_output_grad_.pt")
+        torch.save(local_down_output_grad[expert_id, :num_tokens], f"debug/py_layer0_E_End{expert_id}_down_output_grad_.pt")
+        torch.save(down[expert_id].to(torch.float32), f"debug/py_layer0_E_End{expert_id}_down_weight_.pt")
+        torch.save(local_down_input_grad[expert_id, :num_tokens], f"debug/py_layer0_E_End{expert_id}_down_input_grad_.pt")
     
     # 7. 计算gate_output_grad和up_output_grad（模拟C++中的核心计算）
     for expert_id in range(expert_num):
@@ -295,21 +314,26 @@ def moe_backward_python(x, eid, w, gate, up, down, grad_output, gate_u_cache, up
 
 # --------------------------- 主测试 ---------------------------
 def test_amx_moe_two_round():
-    # ------------ 构造权重 (BF16) ------------
+    # ------------ 构造权重 ------------
     gate_proj = torch.randn(expert_num, intermediate_size, hidden_size,
                             dtype=torch.bfloat16, requires_grad=True).contiguous()
     up_proj   = torch.randn_like(gate_proj)
     down_proj = torch.randn(expert_num, hidden_size, intermediate_size,
                             dtype=torch.bfloat16, requires_grad=True).contiguous()
+    
+    gate_proj_t = gate_proj.transpose(1, 2).contiguous() # 形状: (E, H, I)
+    up_proj_t   = up_proj.transpose(1, 2).contiguous()
+    down_proj_t   = down_proj.transpose(1, 2).contiguous()
 
     # ------------ SFT-AMX 对象 ------------
     cfg = cpuinfer_ext.sft_moe.SFT_AMX_MOEConfig(
         expert_num, n_routed_experts,
         hidden_size, intermediate_size,
-        max_len,          # max_len
-        gate_proj.data_ptr(), up_proj.data_ptr(), down_proj.data_ptr()
-    )
-    moe_cpp = cpuinfer_ext.sft_moe.SFT_AMXBF16_MOE(cfg)
+        max_len,
+        gate_proj_t.data_ptr(), up_proj_t.data_ptr(), down_proj_t.data_ptr()
+    )    
+    moe_cpp = cpuinfer_ext.sft_moe.SFT_AMXInt8_MOE(cfg)
+
     
     cpu_infer = cpuinfer_ext.CPUInfer(num_threads)
 
@@ -362,33 +386,35 @@ def test_amx_moe_two_round():
 
         # C++ AMX forward
         out_cpp = torch.empty_like(out_ref, dtype=dtype).contiguous()
-        # t0 = time.time()
+        t0 = time.time()
+        print("Before forward")
         cpu_infer.submit(moe_cpp.forward(
             qlen, n_routed_experts,
             expert_ids.data_ptr(), weights.data_ptr(),
             input_cpp.data_ptr(), out_cpp.data_ptr(), batch_size_tensor.data_ptr()))
         cpu_infer.sync()
-        # t1 = time.time()
-        # diff_fwd = (out_cpp.to(torch.float32) - out_ref.to(torch.float32)).abs()
-        # print(f"out_cpp.to(torch.float32):{out_cpp.to(torch.float32)}, out_ref.to(torch.float32):{out_ref.to(torch.float32)}")
-        # rel_fwd  = diff_fwd.mean() / out_ref.abs().mean()
-        # print(f"Forward   diff: {rel_fwd.item():.3e} | time {t1-t0:.4f}s | "
-        #       f"TFLOPS {flop_fwd/(t1-t0)/1e12:.2f}")
+        print("After forward")
+        t1 = time.time()
+        diff_fwd = (out_cpp.to(torch.float32) - out_ref.to(torch.float32)).abs()
+        print(f"out_cpp.to(torch.float32):{out_cpp.to(torch.float32)}, out_ref.to(torch.float32):{out_ref.to(torch.float32)}")
+        rel_fwd  = diff_fwd.mean() / out_ref.abs().mean()
+        print(f"Forward   diff: {rel_fwd.item():.3e} | time {t1-t0:.4f}s | "
+              f"TFLOPS {flop_fwd/(t1-t0)/1e12:.2f}")
 
         # ------------- backward -------------
         grad_out = torch.randn_like(out_ref, dtype=gradtype).contiguous()
         grad_out_cpp = grad_out.clone().contiguous()
         grad_in_cpp  = torch.zeros_like(input_cpp, dtype=gradtype).contiguous()
 
-        # Torch backward
-        for p in (gate_proj, up_proj, down_proj, input_pt):
-            if p.grad is not None:
-                p.grad.zero_()
-        t2 = time.time()
-        out_ref.backward(grad_out, retain_graph=True)
-        t3 = time.time()
-        print(f"PyTorch backward time {t3-t2:.4f}s | "
-              f"TFLOPS {flop_bwd/(t3-t2)/1e12:.2f}")
+        # # Torch backward
+        # for p in (gate_proj, up_proj, down_proj, input_pt):
+        #     if p.grad is not None:
+        #         p.grad.zero_()
+        # t2 = time.time()
+        # out_ref.backward(grad_out, retain_graph=True)
+        # t3 = time.time()
+        # print(f"PyTorch backward time {t3-t2:.4f}s | "
+        #       f"TFLOPS {flop_bwd/(t3-t2)/1e12:.2f}")
 
         # Python backward（模拟C++逻辑）- 详细版本
         t4_py = time.time()
@@ -402,6 +428,7 @@ def test_amx_moe_two_round():
 
         # C++ backward
         t4 = time.time()
+        print("Before backward")
         cpu_infer.submit(moe_cpp.backward(
             qlen, n_routed_experts,
             expert_ids.data_ptr(), weights.data_ptr(), input_cpp.data_ptr(),
@@ -409,30 +436,34 @@ def test_amx_moe_two_round():
             grad_in_cpp.data_ptr(), batch_size_tensor.data_ptr()))
         cpu_infer.sync()
         t5 = time.time()
+        print("After backward")
         print(f"C++      backward time {t5-t4:.4f}s | "
               f"TFLOPS {flop_bwd/(t5-t4)/1e12:.2f}")
 
-        # 三种backward结果对比
-        gcpp = grad_in_cpp.to(torch.float32)
-        gref = input_pt.grad.to(torch.float32) if input_pt.grad is not None else torch.zeros_like(input_pt, dtype=torch.float32)
-        gpy = grad_in_python.to(torch.float32)
+        # # 三种backward结果对比
+        # gcpp = grad_in_cpp.to(torch.float32)
+        # gref = input_pt.grad.to(torch.float32) if input_pt.grad is not None else torch.zeros_like(input_pt, dtype=torch.float32)
+        # gpy = grad_in_python.to(torch.float32)
         
-        print(f"C++ AMX backward:{gcpp}", '\n', f"pytorch backward:{gref}", '\n', f"python backward:{gpy}")
+        # print(f"C++ AMX backward:{gcpp}", '\n', f"pytorch backward:{gref}", '\n', f"python backward:{gpy}")
         
-        # 对比结果
-        rel_bwd_cpp = (gcpp - gref).abs().mean() / gref.abs().mean()
-        rel_bwd_py = (gpy - gref).abs().mean() / gref.abs().mean()
-        rel_bwd_cpp_py = (gcpp - gpy).abs().mean() / gpy.abs().mean()
+        # # 对比结果
+        # rel_bwd_cpp = (gcpp - gref).abs().mean() / gref.abs().mean()
+        # rel_bwd_py = (gpy - gref).abs().mean() / gref.abs().mean()
+        # rel_bwd_cpp_py = (gcpp - gpy).abs().mean() / gpy.abs().mean()
         
-        print(f"Torch vs C++:    {rel_bwd_cpp.item():.3e}")
-        print(f"Torch vs Python: {rel_bwd_py.item():.3e}")
-        print(f"C++ vs Python:   {rel_bwd_cpp_py.item():.3e}")
+        # print(f"Torch vs C++:    {rel_bwd_cpp.item():.3e}")
+        # print(f"Torch vs Python: {rel_bwd_py.item():.3e}")
+        # print(f"C++ vs Python:   {rel_bwd_cpp_py.item():.3e}")
         
-        # 检查是否对拍成功
-        if rel_bwd_cpp_py.item() < 1e-5:
-            print("✅ C++和Python backward对拍成功!")
-        else:
-            print("❌ C++和Python backward对拍失败，存在显著差异")
+        # # 检查是否对拍成功
+        # if rel_bwd_cpp_py.item() < 1e-5:
+        #     print("✅ C++和Python backward对拍成功!")
+        # else:
+        #     print("❌ C++和Python backward对拍失败，存在显著差异")
+            
+        
+        manual_check(expert_ids)
 
 def load_bf16(stub, shape):
     with open(stub + ".bf16", "rb") as f:
@@ -446,13 +477,16 @@ def load_f32(stub, shape):
 def load_uint8(stub, shape):
     with open(stub+".uint8",'rb') as f:
         return torch.frombuffer(f.read(), dtype=torch.uint8).view(shape)
+def load_int8(stub, shape):
+    with open(stub+".int8",'rb') as f:
+        return torch.frombuffer(f.read(), dtype=torch.int8).view(shape)
 
 # 通用加载函数
-def load_dump_tensor(eid: int, name: str, shape: tuple, Ename: str = "E_Before"):
+def load_dump_tensor(experts_idx: int, name: str, shape: tuple, Ename: str = "E_Before"):
     """
-    根据 eid / name / shape 读取 dump 文件，并返回 torch.Tensor
+    根据 experts_idx / name / shape 读取 dump 文件，并返回 torch.Tensor
     """
-    stub = DUMP_DIR / f"layer{LAYER_IDX}_{Ename}{eid}_{name}"
+    stub = DUMP_DIR / f"layer{LAYER_IDX}_{Ename}{experts_idx}_{name}"
     if stub.with_suffix(".bf16").exists():
         return load_bf16(str(stub), shape)
     elif stub.with_suffix(".f16").exists():
@@ -461,21 +495,32 @@ def load_dump_tensor(eid: int, name: str, shape: tuple, Ename: str = "E_Before")
         return load_f32(str(stub), shape)
     elif stub.with_suffix(".uint8").exists():
         return load_uint8(str(stub), shape)
+    elif stub.with_suffix(".int8").exists():
+        return load_int8(str(stub), shape)
     else:
-        raise FileNotFoundError(f"{stub}（bf16/f16/f32 均不存在）")
+        raise FileNotFoundError(f"{stub}（bf16/f16/f32/u8/i8 均不存在）")
     
-def check_nan(eid,name,shape, Ename="E"):
-    stub1 = DUMP_DIR / f"layer{LAYER_IDX}_{Ename}{eid}_{name}"
+def load_bin(path, n, k):
+    # 从文件读出 n*k 个 float32
+    data = np.fromfile(path, dtype=np.float32)
+    assert data.size == n * k
+    data = data.reshape(n, k)
+    return torch.from_numpy(data).to(torch.bfloat16)    
+
+def check_nan(name, shape):
+    stub1 = DUMP_DIR / f"{name}"
     if stub1.with_suffix(".bf16").exists():
         cpp_bef = load_bf16(str(stub1), shape)
     elif stub1.with_suffix(".f16").exists():
         cpp_bef = load_f16(str(stub1), shape)
     elif stub1.with_suffix(".f32").exists():
         cpp_bef = load_f32(str(stub1), shape)
+    elif stub1.with_suffix(".int8").exists():
+        return load_int8(str(stub1), shape)
     else:
         print("dump 缺失/未知类型"); return
 
-    print(f"{Ename}{eid}_{name}:{cpp_bef}")
+    print(f"{name}:{cpp_bef}")
     print(f" shape : {cpp_bef.shape}")
     print(f" dtype : {cpp_bef.dtype}")
 
@@ -489,22 +534,160 @@ def check_nan(eid,name,shape, Ename="E"):
     else:
         print(" max/min: 所有元素均为 NaN / Inf")
 
-    for nan_name, t in [(f"{Ename}{eid}_{name}", cpp_bef)]:
+    for nan_name, t in [(f"{name}", cpp_bef)]:
         nan_cnt = torch.isnan(t).sum().item()
         inf_cnt = torch.isinf(t).sum().item()
         if nan_cnt or inf_cnt:
-            print(f"{Ename}{eid}_{name} 含 NaN={nan_cnt}、Inf={inf_cnt}")
+            print(f"{name} 含 NaN={nan_cnt}、Inf={inf_cnt}")
+        else:
+            print("NO NaN or Inf exist")    
+
+def get_tensor(name, shape) -> torch.Tensor:
+    stub1 = DUMP_DIR / f"{name}"
+    if stub1.with_suffix(".bf16").exists():
+        cpp_bef = load_bf16(str(stub1), shape)
+    elif stub1.with_suffix(".f16").exists():
+        cpp_bef = load_f16(str(stub1), shape)
+    elif stub1.with_suffix(".f32").exists():
+        cpp_bef = load_f32(str(stub1), shape)
+    elif stub1.with_suffix(".int8").exists():
+        return load_int8(str(stub1), shape)
+    else:
+        print("dump 缺失/未知类型"); return
+
+    return cpp_bef
+
+def check_py_cpp(name1, name2, shape):
+    print(f"compare {name1} with {name2}, at shape{shape}")
+    stub1 = DUMP_DIR / f"{name1}"
+    py_bef = torch.load(f"{stub1}")
+    if not isinstance(py_bef, torch.Tensor):
+        print(f"⚠️ {name1} 不是 Tensor，而是 {type(py_bef)}")
+        return
+    stub2 = DUMP_DIR / f"{name2}"
+    if stub2.with_suffix(".bf16").exists():
+        cpp_bef = load_bf16(str(stub2), shape)
+    elif stub2.with_suffix(".f16").exists():
+        cpp_bef = load_f16(str(stub2), shape)
+    elif stub2.with_suffix(".f32").exists():
+        cpp_bef = load_f32(str(stub2), shape)
+    elif stub2.with_suffix(".int8").exists():
+        return load_int8(str(stub2), shape)
+    else:
+        print(f"dump 缺失/未知类型: {stub2}"); return
+        
+    for t in [py_bef]:
+        nan_cnt = torch.isnan(t).sum().item()
+        inf_cnt = torch.isinf(t).sum().item()
+        if nan_cnt or inf_cnt:
+            print(f"{name1} 含 NaN={nan_cnt}、Inf={inf_cnt}")
         else:
             print("NO NaN or Inf exist")
+    for t in [cpp_bef]:
+        nan_cnt = torch.isnan(t).sum().item()
+        inf_cnt = torch.isinf(t).sum().item()
+        if nan_cnt or inf_cnt:
+            print(f"{name2} 含 NaN={nan_cnt}、Inf={inf_cnt}")
+        else:
+            print("NO NaN or Inf exist")
+            
+    if py_bef.shape != cpp_bef.shape:
+        print(f"shape 不一致: py_bef {py_bef.shape}, cpp_bef {cpp_bef.shape}")
+    else:
+        # 计算绝对差、相对差、最大差值
+        eps = 1e-6  # 防止除以 0
+        denominator = torch.abs(py_bef) + eps
+        rel_diff = torch.abs(py_bef - cpp_bef) / denominator
+
+        # 找出大于 2% 的项
+        mask = rel_diff > 0.02
+        num_large_diff = mask.sum().item()
+        total = rel_diff.numel()
+
+        if num_large_diff == 0:
+            print("✅ 所有元素相对误差都在 2% 范围内")
+            flat_rel_diff = rel_diff.view(-1)
+            max_idx = torch.argmax(flat_rel_diff)
+            max_val = flat_rel_diff[max_idx].item()
+
+            # 还原成多维索引
+            max_pos = tuple(torch.unravel_index(max_idx, py_bef.shape))
+
+            # 获取原始值
+            py_val = py_bef[max_pos].item()
+            cpp_val = cpp_bef[max_pos].item()
+
+            print(f"    最大相对误差 = {max_val:.2%}")
+            print(f"    最大相对误差位置: {max_pos}, py  = {py_val:.6f}, cpp = {cpp_val:.6f}")
+        else:
+            print(f"❗ 相对误差 > 2% 的元素数量: {num_large_diff} / {total}")
+            print(f"{name1}: {py_bef}")
+            print(f"{name2}: {cpp_bef}")
 
 # 汇总要查哪些内容
-def manual_check():
-    for eid in range(expert_num):
-        r = tok_cnt[eid].item()
-        print(f"r:{r}")
-        if r==0: continue
+def manual_check(experts_ids):
+    expert_token_counts = torch.zeros(expert_num, dtype=torch.int64)
+    T, k = experts_ids.shape
+    for i in range(T):
+        for j in range(k):
+            expert_token_counts[experts_ids[i, j]] += 1
+    for experts_idx in range(expert_num):
+        # check_nan(experts_idx, "down_output_grad_", (expert_token_counts[experts_idx], hidden_size), "E_End")
+        # check_py_cpp(f"py_layer0_E_End{experts_idx}_down_output_grad_.pt", f"cpp_layer0_E_End{experts_idx}_down_output_grad_", (expert_token_counts[experts_idx], hidden_size))
+        # check_py_cpp(f"py_layer0_E_End{experts_idx}_gate_output_.pt", f"cpp_layer0_E_End{experts_idx}_gate_output_", (expert_token_counts[experts_idx], intermediate_size))
+        # check_py_cpp(f"py_layer0_E_End{experts_idx}_up_output_.pt", f"cpp_layer0_E_End{experts_idx}_up_output_", (expert_token_counts[experts_idx], intermediate_size))
+        # check_py_cpp(f"py_layer0_E_End{experts_idx}_gate_output_grad_.pt", f"cpp_layer0_E_End{experts_idx}_gate_output_grad_", (expert_token_counts[experts_idx], intermediate_size))
+        # check_py_cpp(f"py_layer0_E_End{experts_idx}_up_output_grad_.pt", f"cpp_layer0_E_End{experts_idx}_up_output_grad_", (expert_token_counts[experts_idx], intermediate_size))
+        
+        input1 = get_tensor(f"cpp_layer0_E_End{experts_idx}_down_output_grad_new_", (expert_token_counts[experts_idx], hidden_size))
+        down_ba_new = get_tensor(f"cpp_layer0_E_End{experts_idx}_down_ba_new_", (expert_token_counts[experts_idx], intermediate_size))
+        # weight1 = get_tensor(f"cpp_layer0_E_End{experts_idx}_down_t_weight_trans_", (hidden_size, intermediate_size))
+        # output1 = torch.matmul(input1, weight1)
+        print(f"down_output_grad_new:{input1}, shape:{input1.shape}")
+        print(f"down_ba_new:{down_ba_new}, shape:{down_ba_new.shape}")
+        # print(f"weight1:{weight1}, shape:{weight1.shape}")
+        # print(f"output1:{output1}, shape:{output1.shape}")
 
+        # check_py_cpp(f"py_layer0_E_End{experts_idx}_down_input_grad_.pt", f"cpp_layer0_E_End{experts_idx}_down_input_grad_", (expert_token_counts[experts_idx], intermediate_size))
+        # shape=(expert_token_counts[experts_idx], intermediate_size)
+        # stub2 = DUMP_DIR / f"cpp_layer0_E_End{experts_idx}_down_input_grad_"
+        # if stub2.with_suffix(".bf16").exists():
+        #     output1_5 = load_bf16(str(stub2), shape)
+        # elif stub2.with_suffix(".f16").exists():
+        #     output1_5 = load_f16(str(stub2), shape)
+        # elif stub2.with_suffix(".f32").exists():
+        #     output1_5 = load_f32(str(stub2), shape)
+        # elif stub2.with_suffix(".int8").exists():
+        #     return load_int8(str(stub2), shape)
+        # else:
+        #     print(f"dump 缺失/未知类型: {stub2}"); return
+        # print(f"output1_5:{output1_5}, shape:{output1_5.shape}")
+        
+        # torch.set_printoptions(profile="full")
+
+        # with open(f"/home/lpl/KT-SFT/debug/{experts_idx}_view.txt", "w") as f:
+        #     f.write(str(output1_5))
+
+        # torch.set_printoptions(profile="default")
+        
+        # input2 = torch.load(f"debug/py_layer0_E_End{experts_idx}_down_output_grad_.pt")
+        # weight2 = torch.load(f"debug/py_layer0_E_End{experts_idx}_down_weight_.pt")
+        # output2 = torch.load(f"debug/py_layer0_E_End{experts_idx}_down_input_grad_.pt")
+        # print(f"input2:{input2}, shape:{input2.shape}")
+        # print(f"weight2:{weight2}, shape:{weight2.shape}")
+        # print(f"output2:{output2}, shape:{output2.shape}")
+        
+        # down_t_ba_new = load_bin(f'debug/{experts_idx}_down_ba_t_debug3.bin', expert_token_counts[experts_idx], hidden_size)
+        
+        # print(f"input3: {down_t_ba_new}, shape: {down_t_ba_new.shape}")
+        
+        # down_t_bb_new = load_bin(f'debug/{experts_idx}_down_bb_t_debug3.bin', hidden_size, intermediate_size)
+        
+        # print(f"weight3: {down_t_bb_new}, shape: {down_t_bb_new.shape}")
+        
+        # check_nan(f"cpp_layer0_E_End{experts_idx}_down_weight_new_", (hidden_size, intermediate_size))
+        
+        
 if __name__ == "__main__":
     torch.manual_seed(42)
     test_amx_moe_two_round()
-    manual_check()

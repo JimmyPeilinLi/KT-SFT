@@ -29,6 +29,7 @@ inline void dump_grad_bin(const std::string &file_name,
         case GGML_TYPE_F32:  path += ".f32";  break;
         case GGML_TYPE_F16:  path += ".f16";  break;
         case GGML_TYPE_BF16: path += ".bf16"; break;
+		case GGML_TYPE_I8: path += ".int8"; break;
         default:             path += ".raw";  break;
     }
 	std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);

@@ -829,6 +829,7 @@ struct GemmKernel224Int8 {
 inline void mat_mul(int m, int n, int k, std::shared_ptr<GemmKernel224BF::BufferA> ba,
                     std::shared_ptr<GemmKernel224BF::BufferB> bb, std::shared_ptr<GemmKernel224BF::BufferC> bc, int ith,
                     int nth, bool use_amx) {
+//   std::cout << "mat_mul in BF16!!!!" << std::endl;
   using K = GemmKernel224BF;
   assert(n % K::N_STEP == 0);
   assert(k % K::K_STEP == 0);
@@ -900,6 +901,7 @@ inline __m512i _mm512_dpbssd_epi32(__m512i src, __m512i a, __m512i b) {
 inline void mat_mul(int m, int n, int k, std::shared_ptr<GemmKernel224Int8::BufferA> ba,
                     std::shared_ptr<GemmKernel224Int8::BufferB> bb, std::shared_ptr<GemmKernel224Int8::BufferC> bc,
                     int ith, int nth, bool use_amx) {
+//   std::cout << "mat_mul in INT8!!!!" << std::endl;
   using K = GemmKernel224Int8;
   assert(n % K::N_STEP == 0);
   assert(k % K::K_STEP == 0);
