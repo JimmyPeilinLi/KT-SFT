@@ -101,6 +101,11 @@ def local_chat(
 
     if not is_sft:
         torch.set_grad_enabled(False)
+        
+    if is_sft == True or use_adapter == True:
+        GLOBAL_CONFIG._config["mod"] = "sft"
+    else:
+        GLOBAL_CONFIG._config["mod"] = "infer"
 
     Config().cpu_infer = cpu_infer
     Config().chunk_size = chunk_size
@@ -156,6 +161,8 @@ def local_chat(
         gguf_path = input(
             "please input the path of your gguf file(gguf file in the dir containing input gguf file must all belong to current model):"
         )
+        
+    GLOBAL_CONFIG._config["mod"] = "infer"
     optimize_and_load_gguf(model, optimize_config_path, gguf_path, config)
 
     # print_module_tree(model)  # 观察输出是否有重复模块或循环
@@ -169,6 +176,7 @@ def local_chat(
         lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path)
 
     if use_adapter == True:
+        GLOBAL_CONFIG._config["mod"] = "sft"
         if is_sft == True:
             raise AttributeError("We do not support more than one adapter up to now...")
         
@@ -296,26 +304,20 @@ if __name__ == "__main__":
             use_adapter=args.use_adapter,
             use_adapter_path=args.use_adapter_path
         )
-        
-        if args.is_sft == True:
-            GLOBAL_CONFIG._config["mod"] = "sft"
-        else:
-            GLOBAL_CONFIG._config["mod"] = "infer"
 
     else:
         local_chat(
             model_path="/mnt/data/models/DeepSeek-V2-Lite-Chat",
             model_config_path="ktransformers/configs/model_config",
-            gguf_path="/mnt/data/models/DeepSeek-V2-Lite-Chat-GGUF-FP16/",
+            gguf_path="/mnt/data/models/DeepSeek-V2-Lite-Chat/",
             cpu_infer=112,
             max_new_tokens=1000,
             force_think=False,
-            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft.yaml",
-            is_sft=True,
-            sft_data_path="tmp/demo_test_10example.json",
+            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx.yaml",
+            is_sft=False,
+            sft_data_path="test_adapter/sft_translation.json",
             save_adapter_path="test_adapter/demo_adapter_KT_target_kv",
-            use_adapter=False,
-            use_adapter_path="test_adapter/demo_adapter_origin_target_kv"
+            use_adapter=True,
+            use_adapter_path="/home/lpl/KT-beifen/test_adapter/demo_adapter_origin_target_kv/lora.gguf"
         )
         
-        GLOBAL_CONFIG._config["mod"] = "sft"

@@ -360,17 +360,17 @@ public:
 
       // TODO: NUMA
       void *gate_t_bb_ptr =
-          std::aligned_alloc(64, T::BufferB::required_size(config_.intermediate_size, config_.hidden_size));
+          std::aligned_alloc(64, T::BufferB::required_size(config_.hidden_size, config_.intermediate_size));
       gate_t_bb_.push_back(
           std::make_shared<typename T::BufferB>(config_.hidden_size, config_.intermediate_size, gate_t_bb_ptr));
 
       void *up_t_bb_ptr =
-          std::aligned_alloc(64, T::BufferB::required_size(config_.intermediate_size, config_.hidden_size));
+          std::aligned_alloc(64, T::BufferB::required_size(config_.hidden_size, config_.intermediate_size));
       up_t_bb_.push_back(
           std::make_shared<typename T::BufferB>(config_.hidden_size, config_.intermediate_size, up_t_bb_ptr));
 
       void *down_t_bb_ptr =
-          std::aligned_alloc(64, T::BufferB::required_size(config_.hidden_size, config_.intermediate_size));
+          std::aligned_alloc(64, T::BufferB::required_size(config_.intermediate_size, config_.hidden_size));
       down_t_bb_.push_back(
           std::make_shared<typename T::BufferB>(config_.intermediate_size, config_.hidden_size, down_t_bb_ptr));
     }
@@ -440,9 +440,9 @@ public:
         nullptr);
 	
 	
-	for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-		dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_weight_new_", (ggml_bf16_t *)down_proj_t_ + expert_idx * config_.intermediate_size * config_.hidden_size, config_.hidden_size * config_.intermediate_size, GGML_TYPE_BF16);
-	}
+	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
+	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_weight_new_", (ggml_bf16_t *)down_proj_t_ + expert_idx * config_.intermediate_size * config_.hidden_size, config_.hidden_size * config_.intermediate_size, GGML_TYPE_BF16);
+	// }
 
 	// if constexpr (std::is_same_v<typename T::dt, ggml_bf16_t>) {
 	// 	// 确保 debug/ 目录存在
@@ -475,23 +475,40 @@ public:
 	// 	}
 	// }
 
-	if constexpr (std::is_same_v<typename T::dt, int8_t>) {
-		for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
-			auto buf = down_t_bb_[expert_idx].get();
+	// if constexpr (std::is_same_v<typename T::dt, int8_t>) {
+	// 	for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
+	// 		auto buf = down_t_bb_[expert_idx].get();
 
-			// 打开对应 expert 的文件
-			std::string path = "debug/" + std::to_string(expert_idx) + "_down_bb_t_debug3.bin";
-			std::ofstream ofs(path, std::ios::binary);
-			for (int n_idx = 0; n_idx < buf->k; ++n_idx) {
-				const int8_t* row = reinterpret_cast<const int8_t*>(buf->b) + n_idx * buf->n;
-				for (int j = 0; j < buf->n; ++j) {
-					float v = row[j];
-					ofs.write(reinterpret_cast<const char*>(&v), sizeof(v));
-				}
-			}
-			ofs.close();
-		}
-	}
+	// 		// 打开对应 expert 的文件
+	// 		std::string path = "debug/" + std::to_string(expert_idx) + "_down_bb_t_debug3.bin";
+	// 		std::ofstream ofs(path, std::ios::binary);
+	// 		for (int n_idx = 0; n_idx < buf->k; ++n_idx) {
+	// 			const int8_t* row = reinterpret_cast<const int8_t*>(buf->b) + n_idx * buf->n;
+	// 			for (int j = 0; j < buf->n; ++j) {
+	// 				float v = row[j];
+	// 				ofs.write(reinterpret_cast<const char*>(&v), sizeof(v));
+	// 			}
+	// 		}
+	// 		ofs.close();
+	// 	}
+	// }
+
+	
+	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
+	// 	// 打开对应 expert 的文件
+	// 	std::string path = "debug/" + std::to_string(expert_idx) + "_up_proj_t.bin";
+	// 	std::ofstream ofs(path, std::ios::binary);
+	// 	std::cout << "config_.hidden_size: " << config_.hidden_size << std::endl;
+	// 	std::cout << "config_.intermediate_size: " << config_.intermediate_size << std::endl;
+	// 	for (int n_idx = 0; n_idx < config_.intermediate_size; ++n_idx) {
+	// 		const int8_t* row = reinterpret_cast<const int8_t*>(config_.down_proj + expert_idx * n_idx * config_.hidden_size);
+	// 		for (int j = 0; j < config_.hidden_size; ++j) {
+	// 			float v = row[j];
+	// 			ofs.write(reinterpret_cast<const char*>(&v), sizeof(v));
+	// 		}
+	// 	}
+	// 	ofs.close();
+	// }
 
     nth = T::recommended_nth(config_.hidden_size);
     backend->do_work_stealing_job(
@@ -523,9 +540,7 @@ public:
 
   void warm_up(Backend *backend) {}
 
-  void forward(int qlen, int k, const uint64_t *expert_ids, const float *weights, const void *input, void *output,
-               int *batch_size_tensor, Backend *backend) {
-    qlen = batch_size_tensor[0];
+  void forward(int qlen, int k, const uint64_t *expert_ids, const float *weights, const void *input, void *output, Backend *backend) {
     bool use_amx = (qlen > 4 * config_.expert_num / config_.routed_expert_num);
     int activated_expert = 0;
     for (int i = 0; i < config_.expert_num; i++) {
@@ -611,40 +626,40 @@ public:
         },
         nullptr);
 	
-	for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-		dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_ba_new_", (ggml_bf16_t*)m_local_gate_output_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	}
-	if constexpr (std::is_same_v<typename T::dt, int8_t>) {
-		std::cout << "GO INTO forward output" << std::endl;
-		// 确保 debug/ 目录存在
-		std::filesystem::create_directories("debug");
+	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
+	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_ba_new_", (ggml_bf16_t*)m_local_gate_output_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
+	// }
+	// if constexpr (std::is_same_v<typename T::dt, int8_t>) {
+	// 	std::cout << "GO INTO forward output" << std::endl;
+	// 	// 确保 debug/ 目录存在
+	// 	std::filesystem::create_directories("debug");
 
-		for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
-			auto buf = down_ba_[expert_idx].get();
-			// std::cout << "k: " << buf->k << "; n: " << buf->n << std::endl;
-			// 打开对应 expert 的文件
-			std::string path = "debug/" + std::to_string(expert_idx) + "_down_ba_debug.txt";
-			std::ofstream ofs(path, std::ios::out);
-			if (!ofs) {
-				std::cerr << "Failed to open " << path << " for writing\n";
-				continue;
-			}
+	// 	for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
+	// 		auto buf = down_ba_[expert_idx].get();
+	// 		// std::cout << "k: " << buf->k << "; n: " << buf->n << std::endl;
+	// 		// 打开对应 expert 的文件
+	// 		std::string path = "debug/" + std::to_string(expert_idx) + "_down_ba_debug.txt";
+	// 		std::ofstream ofs(path, std::ios::out);
+	// 		if (!ofs) {
+	// 			std::cerr << "Failed to open " << path << " for writing\n";
+	// 			continue;
+	// 		}
 
-			ofs << "==== Expert " << expert_idx << " ====\n";
-			for (int n_idx = 0; n_idx < m_local_num_[expert_idx]; ++n_idx) {
-				// 明确当作 bfloat16 读
-				const int8_t* row = reinterpret_cast<const int8_t*>(buf->a) + n_idx * buf->k;
+	// 		ofs << "==== Expert " << expert_idx << " ====\n";
+	// 		for (int n_idx = 0; n_idx < m_local_num_[expert_idx]; ++n_idx) {
+	// 			// 明确当作 bfloat16 读
+	// 			const int8_t* row = reinterpret_cast<const int8_t*>(buf->a) + n_idx * buf->k;
 
-				// 写整行
-				ofs << "row[" << n_idx << "] = { "
-					<< int8_row_to_string(row, buf->k)
-					<< " }\n";
-			}
+	// 			// 写整行
+	// 			ofs << "row[" << n_idx << "] = { "
+	// 				<< int8_row_to_string(row, buf->k)
+	// 				<< " }\n";
+	// 		}
 
-			ofs.close();
-		}
-		std::cout << "OUT INTO forward output" << std::endl;
-	}
+	// 		ofs.close();
+	// 	}
+	// 	std::cout << "OUT INTO forward output" << std::endl;
+	// }
     nth = T::recommended_nth(config_.hidden_size);
     backend->do_work_stealing_job(
         nth * activated_expert, [&](int _) { T::config(); },
@@ -682,9 +697,7 @@ public:
         nullptr);
   }
 
-  void backward(int qlen, int k, const uint64_t *expert_ids, const float *weights, const void* input, const void *output_grad, void *input_grad,
-               int *batch_size_tensor, Backend *backend) {
-    qlen = batch_size_tensor[0];
+  void backward(int qlen, int k, const uint64_t *expert_ids, const float *weights, const void* input, const void *output_grad, void *input_grad, Backend *backend) {
     bool use_amx = (qlen > 4 * config_.expert_num / config_.routed_expert_num);
     int activated_expert = 0;
     for (int i = 0; i < config_.expert_num; i++) {
@@ -748,39 +761,39 @@ public:
           down_t_ba_[expert_idx]->from_mat(m_local_num_[expert_idx], m_local_down_output_grad_ptr_[expert_idx], 0, 1);
         },
         nullptr);
-	for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-		dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_output_grad_new_", (ggml_bf16_t*)m_local_down_output_grad_ptr_[expert_idx], config_.hidden_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	}
+	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
+	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_output_grad_new_", (ggml_bf16_t*)m_local_down_output_grad_ptr_[expert_idx], config_.hidden_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
+	// }
 	
-	if constexpr (std::is_same_v<typename T::dt, int8_t>) {
-		// 确保 debug/ 目录存在
-		std::filesystem::create_directories("debug");
+	// if constexpr (std::is_same_v<typename T::dt, int8_t>) {
+	// 	// 确保 debug/ 目录存在
+	// 	std::filesystem::create_directories("debug");
 
-		for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
-			auto buf = down_t_ba_[expert_idx].get();
-			// std::cout << "k: " << buf->k << "; n: " << buf->n << std::endl;
-			// 打开对应 expert 的文件
-			std::string path = "debug/" + std::to_string(expert_idx) + "_down_ba_t_debug.txt";
-			std::ofstream ofs(path, std::ios::out);
-			if (!ofs) {
-				std::cerr << "Failed to open " << path << " for writing\n";
-				continue;
-			}
+	// 	for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
+	// 		auto buf = down_t_ba_[expert_idx].get();
+	// 		// std::cout << "k: " << buf->k << "; n: " << buf->n << std::endl;
+	// 		// 打开对应 expert 的文件
+	// 		std::string path = "debug/" + std::to_string(expert_idx) + "_down_ba_t_debug.txt";
+	// 		std::ofstream ofs(path, std::ios::out);
+	// 		if (!ofs) {
+	// 			std::cerr << "Failed to open " << path << " for writing\n";
+	// 			continue;
+	// 		}
 
-			ofs << "==== Expert " << expert_idx << " ====\n";
-			for (int n_idx = 0; n_idx < m_local_num_[expert_idx]; ++n_idx) {
-				// 明确当作 bfloat16 读
-				const int8_t* row = reinterpret_cast<const int8_t*>(buf->a) + n_idx * buf->k;
+	// 		ofs << "==== Expert " << expert_idx << " ====\n";
+	// 		for (int n_idx = 0; n_idx < m_local_num_[expert_idx]; ++n_idx) {
+	// 			// 明确当作 bfloat16 读
+	// 			const int8_t* row = reinterpret_cast<const int8_t*>(buf->a) + n_idx * buf->k;
 
-				// 写整行
-				ofs << "row[" << n_idx << "] = { "
-					<< int8_row_to_string(row, buf->k)
-					<< " }\n";
-			}
+	// 			// 写整行
+	// 			ofs << "row[" << n_idx << "] = { "
+	// 				<< int8_row_to_string(row, buf->k)
+	// 				<< " }\n";
+	// 		}
 
-			ofs.close();
-		}
-	}
+	// 		ofs.close();
+	// 	}
+	// }
 
     int nth = T::recommended_nth(config_.intermediate_size);  
     backend->do_work_stealing_job(
@@ -802,42 +815,42 @@ public:
           down_t_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_down_input_grad_ptr_[expert_idx], ith, nth);
 
 
-        //   auto [n_start, n_end] = T::split_range_n(config_.intermediate_size, ith, nth);
-        //   for (int i = 0; i < m_local_num_[expert_idx]; i++) {
-        //     ggml_bf16_t *gate_output_ptr = &m_local_gate_output_ptr_[expert_idx][i * config_.intermediate_size];
-        //     ggml_bf16_t *up_output_ptr = &m_local_up_output_ptr_[expert_idx][i * config_.intermediate_size];
-		// 	// m_local_down_input_grad_ptr_下面这三个对拍python:133-140
-        //     ggml_bf16_t *down_input_grad_ptr = &m_local_down_input_grad_ptr_[expert_idx][i * config_.intermediate_size];
-        //     ggml_bf16_t *gate_output_grad_ptr = &m_local_gate_output_grad_ptr_[expert_idx][i * config_.intermediate_size];
-        //     ggml_bf16_t *up_output_grad_ptr = &m_local_up_output_grad_ptr_[expert_idx][i * config_.intermediate_size];
+          auto [n_start, n_end] = T::split_range_n(config_.intermediate_size, ith, nth);
+          for (int i = 0; i < m_local_num_[expert_idx]; i++) {
+            ggml_bf16_t *gate_output_ptr = &m_local_gate_output_ptr_[expert_idx][i * config_.intermediate_size];
+            ggml_bf16_t *up_output_ptr = &m_local_up_output_ptr_[expert_idx][i * config_.intermediate_size];
+			// m_local_down_input_grad_ptr_下面这三个对拍python:133-140
+            ggml_bf16_t *down_input_grad_ptr = &m_local_down_input_grad_ptr_[expert_idx][i * config_.intermediate_size];
+            ggml_bf16_t *gate_output_grad_ptr = &m_local_gate_output_grad_ptr_[expert_idx][i * config_.intermediate_size];
+            ggml_bf16_t *up_output_grad_ptr = &m_local_up_output_grad_ptr_[expert_idx][i * config_.intermediate_size];
             
-        //     int token_idx = m_local_token_indices_ptr_[expert_idx][i];
-        //     int expert_pos = m_local_expert_positions_ptr_[expert_idx][i];
-        //     __m512 weight = _mm512_set1_ps(weights[token_idx * k + expert_pos]);
+            int token_idx = m_local_token_indices_ptr_[expert_idx][i];
+            int expert_pos = m_local_expert_positions_ptr_[expert_idx][i];
+            __m512 weight = _mm512_set1_ps(weights[token_idx * k + expert_pos]);
             
-        //     for (int j = n_start; j < n_end; j += 32) {
-        //       __m512 gate_val0, gate_val1, up_val0, up_val1, down_input_grad0, down_input_grad1;
-        //       avx512_32xbf16_to_32xfp32((__m512i *)(gate_output_ptr + j), &gate_val0, &gate_val1);
-        //       avx512_32xbf16_to_32xfp32((__m512i *)(up_output_ptr + j), &up_val0, &up_val1);
-        //       avx512_32xbf16_to_32xfp32((__m512i *)(down_input_grad_ptr + j), &down_input_grad0, &down_input_grad1);
+            for (int j = n_start; j < n_end; j += 32) {
+              __m512 gate_val0, gate_val1, up_val0, up_val1, down_input_grad0, down_input_grad1;
+              avx512_32xbf16_to_32xfp32((__m512i *)(gate_output_ptr + j), &gate_val0, &gate_val1);
+              avx512_32xbf16_to_32xfp32((__m512i *)(up_output_ptr + j), &up_val0, &up_val1);
+              avx512_32xbf16_to_32xfp32((__m512i *)(down_input_grad_ptr + j), &down_input_grad0, &down_input_grad1);
               
-        //       down_input_grad0 = _mm512_mul_ps(down_input_grad0, weight);
-        //       down_input_grad1 = _mm512_mul_ps(down_input_grad1, weight);
+              down_input_grad0 = _mm512_mul_ps(down_input_grad0, weight);
+              down_input_grad1 = _mm512_mul_ps(down_input_grad1, weight);
               
-        //       // gate_output_grad = δ_zji ⊙ v_ji ⊙ σ'(u_ji)
-        //       __m512 gate_grad0 = _mm512_mul_ps(down_input_grad0, 
-        //                                        _mm512_mul_ps(up_val0, act_fn_grad(gate_val0)));
-        //       __m512 gate_grad1 = _mm512_mul_ps(down_input_grad1, 
-        //                                        _mm512_mul_ps(up_val1, act_fn_grad(gate_val1)));
+              // gate_output_grad = δ_zji ⊙ v_ji ⊙ σ'(u_ji)
+              __m512 gate_grad0 = _mm512_mul_ps(down_input_grad0, 
+                                               _mm512_mul_ps(up_val0, act_fn_grad(gate_val0)));
+              __m512 gate_grad1 = _mm512_mul_ps(down_input_grad1, 
+                                               _mm512_mul_ps(up_val1, act_fn_grad(gate_val1)));
               
-        //       // up_output_grad = δ_zji ⊙ σ(u_ji)
-        //       __m512 up_grad0 = _mm512_mul_ps(down_input_grad0, act_fn_1(gate_val0));
-        //       __m512 up_grad1 = _mm512_mul_ps(down_input_grad1, act_fn_1(gate_val1));
+              // up_output_grad = δ_zji ⊙ σ(u_ji)
+              __m512 up_grad0 = _mm512_mul_ps(down_input_grad0, act_fn_1(gate_val0));
+              __m512 up_grad1 = _mm512_mul_ps(down_input_grad1, act_fn_1(gate_val1));
               
-        //       avx512_32xfp32_to_32xbf16(&gate_grad0, &gate_grad1, (__m512i *)(gate_output_grad_ptr + j));
-        //       avx512_32xfp32_to_32xbf16(&up_grad0, &up_grad1, (__m512i *)(up_output_grad_ptr + j));
-        //     }
-        //   }
+              avx512_32xfp32_to_32xbf16(&gate_grad0, &gate_grad1, (__m512i *)(gate_output_grad_ptr + j));
+              avx512_32xfp32_to_32xbf16(&up_grad0, &up_grad1, (__m512i *)(up_output_grad_ptr + j));
+            }
+          }
         },
         nullptr);
 
@@ -860,16 +873,16 @@ public:
 	// 	}
 	// }
 
-	for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-	// 	// dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_gate_output_", (ggml_bf16_t*)m_local_gate_output_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// 	// dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_up_output_", (ggml_bf16_t*)m_local_up_output_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-		// dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_output_grad_", (ggml_bf16_t*)m_local_down_output_grad_ptr_[expert_idx], config_.hidden_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-		dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_t_weight_trans_", (ggml_bf16_t *)down_proj_t_ + expert_idx * config_.intermediate_size * config_.hidden_size, config_.intermediate_size * config_.hidden_size, GGML_TYPE_BF16);
-		dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_input_grad_", (ggml_bf16_t*)m_local_down_input_grad_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
+	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
+	// // 	// dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_gate_output_", (ggml_bf16_t*)m_local_gate_output_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
+	// // 	// dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_up_output_", (ggml_bf16_t*)m_local_up_output_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
+	// 	// dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_output_grad_", (ggml_bf16_t*)m_local_down_output_grad_ptr_[expert_idx], config_.hidden_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
+	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_t_weight_trans_", (ggml_bf16_t *)down_proj_t_ + expert_idx * config_.intermediate_size * config_.hidden_size, config_.intermediate_size * config_.hidden_size, GGML_TYPE_BF16);
+	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_input_grad_", (ggml_bf16_t*)m_local_down_input_grad_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
 		
-	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_gate_output_grad_", (ggml_bf16_t*)m_local_gate_output_grad_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_up_output_grad_", (ggml_bf16_t*)m_local_up_output_grad_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	}
+	// // 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_gate_output_grad_", (ggml_bf16_t*)m_local_gate_output_grad_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
+	// // 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_up_output_grad_", (ggml_bf16_t*)m_local_up_output_grad_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
+	// }
 
     backend->do_work_stealing_job(
         activated_expert, nullptr,

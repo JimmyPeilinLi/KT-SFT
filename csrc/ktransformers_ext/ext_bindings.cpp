@@ -842,17 +842,16 @@ class SFT_AMX_MOEBindings {
             const float *weights;
             const void *input;
             void *output;
-            int *batch_size_tensor;
         };
         static void inner(void *args) {
             Args *args_ = (Args *)args;
             args_->cpuinfer->enqueue(
                 &SFT_AMX_MOE<T>::forward, args_->moe, args_->qlen, args_->k,
-                args_->expert_ids, args_->weights, args_->input, args_->output, args_->batch_size_tensor);
+                args_->expert_ids, args_->weights, args_->input, args_->output);
         }
         static std::pair<intptr_t, intptr_t>
         cpuinfer_interface(SFT_AMX_MOE<T> &moe, int qlen, int k, intptr_t expert_ids,
-                        intptr_t weights, intptr_t input, intptr_t output, intptr_t batch_size_tensor) {
+                        intptr_t weights, intptr_t input, intptr_t output) {
             Args *args = new Args{nullptr,
                                 &moe,
                                 qlen,
@@ -860,8 +859,7 @@ class SFT_AMX_MOEBindings {
                                 (const uint64_t *)expert_ids,
                                 (const float *)weights,
                                 (const void *)input,
-                                (void *)output,
-                                (int *)batch_size_tensor};
+                                (void *)output};
             return std::make_pair((intptr_t)&inner, (intptr_t)args);
         }
     };
@@ -878,7 +876,6 @@ class SFT_AMX_MOEBindings {
             const void* input;
 			const void* output_grad;
 			void* input_grad;
-            int *batch_size_tensor;
 		};
 
 		static void inner(void *args) {
@@ -891,15 +888,14 @@ class SFT_AMX_MOEBindings {
 				args_->weights,
                 args_->input,
 				args_->output_grad,
-				args_->input_grad,
-                args_->batch_size_tensor);
+				args_->input_grad);
 		}
 
         static std::pair<intptr_t, intptr_t> cpuinfer_interface(
             SFT_AMX_MOE<T> &moe, int qlen, int k, 
             intptr_t expert_ids, intptr_t weights,
             intptr_t input,
-            intptr_t output_grad, intptr_t input_grad, intptr_t batch_size_tensor) {
+            intptr_t output_grad, intptr_t input_grad) {
             
             Args* args = new Args{
 				nullptr, &moe, qlen, k,
@@ -907,8 +903,7 @@ class SFT_AMX_MOEBindings {
 				(const float*)weights,
                 (const void*)input,
 				(const void*)output_grad,
-				(void*)input_grad,
-                (int *)batch_size_tensor
+				(void*)input_grad
 			};
             return std::make_pair(
                 (intptr_t)&inner,

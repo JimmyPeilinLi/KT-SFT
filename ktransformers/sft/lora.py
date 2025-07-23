@@ -65,13 +65,10 @@ def preprocess_function(examples, tokenizer):
 
 class ModifiedTrainer(Trainer):
     def save_model(self, output_dir=None, _internal_call=False):
-        # 改写trainer的save_model，在checkpoint的时候只存lora权重
+        output_dir = output_dir or self.args.output_dir
         os.makedirs(output_dir, exist_ok=True)
-        torch.save(self.args, os.path.join(output_dir, TRAINING_ARGS_NAME))
-        saved_params = {
-            k: v.to("cpu") for k, v in self.model.named_parameters() if v.requires_grad
-        }
-        torch.save(saved_params, os.path.join(output_dir, "adapter_model.bin"))
+        # 只保存 LoRA adapter（含 adapter_config.json）
+        self.model.save_pretrained(output_dir)
 
 def inspect_device(model, write_file):
     for name, module in model.named_modules(): 

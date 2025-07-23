@@ -593,7 +593,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
                     expert_ids.data_ptr(), 
                     weights.data_ptr(), 
                     input_tensor.data_ptr(), 
-                    output.data_ptr()
+                    output.data_ptr(),
                 )
             )
             cpu_infer.sync()
@@ -608,19 +608,19 @@ class KSFTExpertsCPU(torch.autograd.Function):
         ctx.layer_idx = layer_idx
         
         # ---------- FLOPs ----------
-        qlen = expert_ids.size(0)
-        k    = expert_ids.size(1)
+        # qlen = expert_ids.size(0)
+        # k    = expert_ids.size(1)
 
-        flops_fwd = 6 * qlen * k * H_FIXED * M_FIXED # 2（2 次乘加）* 3（三个矩阵）= 6
-        tflops_f  = flops_fwd / t_fwd / 1e12
+        # flops_fwd = 6 * qlen * k * H_FIXED * M_FIXED # 2（2 次乘加）* 3（三个矩阵）= 6
+        # tflops_f  = flops_fwd / t_fwd / 1e12
 
-        # 把 qlen / k 留给 backward
-        ctx.saved_dims = (qlen, k)
-        ctx._time_fwd  = t_fwd
-        print(f"qlen ,k:{qlen}, {k}")
+        # # 把 qlen / k 留给 backward
+        # ctx.saved_dims = (qlen, k)
+        # ctx._time_fwd  = t_fwd
+        # print(f"qlen ,k:{qlen}, {k}")
         
-        print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
-              f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
+        # print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
+            #   f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
 
         return result
         
@@ -648,7 +648,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
         bw_start = time.time()
         ctx.cpu_infer.submit(
             ctx.moe.backward(
-                layer_idx,
+                # layer_idx,
                 output_grad.size(0),  # qlen
                 expert_ids.size(1),   # k
                 expert_ids.data_ptr(),
@@ -656,22 +656,21 @@ class KSFTExpertsCPU(torch.autograd.Function):
                 input_tensor.data_ptr(), 
                 output_grad.data_ptr(),
                 input_grad.data_ptr(),
-                []
             )
         )
         ctx.cpu_infer.sync()
         
         bw_end   = time.time()
-        t_bw    = bw_end - bw_start
+        # t_bw    = bw_end - bw_start
         
-        # ---------- FLOPs ----------
-        qlen, k  = ctx.saved_dims          # 正确的 q / k
-        flops_bw = 18 * qlen * k * H_FIXED * M_FIXED
-        tflops_b = flops_bw / t_bw / 1e12
-        print(f"qlen:{qlen}, k:{k}")
+        # # ---------- FLOPs ----------
+        # qlen, k  = ctx.saved_dims          # 正确的 q / k
+        # flops_bw = 10 * qlen * k * H_FIXED * M_FIXED
+        # tflops_b = flops_bw / t_bw / 1e12
+        # print(f"qlen:{qlen}, k:{k}")
 
-        print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
-              f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
+        # print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
+        #       f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
         
         return input_grad.to(device=ctx.out_device), None, None, None, None, None, None
     

@@ -174,39 +174,21 @@ class KLinearTorch(KLinearBase):
         if w is None: w = self.load_weight(device=device)
         # else: self.out_features = w.shape[0], self.in_features = w.shape[1]
         
-        if GLOBAL_CONFIG._config["mod"] == "infer":
-            if isinstance(w, nn.Parameter):
-                try:
-                    self.weight = w.to(dtype=self.dtype).view(self.out_features, self.in_features).T
-                except: 
-                    self.weight = w.to(dtype=self.dtype).T
-                self.has_bias = False
-            elif isinstance(w, tuple):
-                try:
-                    self.weight = w[0].to(dtype=self.dtype).view(self.out_features, self.in_features).T
-                except:
-                    self.weight = w[0].to(dtype=self.dtype).T
-                self.bias = w[1].to(dtype=self.dtype)
-                self.has_bias = True
-            else:
-                raise ValueError("Invalid weight type")
-
-        elif GLOBAL_CONFIG._config["mod"] == "sft":
-            if isinstance(w, nn.Parameter):
-                try:
-                    self.weight = nn.Parameter(w.to(dtype=self.dtype).view(self.out_features, self.in_features).T, requires_grad=True)
-                except: 
-                    self.weight = nn.Parameter(w.to(dtype=self.dtype).T, requires_grad=True)
-                self.has_bias = False
-            elif isinstance(w, tuple):
-                try:
-                    self.weight = nn.Parameter(w[0].to(dtype=self.dtype).view(self.out_features, self.in_features).T, requires_grad=True)
-                except:
-                    self.weight = nn.Parameter(w[0].to(dtype=self.dtype).T, requires_grad=True)
-                self.bias = nn.Parameter(w[1].to(dtype=self.dtype), requires_grad=True)
-                self.has_bias = True
-            else:
-                raise ValueError("Invalid weight type")
+        if isinstance(w, nn.Parameter):
+            try:
+                self.weight = w.to(dtype=self.dtype).view(self.out_features, self.in_features).T
+            except: 
+                self.weight = w.to(dtype=self.dtype).T
+            self.has_bias = False
+        elif isinstance(w, tuple):
+            try:
+                self.weight = w[0].to(dtype=self.dtype).view(self.out_features, self.in_features).T
+            except:
+                self.weight = w[0].to(dtype=self.dtype).T
+            self.bias = w[1].to(dtype=self.dtype)
+            self.has_bias = True
+        else:
+            raise ValueError("Invalid weight type")
         # self.linear = self.linear.to(device)
         self.weight = self.weight.to(device)
         if self.has_bias:

@@ -363,8 +363,6 @@ def test_amx_moe_two_round():
         out_ref = moe_torch(input_pt, expert_ids, weights,
                             gate_proj, up_proj, down_proj, True)
         out_ref.retain_grad()
-        
-        batch_size_tensor = torch.tensor([qlen], dtype=torch.int32).contiguous()
 
         # 缓存forward中间结果用于python backward
         gate_u_cache = []
@@ -391,7 +389,7 @@ def test_amx_moe_two_round():
         cpu_infer.submit(moe_cpp.forward(
             qlen, n_routed_experts,
             expert_ids.data_ptr(), weights.data_ptr(),
-            input_cpp.data_ptr(), out_cpp.data_ptr(), batch_size_tensor.data_ptr()))
+            input_cpp.data_ptr(), out_cpp.data_ptr()))
         cpu_infer.sync()
         print("After forward")
         t1 = time.time()
@@ -407,14 +405,16 @@ def test_amx_moe_two_round():
         grad_in_cpp  = torch.zeros_like(input_cpp, dtype=gradtype).contiguous()
 
         # # Torch backward
-        # for p in (gate_proj, up_proj, down_proj, input_pt):
-        #     if p.grad is not None:
-        #         p.grad.zero_()
-        # t2 = time.time()
-        # out_ref.backward(grad_out, retain_graph=True)
-        # t3 = time.time()
-        # print(f"PyTorch backward time {t3-t2:.4f}s | "
-        #       f"TFLOPS {flop_bwd/(t3-t2)/1e12:.2f}")
+        for p in (gate_proj, up_proj, down_proj, input_pt):
+            if p.grad is not None:
+                p.grad.zero_()
+        t2 = time.time()
+        print(1111111)
+        out_ref.backward(grad_out, retain_graph=True)
+        print(2222222)
+        t3 = time.time()
+        print(f"PyTorch backward time {t3-t2:.4f}s | "
+              f"TFLOPS {flop_bwd/(t3-t2)/1e12:.2f}")
 
         # Python backward（模拟C++逻辑）- 详细版本
         t4_py = time.time()
@@ -433,37 +433,37 @@ def test_amx_moe_two_round():
             qlen, n_routed_experts,
             expert_ids.data_ptr(), weights.data_ptr(), input_cpp.data_ptr(),
             grad_out_cpp.data_ptr(),
-            grad_in_cpp.data_ptr(), batch_size_tensor.data_ptr()))
+            grad_in_cpp.data_ptr()))
         cpu_infer.sync()
         t5 = time.time()
         print("After backward")
         print(f"C++      backward time {t5-t4:.4f}s | "
               f"TFLOPS {flop_bwd/(t5-t4)/1e12:.2f}")
 
-        # # 三种backward结果对比
-        # gcpp = grad_in_cpp.to(torch.float32)
-        # gref = input_pt.grad.to(torch.float32) if input_pt.grad is not None else torch.zeros_like(input_pt, dtype=torch.float32)
-        # gpy = grad_in_python.to(torch.float32)
+        # 三种backward结果对比
+        gcpp = grad_in_cpp.to(torch.float32)
+        gref = input_pt.grad.to(torch.float32) if input_pt.grad is not None else torch.zeros_like(input_pt, dtype=torch.float32)
+        gpy = grad_in_python.to(torch.float32)
         
-        # print(f"C++ AMX backward:{gcpp}", '\n', f"pytorch backward:{gref}", '\n', f"python backward:{gpy}")
+        print(f"C++ AMX backward:{gcpp}", '\n', '\n', f"python backward:{gpy}")
         
-        # # 对比结果
-        # rel_bwd_cpp = (gcpp - gref).abs().mean() / gref.abs().mean()
-        # rel_bwd_py = (gpy - gref).abs().mean() / gref.abs().mean()
-        # rel_bwd_cpp_py = (gcpp - gpy).abs().mean() / gpy.abs().mean()
+        # 对比结果
+        rel_bwd_cpp = (gcpp - gref).abs().mean() / gref.abs().mean()
+        rel_bwd_py = (gpy - gref).abs().mean() / gref.abs().mean()
+        rel_bwd_cpp_py = (gcpp - gpy).abs().mean() / gpy.abs().mean()
         
-        # print(f"Torch vs C++:    {rel_bwd_cpp.item():.3e}")
-        # print(f"Torch vs Python: {rel_bwd_py.item():.3e}")
-        # print(f"C++ vs Python:   {rel_bwd_cpp_py.item():.3e}")
+        print(f"Torch vs C++:    {rel_bwd_cpp.item():.3e}")
+        print(f"Torch vs Python: {rel_bwd_py.item():.3e}")
+        print(f"C++ vs Python:   {rel_bwd_cpp_py.item():.3e}")
         
-        # # 检查是否对拍成功
-        # if rel_bwd_cpp_py.item() < 1e-5:
-        #     print("✅ C++和Python backward对拍成功!")
-        # else:
-        #     print("❌ C++和Python backward对拍失败，存在显著差异")
+        # 检查是否对拍成功
+        if rel_bwd_cpp_py.item() < 1e-5:
+            print("✅ C++和Python backward对拍成功!")
+        else:
+            print("❌ C++和Python backward对拍失败，存在显著差异")
             
         
-        manual_check(expert_ids)
+        # manual_check(expert_ids)
 
 def load_bf16(stub, shape):
     with open(stub + ".bf16", "rb") as f:

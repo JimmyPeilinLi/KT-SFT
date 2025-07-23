@@ -20,6 +20,7 @@ ktransformers/server_test1.db
 *.patch
 img/
 tmp*.txt
+tmp*.py
 test.txt
 book
 ktransformers/tests/chat_txt.txt
@@ -43,7 +44,7 @@ graphviz/
 compute_graph*
 graphviz*
 third_party/
-test_adapter/demo_adapter*
+test_adapter/demo_*
 *.whl
 *.svg
 *_graph
