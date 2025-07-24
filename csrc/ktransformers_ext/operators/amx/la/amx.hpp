@@ -591,7 +591,7 @@ struct GemmKernel224Int8 {
       tile_config.set_row_col(i, TILE_K / VNNI_BLK, TILE_N * VNNI_BLK * sizeof(dt));
 
     // size is 16 x 16
-    for (int i = 4; i < 8; i++)
+    for (int i = 4; i < 8; i++) 
       tile_config.set_row_col(i, TILE_M, TILE_N * sizeof(output_t));
 
     tile_config.set_config();

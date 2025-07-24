@@ -438,11 +438,6 @@ public:
                                          ith, nth);
         },
         nullptr);
-	
-	
-	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_weight_new_", (ggml_bf16_t *)down_proj_t_ + expert_idx * config_.intermediate_size * config_.hidden_size, config_.hidden_size * config_.intermediate_size, GGML_TYPE_BF16);
-	// }
 
 	// if constexpr (std::is_same_v<typename T::dt, ggml_bf16_t>) {
 	// 	// 确保 debug/ 目录存在
@@ -462,7 +457,7 @@ public:
 
 	// 		ofs << "==== Expert " << expert_idx << " ====\n";
 	// 		for (int n_idx = 0; n_idx < buf->k; ++n_idx) {
-	// 			// 明确当作 bfloat16 读
+	// 			// 明确当作 int8 读
 	// 			const int8_t* row = reinterpret_cast<const int8_t*>(buf->b) + n_idx * buf->n;
 
 	// 			// 写整行
@@ -626,40 +621,41 @@ public:
         },
         nullptr);
 	
-	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_ba_new_", (ggml_bf16_t*)m_local_gate_output_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// }
-	// if constexpr (std::is_same_v<typename T::dt, int8_t>) {
-	// 	std::cout << "GO INTO forward output" << std::endl;
-	// 	// 确保 debug/ 目录存在
-	// 	std::filesystem::create_directories("debug");
+	for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
+		dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_ba_ori_", (ggml_bf16_t*)m_local_gate_output_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
+	}
+	if constexpr (std::is_same_v<typename T::dt, int8_t>) {
+		std::cout << "GO INTO forward output" << std::endl;
+		// 确保 debug/ 目录存在
+		std::filesystem::create_directories("debug");
 
-	// 	for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
-	// 		auto buf = down_ba_[expert_idx].get();
-	// 		// std::cout << "k: " << buf->k << "; n: " << buf->n << std::endl;
-	// 		// 打开对应 expert 的文件
-	// 		std::string path = "debug/" + std::to_string(expert_idx) + "_down_ba_debug.txt";
-	// 		std::ofstream ofs(path, std::ios::out);
-	// 		if (!ofs) {
-	// 			std::cerr << "Failed to open " << path << " for writing\n";
-	// 			continue;
-	// 		}
+		for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
+			auto buf = down_ba_[expert_idx].get();
+			// std::cout << "k: " << buf->k << "; n: " << buf->n << std::endl;
+			// 打开对应 expert 的文件
+			std::string path = "debug/" + std::to_string(expert_idx) + "_down_ba_debug.txt";
+			std::ofstream ofs(path, std::ios::out);
+			if (!ofs) {
+				std::cerr << "Failed to open " << path << " for writing\n";
+				continue;
+			}
 
-	// 		ofs << "==== Expert " << expert_idx << " ====\n";
-	// 		for (int n_idx = 0; n_idx < m_local_num_[expert_idx]; ++n_idx) {
-	// 			// 明确当作 bfloat16 读
-	// 			const int8_t* row = reinterpret_cast<const int8_t*>(buf->a) + n_idx * buf->k;
+			ofs << "==== Expert " << expert_idx << " ====\n";
+			ofs << "buf_k: " << buf->k << "\n";
+			for (int n_idx = 0; n_idx < m_local_num_[expert_idx]; ++n_idx) {
+				// 明确当作 bfloat16 读
+				const int8_t* row = reinterpret_cast<const int8_t*>(buf->a) + n_idx * buf->k;
 
-	// 			// 写整行
-	// 			ofs << "row[" << n_idx << "] = { "
-	// 				<< int8_row_to_string(row, buf->k)
-	// 				<< " }\n";
-	// 		}
+				// 写整行
+				ofs << "row[" << n_idx << "] = { "
+					<< int8_row_to_string(row, buf->k)
+					<< " }\n";
+			}
 
-	// 		ofs.close();
-	// 	}
-	// 	std::cout << "OUT INTO forward output" << std::endl;
-	// }
+			ofs.close();
+		}
+		std::cout << "OUT INTO forward output" << std::endl;
+	}
     nth = T::recommended_nth(config_.hidden_size);
     backend->do_work_stealing_job(
         nth * activated_expert, [&](int _) { T::config(); },
@@ -747,11 +743,6 @@ public:
           }
         }, 
         nullptr);
-	
-	// for debug
-	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_output_grad_", (ggml_bf16_t*)m_local_down_output_grad_ptr_[expert_idx], config_.hidden_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// }
 
     backend->do_work_stealing_job(
         activated_expert, nullptr,
@@ -761,39 +752,41 @@ public:
           down_t_ba_[expert_idx]->from_mat(m_local_num_[expert_idx], m_local_down_output_grad_ptr_[expert_idx], 0, 1);
         },
         nullptr);
-	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_output_grad_new_", (ggml_bf16_t*)m_local_down_output_grad_ptr_[expert_idx], config_.hidden_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// }
+		
+	// for debug
+	for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
+		dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_output_grad_", (ggml_bf16_t*)m_local_down_output_grad_ptr_[expert_idx], config_.hidden_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
+	}
 	
-	// if constexpr (std::is_same_v<typename T::dt, int8_t>) {
-	// 	// 确保 debug/ 目录存在
-	// 	std::filesystem::create_directories("debug");
+	if constexpr (std::is_same_v<typename T::dt, int8_t>) {
+		// 确保 debug/ 目录存在
+		std::filesystem::create_directories("debug");
 
-	// 	for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
-	// 		auto buf = down_t_ba_[expert_idx].get();
-	// 		// std::cout << "k: " << buf->k << "; n: " << buf->n << std::endl;
-	// 		// 打开对应 expert 的文件
-	// 		std::string path = "debug/" + std::to_string(expert_idx) + "_down_ba_t_debug.txt";
-	// 		std::ofstream ofs(path, std::ios::out);
-	// 		if (!ofs) {
-	// 			std::cerr << "Failed to open " << path << " for writing\n";
-	// 			continue;
-	// 		}
+		for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
+			auto buf = down_t_ba_[expert_idx].get();
+			// std::cout << "k: " << buf->k << "; n: " << buf->n << std::endl;
+			// 打开对应 expert 的文件
+			std::string path = "debug/" + std::to_string(expert_idx) + "_down_ba_t_debug.txt";
+			std::ofstream ofs(path, std::ios::out);
+			if (!ofs) {
+				std::cerr << "Failed to open " << path << " for writing\n";
+				continue;
+			}
 
-	// 		ofs << "==== Expert " << expert_idx << " ====\n";
-	// 		for (int n_idx = 0; n_idx < m_local_num_[expert_idx]; ++n_idx) {
-	// 			// 明确当作 bfloat16 读
-	// 			const int8_t* row = reinterpret_cast<const int8_t*>(buf->a) + n_idx * buf->k;
+			ofs << "==== Expert " << expert_idx << " ====\n";
+			for (int n_idx = 0; n_idx < m_local_num_[expert_idx]; ++n_idx) {
+				// 明确当作 bfloat16 读
+				const int8_t* row = reinterpret_cast<const int8_t*>(buf->a) + n_idx * buf->k;
 
-	// 			// 写整行
-	// 			ofs << "row[" << n_idx << "] = { "
-	// 				<< int8_row_to_string(row, buf->k)
-	// 				<< " }\n";
-	// 		}
+				// 写整行
+				ofs << "row[" << n_idx << "] = { "
+					<< int8_row_to_string(row, buf->k)
+					<< " }\n";
+			}
 
-	// 		ofs.close();
-	// 	}
-	// }
+			ofs.close();
+		}
+	}
 
     int nth = T::recommended_nth(config_.intermediate_size);  
     backend->do_work_stealing_job(
@@ -802,7 +795,7 @@ public:
           int expert_idx = m_expert_id_map_[task_id / nth];
           int ith = task_id % nth;
 
-          // TODO: cache
+        //   // TODO: cache
           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
                       gate_up_ba_[expert_idx], gate_bb_[expert_idx], gate_bc_[expert_idx], ith, nth, use_amx);
           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
@@ -872,17 +865,18 @@ public:
 	// 		ofs.close();
 	// 	}
 	// }
+	
+	for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
+		dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_t_ba_", (ggml_bf16_t*)m_local_down_output_grad_ptr_[expert_idx], config_.hidden_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
+	}
+	
+	for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
+		dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_t_bb_", (ggml_bf16_t *)down_proj_t_ + expert_idx * config_.intermediate_size * config_.hidden_size, config_.hidden_size * config_.intermediate_size, GGML_TYPE_BF16);
+	}
 
-	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-	// // 	// dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_gate_output_", (ggml_bf16_t*)m_local_gate_output_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// // 	// dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_up_output_", (ggml_bf16_t*)m_local_up_output_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// 	// dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_output_grad_", (ggml_bf16_t*)m_local_down_output_grad_ptr_[expert_idx], config_.hidden_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_t_weight_trans_", (ggml_bf16_t *)down_proj_t_ + expert_idx * config_.intermediate_size * config_.hidden_size, config_.intermediate_size * config_.hidden_size, GGML_TYPE_BF16);
-	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_input_grad_", (ggml_bf16_t*)m_local_down_input_grad_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-		
-	// // 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_gate_output_grad_", (ggml_bf16_t*)m_local_gate_output_grad_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// // 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_up_output_grad_", (ggml_bf16_t*)m_local_up_output_grad_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// }
+	for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
+		dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_t_bc_", (ggml_bf16_t*)m_local_down_input_grad_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
+	}
 
     backend->do_work_stealing_job(
         activated_expert, nullptr,
