@@ -35,7 +35,7 @@ from ktransformers.server.config.config import Config
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled
 from ktransformers.util.vendors import device_manager, get_device, to_device, GPUVendor
 from ktransformers.sft.lora import inject_lora_layer, lora_and_load_adapter
-from ktransformers.util.custom_loader import GGUFLoader
+from ktransformers.util.custom_loader import GGUFLoader, SafeTensorLoader
 from ktransformers.util.globals import GLOBAL_CONFIG
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
@@ -193,7 +193,54 @@ def local_chat(
             # 确保模型回到训练模式（适配器可能需要梯度）
             model.train()
         else:
-            raise NotImplementedError("Currently only GGUF format adapters are supported. Please provide a .gguf file.")
+            # inject_lora_layer(model)
+
+            # if use_adapter_path.endswith(".gguf"):
+            #     # ---- GGUF 格式 ----
+            #     adapter_loader = GGUFLoader(use_adapter_path)
+            #     is_gguf = True
+            # else:
+            #     # ---- SafeTensor（文件或目录）----
+            #     adapter_loader = SafeTensorLoader(use_adapter_path)
+            #     is_gguf = False
+
+            # # ========== 挂载权重 ==========
+            # # load_weights 会根据 adapter_gguf 决定是否走量化解码逻辑
+            # load_weights(model, adapter_loader, adapter_gguf=is_gguf)
+
+            # # LoRA 权重需保持可训练状态（方便后续再 Finetune）
+            # model.train()
+            
+            
+            
+            
+            inject_lora_layer(model)  # 确保模型已注入LoRA层
+            
+            # 加载适配器权重
+            adapter_loader = SafeTensorLoader(use_adapter_path)
+            device = next(model.parameters()).device
+            
+            # 遍历所有适配器权重
+            for key in adapter_loader.tensor_file_map.keys():
+                try:
+                    # 加载张量到模型所在设备
+                    tensor = adapter_loader.load_tensor(key, device=device)
+                    
+                    # 调整权重名称以匹配模型层
+                    # 示例: 移除前缀 'base_model.model.'
+                    model_key = key.replace("base_model.model.", "")
+                    model_key = model_key.replace(".weight", ".default.weight")
+                    
+                    # 获取模型中的对应参数
+                    param = model.get_parameter(model_key)
+                    param.data.copy_(tensor.data)
+                    
+                    print(f"Loaded adapter weight: {key} -> {model_key}")
+                except AttributeError as e:
+                    print(f"Skipping {key}: not a model parameter")
+                except KeyError as e:
+                    print(f"Key not found in model: {model_key} (original: {key})")
+            
 
     try:
         model.generation_config = GenerationConfig.from_pretrained(model_path)
@@ -218,7 +265,7 @@ def local_chat(
     # else:
     #     os.system("clear")
     
-    if (GLOBAL_CONFIG._config["mod"] == "sft") :
+    if GLOBAL_CONFIG._config["mod"] == "sft" :
         model.model.embed_tokens.to("cpu")
 
     while True:
@@ -314,10 +361,11 @@ if __name__ == "__main__":
             max_new_tokens=1000,
             force_think=False,
             optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx.yaml",
-            is_sft=False,
-            sft_data_path="test_adapter/sft_translation.json",
-            save_adapter_path="test_adapter/demo_adapter_KT_target_kv",
-            use_adapter=True,
-            use_adapter_path="/home/lpl/KT-beifen/test_adapter/demo_adapter_origin_target_kv/lora.gguf"
+            is_sft=True,
+            # sft_data_path="test_adapter/ESC_inst_train_noinst.json",
+            sft_data_path="test_adapter/500token_test.json",
+            save_adapter_path="test_adapter/demo_adapter_test_final_amx_KT_target_qkvo",
+            use_adapter=False,
+            use_adapter_path="test_adapter/demo_adapter_final_amx_KT_target_qkvo/checkpoint-660"
         )
         

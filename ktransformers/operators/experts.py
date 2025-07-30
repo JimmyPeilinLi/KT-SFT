@@ -608,19 +608,19 @@ class KSFTExpertsCPU(torch.autograd.Function):
         ctx.layer_idx = layer_idx
         
         # ---------- FLOPs ----------
-        # qlen = expert_ids.size(0)
-        # k    = expert_ids.size(1)
+        qlen = expert_ids.size(0)
+        k    = expert_ids.size(1)
 
-        # flops_fwd = 6 * qlen * k * H_FIXED * M_FIXED # 2（2 次乘加）* 3（三个矩阵）= 6
-        # tflops_f  = flops_fwd / t_fwd / 1e12
+        flops_fwd = 6 * qlen * k * H_FIXED * M_FIXED # 2（2 次乘加）* 3（三个矩阵）= 6
+        tflops_f  = flops_fwd / t_fwd / 1e12
 
-        # # 把 qlen / k 留给 backward
-        # ctx.saved_dims = (qlen, k)
-        # ctx._time_fwd  = t_fwd
-        # print(f"qlen ,k:{qlen}, {k}")
+        # 把 qlen / k 留给 backward
+        ctx.saved_dims = (qlen, k)
+        ctx._time_fwd  = t_fwd
+        print(f"qlen ,k:{qlen}, {k}")
         
-        # print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
-            #   f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
+        print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
+              f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
 
         return result
         
@@ -661,16 +661,17 @@ class KSFTExpertsCPU(torch.autograd.Function):
         ctx.cpu_infer.sync()
         
         bw_end   = time.time()
-        # t_bw    = bw_end - bw_start
+        t_bw    = bw_end - bw_start
         
-        # # ---------- FLOPs ----------
-        # qlen, k  = ctx.saved_dims          # 正确的 q / k
-        # flops_bw = 10 * qlen * k * H_FIXED * M_FIXED
-        # tflops_b = flops_bw / t_bw / 1e12
-        # print(f"qlen:{qlen}, k:{k}")
+        # ---------- FLOPs ----------
+        qlen, k  = ctx.saved_dims          # 正确的 q / k
+        flops_bw = 10 * qlen * k * H_FIXED * M_FIXED
+        tflops_b = flops_bw / t_bw / 1e12
+        print(f"qlen:{qlen}, k:{k}")
 
-        # print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
-        #       f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
+        print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
+              f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
+        # print("XXY", end="")
         
         return input_grad.to(device=ctx.out_device), None, None, None, None, None, None
     
@@ -952,10 +953,24 @@ class KExpertsTorch(KExpertsBase):
         down = None
 
         for key in keys:
-            if key + ".ffn_gate_exps.weight" in self.gguf_loader.tensor_info:
+            if isinstance(self.gguf_loader, SafeTensorLoader):
+                res = self.gguf_loader.load_experts(key)
+                return {key: res}
+            elif key + ".ffn_gate_exps.weight" in self.gguf_loader.tensor_info:
                 gate = self.gguf_loader.get_mmap_tensor(key + ".ffn_gate_exps.weight")
                 up = self.gguf_loader.get_mmap_tensor(key + ".ffn_up_exps.weight")
                 down = self.gguf_loader.get_mmap_tensor(key + ".ffn_down_exps.weight")
+            else:
+                import re
+                match = re.match(r'model\.layers\.(\d+)\.mlp\.experts(.*)', key)
+                if match:
+                    layer_id = match.group(1)
+                    suffix = match.group(2)
+                    key = f"blk.{layer_id}{suffix}"
+                    if key + ".ffn_gate_exps.weight" in self.gguf_loader.tensor_info:
+                        gate = self.gguf_loader.get_mmap_tensor(key + ".ffn_gate_exps.weight")
+                        up = self.gguf_loader.get_mmap_tensor(key + ".ffn_up_exps.weight")
+                        down = self.gguf_loader.get_mmap_tensor(key + ".ffn_down_exps.weight")
             res = {"gate": gate, "up": up, "down": down}
         return res
 

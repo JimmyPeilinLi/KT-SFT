@@ -53,15 +53,22 @@ class ProfilerCallback(TrainerCallback):
     def on_step_end(self, args, state, control, **kwargs):
         self.profiler.step()
 
-def preprocess_function(examples, tokenizer):
-    inputs = examples["input"]
-    targets = examples["output"]
+def preprocess_function(batch, tokenizer, max_len=512):
+    full_inputs = [ins + inp for ins, inp in zip(batch["instruction"], batch["input"])]
     
-    model_inputs = tokenizer(inputs, padding="max_length", truncation=True, max_length=512)
-    labels = tokenizer(targets, padding="max_length", truncation=True, max_length=512)
-    
-    model_inputs["labels"] = labels["input_ids"]
-    return model_inputs
+    # print(f"FI: {full_inputs}")
+    # print(f"TFI: {type(full_inputs)}")
+    tokenized_inputs = tokenizer(full_inputs, padding="max_length", truncation=True, max_length=max_len)
+    tokenized_outputs = tokenizer(batch["output"], padding="max_length", truncation=True, max_length=max_len)
+
+	# need batch=false, just for debug and test
+    # print("🔹Instruction tokens:", len(tokenizer.tokenize(instruction)))
+    # print("🔹Input tokens:", len(tokenizer.tokenize(inputs)))
+    # print("🔹Instruction+Input tokens:", len(tokenizer.tokenize(full_input)))
+    # print("🔸Output tokens (label):", len(tokenizer.tokenize(targets)))
+
+    tokenized_inputs["labels"] = tokenized_outputs["input_ids"]
+    return tokenized_inputs
 
 class ModifiedTrainer(Trainer):
     def save_model(self, output_dir=None, _internal_call=False):
@@ -368,10 +375,10 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         target_modules=[
-            # "q_proj"
+            "q_proj",
             "kv_a_proj_with_mqa",
             "kv_b_proj",
-            # "o_proj"
+            "o_proj"
         ],
         r=8,
         lora_alpha=32,
@@ -400,7 +407,15 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
 
     model.print_trainable_parameters() 
     
-    print(f"model:{model}")
+    # print(f"model:{model}")
+    
+    # output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
+    # loss = output.logits.mean()
+        
+    # dot = make_dot(loss, params=dict(model.named_parameters()))
+    # dot.render("KT_compute_cpuinfer_moe_model_graph", format="svg")
+    
+    # return
     
     trainer = ModifiedTrainer(
         model=model,
@@ -667,8 +682,10 @@ def inject_lora_layer(model):
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         target_modules=[
+            "q_proj",
             "kv_a_proj_with_mqa",
-            "kv_b_proj"
+            "kv_b_proj",
+            "o_proj"
         ],
         r=8,
         lora_alpha=16,

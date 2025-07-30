@@ -33,6 +33,25 @@ if not torch.xpu.is_available():
     from ktransformers.operators.flashinfer_wrapper import MLAWrapperSingleton
 import socket
 
+from transformers.generation.logits_process import LogitsProcessor
+
+class NoEosUntil(LogitsProcessor):
+    """
+    禁止在生成前 `min_gen_len` 个 token 内输出任何终止符。
+    `prompt_len` 由外部传入；只关注 *新生成* 的 token 数。
+    """
+    def __init__(self, prompt_len: int, min_gen_len: int, eos_ids):
+        super().__init__()
+        self.start_len = int(prompt_len)          # prompt 长度
+        self.min_len   = self.start_len + int(min_gen_len)
+        self.eos_ids   = list(eos_ids) if isinstance(eos_ids,(list,tuple)) else [int(eos_ids)]
+
+    def __call__(self, input_ids, scores):
+        # 只有当总长度 < start_len + min_gen_len 时屏蔽 eos
+        if input_ids.shape[-1] < self.min_len:
+            scores[..., self.eos_ids] = -float("inf")
+        return scores
+
 warm_uped = False
 
 def get_free_ports(n: int, continue_prot: list):
@@ -323,7 +342,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         if past_key_values != None and isinstance(past_key_values, StaticCache):
             past_key_values.change_seq_length(1)
         sync_all_device(all_cuda_device)
-        #print(logits)
+        # print(logits)
         next_token_scores = logits_warper(inputs, logits[:, -1, :])
         if generation_config.do_sample:
             probs = nn.functional.softmax(next_token_scores, dim=-1)
@@ -399,6 +418,9 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
         else:
             next_token = torch.argmax(next_token_scores, dim=-1)
+            
+        # decoded_first = tokenizer.decode(next_token)
+        # print(f"\n[DEBUG] first token id={next_token.item()} decoded='{decoded_first}'\n")
 
         first_token_time = time.time() - start_time
         
