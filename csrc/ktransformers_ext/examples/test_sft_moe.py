@@ -338,6 +338,7 @@ def test_backward_2round_with_tflops():
         fwd_start = time.time()
         CPUInfer.submit(
             moe.forward(
+                round_idx,
                 qlen, n_routed_experts,
                 expert_ids.data_ptr(), weights.data_ptr(),
                 input_cpp.data_ptr(), output_cpp.data_ptr()
@@ -658,7 +659,7 @@ def test_backward_one_vs_many_comparison():
     
     CPUInfer.submit(
         moe_many.forward(
-            qlen, n_routed_experts,
+            0, qlen, n_routed_experts,
             expert_ids.data_ptr(), weights.data_ptr(),
             input_many.data_ptr(), output_many.data_ptr()
         )

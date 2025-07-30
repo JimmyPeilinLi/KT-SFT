@@ -61,12 +61,11 @@ class SFT_MOE {
     void forward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
     void forward_many(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
     void forward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
-	void backward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend);
-	void backward_many(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* output_grad, void* input_grad, Backend* backend);
-	void backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* grad_output, void* grad_input, Backend* backend); // FIXME: expert backward definition for C++
+	void backward_one(int layer_idx, int k, const uint64_t* expert_ids, const float* weights, const void* input, const void* output_grad, void* input_grad, Backend* backend);
+	void backward_many(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, const void* output_grad, void* input_grad, Backend* backend);
+	void backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, const void* grad_output, void* grad_input, Backend* backend); // FIXME: expert backward definition for C++
     
-    void transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx, std::string name);
-    void ensure_fwd_cache(int qlen, int k);
+    void transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx);
     void get_transpose(Backend* backend);
 
    private:
@@ -152,13 +151,6 @@ class SFT_MOE {
     int* m_local_expert_positions_;                          // [routed_expert_num * group_max_len]
     std::vector<int*> m_local_token_indices_ptr_;            // [expert_num]
     std::vector<int*> m_local_expert_positions_ptr_;         // [expert_num]
-
-	float* m_local_fw_cache_gate_u_;						// [layer_max_num * group_max_len * routed_expert_num * intermediate_size * sizeof(float)]
-	float* m_local_fw_cache_up_v_;							// [layer_max_num * group_max_len * routed_expert_num * intermediate_size * sizeof(float)]
-	// m_fw_cache_gate_u_layer_ptr_[l][t] -> float*, 其后面依次是 K*I 个 float
-	// 访问第 e 个 expert 第 j 个元素时：ptr[e * I + j]
-	std::vector<std::vector<float*>> m_local_fw_cache_gate_u_layer_ptr_;
-	std::vector<std::vector<float*>> m_local_fw_cache_up_v_layer_ptr_;
 };
 
 #endif

@@ -591,11 +591,13 @@ namespace {
 			int qlen, int k,
 			const uint64_t* expert_ids,
 			const float*     weights,
+			const void*      input,
 			const void*      grad_output,
 			void*            grad_input,
 			Backend*         backend)
 	{
 		self.backward(layer_idx, qlen, k, expert_ids, weights,
+					input,
 					grad_output, grad_input,
 					backend);
 	}
@@ -671,6 +673,7 @@ class SFT_MOEBindings {
 			int k;
 			const uint64_t* expert_ids;
 			const float* weights;
+			const void* input;
 			const void* grad_output;
 			void* grad_input;
 		};
@@ -684,17 +687,19 @@ class SFT_MOEBindings {
 				args_->qlen, args_->k,
 				args_->expert_ids,
 				args_->weights,
+				args_->input,
 				args_->grad_output,
 				args_->grad_input);
 		}
 
         static std::pair<intptr_t, intptr_t> 
-		cpuinfer_interface( SFT_MOE& moe, int layer_idx, int qlen, int k, intptr_t expert_ids, intptr_t weights, intptr_t grad_output, intptr_t grad_input) {
+		cpuinfer_interface( SFT_MOE& moe, int layer_idx, int qlen, int k, intptr_t expert_ids, intptr_t weights, intptr_t input, intptr_t grad_output, intptr_t grad_input) {
             
             Args* args = new Args{
 				nullptr, &moe, layer_idx, qlen, k,
 				reinterpret_cast<const uint64_t*>(expert_ids),
 				reinterpret_cast<const float*>(weights),
+				reinterpret_cast<const void*>(input),
 				reinterpret_cast<const void*>(grad_output),
 				reinterpret_cast<void*>(grad_input)
 			};

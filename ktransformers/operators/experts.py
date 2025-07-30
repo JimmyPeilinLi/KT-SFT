@@ -655,6 +655,7 @@ class KSFTExpertsCPU(torch.autograd.Function):
                 expert_ids.size(1),   # k
                 expert_ids.data_ptr(),
                 weights.data_ptr(),
+                input_tensor.data_ptr(), 
                 grad_output.data_ptr(),
                 grad_input.data_ptr()
             )
