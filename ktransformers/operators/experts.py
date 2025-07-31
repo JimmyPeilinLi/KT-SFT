@@ -499,6 +499,8 @@ class KSFTExpertsCPU(torch.autograd.Function):
                 hidden_type, # TODO: get from model.dtype
             )
             self.moe = SFT_MOE(moe_config)
+            self.cpu_infer.submit(self.moe.get_transpose())
+            self.cpu_infer.sync()
         elif self.backend == "AMXBF16":
             print("GO INTO AMXBF16!!")
             from cpuinfer_ext.sft_moe import SFT_AMX_MOEConfig, SFT_AMXBF16_MOE

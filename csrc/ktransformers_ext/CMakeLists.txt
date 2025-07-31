@@ -9,8 +9,8 @@ set(CMAKE_CXX_STANDARD 17)
 add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=${_GLIBCXX_USE_CXX11_ABI})
 # set(CMAKE_BUILD_TYPE "Release")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -ffast-math -fopenmp")
-set(CMAKE_BUILD_TYPE "Debug")
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# set(CMAKE_BUILD_TYPE "Debug")
+# set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 
 include(CheckCXXCompilerFlag)

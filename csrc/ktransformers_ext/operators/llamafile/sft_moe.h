@@ -65,7 +65,7 @@ class SFT_MOE {
 	void backward_many(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, const void* output_grad, void* input_grad, Backend* backend);
 	void backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, const void* grad_output, void* grad_input, Backend* backend); // FIXME: expert backward definition for C++
     
-    void transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx);
+    void transpose_expert(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx);
     void get_transpose(Backend* backend);
 
    private:

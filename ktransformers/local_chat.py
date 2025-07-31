@@ -312,7 +312,7 @@ if __name__ == "__main__":
             force_think=False,
             optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft.yaml",
             is_sft=True,
-            sft_data_path="tmp/demo_test_10example.json",
+            sft_data_path="test_adapter/sft_translation.json",
             save_adapter_path="test_adapter/demo_adapter_KT_target_kv",
             use_adapter=False,
             use_adapter_path="test_adapter/demo_adapter_origin_target_kv"

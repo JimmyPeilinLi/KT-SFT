@@ -708,6 +708,22 @@ class SFT_MOEBindings {
                 reinterpret_cast<intptr_t>(args));
         }
     };
+    
+    class GetTransposeBindings {
+      public:
+        struct Args {
+            CPUInfer *cpuinfer;
+            SFT_MOE *moe;
+        };
+        static void inner(void *args) {
+            Args *args_ = (Args *)args;
+            args_->cpuinfer->enqueue(&SFT_MOE::get_transpose, args_->moe);
+        }
+        static std::pair<intptr_t, intptr_t> cpuinfer_interface(SFT_MOE &moe) {
+            Args *args = new Args{nullptr, &moe};
+            return std::make_pair((intptr_t)&inner, (intptr_t)args);
+        }
+    };
 };
 
 #if defined(__x86_64__) && defined(__HAS_AVX512F__) && defined(__HAS_AMX__)
@@ -928,7 +944,8 @@ PYBIND11_MODULE(cpuinfer_ext, m) {
         .def(py::init<SFT_MOEConfig>())
         .def("warm_up", &SFT_MOEBindings::WarmUpBindinds::cpuinfer_interface)
         .def("forward", &SFT_MOEBindings::ForwardBindings::cpuinfer_interface)
-		.def("backward", &SFT_MOEBindings::BackwardBindings::cpuinfer_interface);
+		.def("backward", &SFT_MOEBindings::BackwardBindings::cpuinfer_interface)
+        .def("get_transpose", &SFT_MOEBindings::GetTransposeBindings::cpuinfer_interface);
 
     #if defined(__x86_64__) && defined(__HAS_AVX512F__) && defined(__HAS_AMX__)
     py::class_<AMX_MOEConfig>(moe_module, "AMX_MOEConfig")

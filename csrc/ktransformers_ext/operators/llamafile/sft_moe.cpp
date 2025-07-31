@@ -454,7 +454,7 @@ void SFT_MOE::forward(int layer_idx, int qlen, int k, const uint64_t* expert_ids
     forward(layer_idx, qlen - forward_len, k, expert_ids + forward_len * k, weights + forward_len * k, (uint8_t*)input + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend);
 }
 
-void SFT_MOE::transpose_expert_matrix(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx) {
+void SFT_MOE::transpose_expert(const void* src, void* dst, int R, int C, ggml_type src_type, ggml_type dst_type, uint64_t expert_idx) {
     to_float(src, transpose_buffer_fp32_ + (R * C * expert_idx), R * C, src_type);
     from_float(transpose_buffer_fp32_ + (R * C * expert_idx), (uint8_t*)transpose_buffer_ + (R * C * expert_idx) * ggml_type_size(dst_type), R * C, dst_type);
     for (int r = 0; r < R; ++r) {
@@ -474,7 +474,7 @@ void SFT_MOE::get_transpose(Backend* backend) {
     backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
         void* src_expert = (uint8_t*)gate_proj_ + expert_idx * (size_t)R_gate * C_gate * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
         void* dst_expert_t = (uint8_t*)gate_proj_t_ + expert_idx * (size_t)C_gate * R_gate * ggml_type_size(config_.grad_type);
-        transpose_expert_matrix(src_expert, dst_expert_t, R_gate, C_gate, config_.gate_type, config_.grad_type, expert_idx);
+        transpose_expert(src_expert, dst_expert_t, R_gate, C_gate, config_.gate_type, config_.grad_type, expert_idx);
 	}, nullptr);
     // Transpose up_proj_
     int R_up = config_.intermediate_size;
@@ -482,7 +482,7 @@ void SFT_MOE::get_transpose(Backend* backend) {
     backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
         void* src_expert = (uint8_t*)up_proj_ + expert_idx * (size_t)R_up * C_up * ggml_type_size(config_.up_type) / ggml_blck_size(config_.up_type);
         void* dst_expert_t = (uint8_t*)up_proj_t_ + expert_idx * (size_t)C_up * R_up * ggml_type_size(config_.grad_type);
-        transpose_expert_matrix(src_expert, dst_expert_t, R_up, C_up, config_.up_type, config_.grad_type, expert_idx);
+        transpose_expert(src_expert, dst_expert_t, R_up, C_up, config_.up_type, config_.grad_type, expert_idx);
 	}, nullptr);
     // Transpose down_proj_
     int R_down = config_.hidden_size;
@@ -490,7 +490,7 @@ void SFT_MOE::get_transpose(Backend* backend) {
     backend->do_work_stealing_job(config_.expert_num, nullptr, [&](int expert_idx) {
         void* src_expert = (uint8_t*)down_proj_ + expert_idx * (size_t)R_down * C_down * ggml_type_size(config_.down_type) / ggml_blck_size(config_.down_type);
         void* dst_expert_t = (uint8_t*)down_proj_t_ + expert_idx * (size_t)C_down * R_down * ggml_type_size(config_.grad_type);
-        transpose_expert_matrix(src_expert, dst_expert_t, R_down, C_down, config_.down_type, config_.grad_type, expert_idx);
+        transpose_expert(src_expert, dst_expert_t, R_down, C_down, config_.down_type, config_.grad_type, expert_idx);
 	}, nullptr);
 }
 
@@ -682,8 +682,7 @@ void SFT_MOE::backward_many(int layer_idx, int qlen, int k, const uint64_t* expe
         for (int i = 0; i < m_local_num_[expert_idx]; i++) {
             int token_idx = m_local_token_indices_ptr_[expert_idx][i];
             int expert_pos = m_local_expert_positions_ptr_[expert_idx][i];
-            float weight = weights[token_idx * k + expert_pos]; // FIXME: bug here!!!
-            // float weight = 1.0;
+            float weight = weights[token_idx * k + expert_pos];
             
             for (int j = ith * stride; j < (ith + 1) * stride; j++) {
                 m_local_down_input_grad_ptr_[expert_idx][i * config_.intermediate_size + j] *= weight;
@@ -732,8 +731,6 @@ void SFT_MOE::backward_many(int layer_idx, int qlen, int k, const uint64_t* expe
 }
 
 void SFT_MOE::backward(int layer_idx, int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, const void* grad_output, void* grad_input, Backend* backend) {
-    get_transpose(backend);
-	
 	std::cout << "[backward] layer_idx: " << layer_idx << std::endl;
 	// for (uint64_t eid = 0; eid < (uint64_t)config_.expert_num; ++eid) {
     //     int rows = m_local_num_[eid];
