@@ -22,6 +22,8 @@ from transformers import (
     TextStreamer,
 )
 import json
+from pathlib import Path
+from tqdm import tqdm
 from torchviz import make_dot
 import fire
 from ktransformers.optimize.optimize import optimize_and_load_gguf
@@ -30,13 +32,14 @@ from ktransformers.models.modeling_qwen2_moe import Qwen2MoeForCausalLM
 from ktransformers.models.modeling_deepseek_v3 import DeepseekV3ForCausalLM
 from ktransformers.models.modeling_llama import LlamaForCausalLM
 from ktransformers.models.modeling_mixtral import MixtralForCausalLM
-from ktransformers.util.utils import load_weights, prefill_and_generate, get_compute_capability, xpu_fp16_model
+from ktransformers.util.utils import load_weights, prefill_and_generate, prefill_and_generate_capture, get_compute_capability, xpu_fp16_model
 from ktransformers.server.config.config import Config
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled
 from ktransformers.util.vendors import device_manager, get_device, to_device, GPUVendor
 from ktransformers.sft.lora import inject_lora_layer, lora_and_load_adapter
 from ktransformers.util.custom_loader import GGUFLoader, SafeTensorLoader
 from ktransformers.util.globals import GLOBAL_CONFIG
+from ktransformers.sft.metrics import calc_metrics
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
@@ -97,6 +100,9 @@ def local_chat(
     save_adapter_path: str | None = None,
     use_adapter: bool = False,
     use_adapter_path: str | None = None,
+    is_test_data: bool = False,
+    test_data_path: str | None = None,
+    output_dir: str | None = None,
 ):
 
     if not is_sft:
@@ -165,11 +171,11 @@ def local_chat(
     GLOBAL_CONFIG._config["mod"] = "infer"
     optimize_and_load_gguf(model, optimize_config_path, gguf_path, config)
 
-    # print_module_tree(model)  # 观察输出是否有重复模块或循环
-
     model.train()
 
     if is_sft == True:
+        if use_adapter == True or is_test_data == True:
+            raise AttributeError("We do not support to run sft and inference at the same time.")
         GLOBAL_CONFIG._config["mod"] = "sft"
         print(f"sft with lora in dataset: {sft_data_path} ...")
         print(f"use_cuda_graph:{use_cuda_graph}")
@@ -181,57 +187,24 @@ def local_chat(
             raise AttributeError("We do not support more than one adapter up to now...")
         
         # TODO: 判断如果是GGUF格式的adapter，把他跟原来的模型一起处理一下，在后面进行推理
-        # 处理GGUF格式的适配器
         if use_adapter_path.endswith('.gguf'):
             inject_lora_layer(model)
-            # 加载适配器权重到现有模型结构
             adapter_gguf_loader = GGUFLoader(use_adapter_path)
-            # 获取模型当前设备信息
-            # current_device = next(model.parameters()).device
-            # 直接加载权重到模型的适配器部分（假设适配器层的名称与GGUF键名匹配）
             load_weights(model, adapter_gguf_loader, adapter_gguf=True)
-            # 确保模型回到训练模式（适配器可能需要梯度）
             model.train()
         else:
-            # inject_lora_layer(model)
-
-            # if use_adapter_path.endswith(".gguf"):
-            #     # ---- GGUF 格式 ----
-            #     adapter_loader = GGUFLoader(use_adapter_path)
-            #     is_gguf = True
-            # else:
-            #     # ---- SafeTensor（文件或目录）----
-            #     adapter_loader = SafeTensorLoader(use_adapter_path)
-            #     is_gguf = False
-
-            # # ========== 挂载权重 ==========
-            # # load_weights 会根据 adapter_gguf 决定是否走量化解码逻辑
-            # load_weights(model, adapter_loader, adapter_gguf=is_gguf)
-
-            # # LoRA 权重需保持可训练状态（方便后续再 Finetune）
-            # model.train()
+            inject_lora_layer(model)
             
-            
-            
-            
-            inject_lora_layer(model)  # 确保模型已注入LoRA层
-            
-            # 加载适配器权重
             adapter_loader = SafeTensorLoader(use_adapter_path)
             device = next(model.parameters()).device
             
-            # 遍历所有适配器权重
             for key in adapter_loader.tensor_file_map.keys():
                 try:
-                    # 加载张量到模型所在设备
                     tensor = adapter_loader.load_tensor(key, device=device)
                     
-                    # 调整权重名称以匹配模型层
-                    # 示例: 移除前缀 'base_model.model.'
                     model_key = key.replace("base_model.model.", "")
                     model_key = model_key.replace(".weight", ".default.weight")
                     
-                    # 获取模型中的对应参数
                     param = model.get_parameter(model_key)
                     param.data.copy_(tensor.data)
                     
@@ -267,8 +240,67 @@ def local_chat(
     
     if GLOBAL_CONFIG._config["mod"] == "sft" :
         model.model.embed_tokens.to("cpu")
+        
+    if is_test_data:
+        data_path = Path(test_data_path)
+        with data_path.open("r", encoding="utf-8") as f:
+            dataset = json.load(f)
+        preds, refs = [], []
 
-    while True:
+        for sample in tqdm(dataset, desc="Processing samples"):
+            inst = sample.get("instruction", "")
+            prompt = sample.get("input", "")
+            prompt = prompt+inst
+            # print(f"prompt: {prompt}")
+            label = sample.get("output", "")
+   
+            messages = [{"role": "user", "content": prompt}]
+            input_tensor = tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, return_tensors="pt"
+            )
+            if force_think:
+                token_thinks = torch.tensor([tokenizer.encode("<think>\\n",add_special_tokens=False)],device=input_tensor.device)
+                input_tensor = torch.cat(
+                    [input_tensor, token_thinks], dim=1
+                )
+            if mode == 'long_context':
+                assert Config().long_context_config['max_seq_len'] > input_tensor.shape[1] + max_new_tokens, \
+                "please change max_seq_len in  ~/.ktransformers/config.yaml"
+
+            if system != "Windows" and (config.architectures[0] == "DeepseekV2ForCausalLM" or config.architectures[0] == "DeepseekV3ForCausalLM") and flashinfer_enabled and get_compute_capability() >= 8 and device_manager.gpu_vendor == GPUVendor.NVIDIA:
+                prediction = prefill_and_generate_capture(
+                    model, tokenizer, input_tensor.to(device), max_new_tokens, use_cuda_graph, mode = mode, force_think = force_think, chunk_size = chunk_size,
+                    use_flashinfer_mla = True, num_heads = config.num_attention_heads, head_dim_ckv = config.kv_lora_rank, head_dim_kpe = config.qk_rope_head_dim, q_head_dim = config.qk_rope_head_dim + config.qk_nope_head_dim, echo_stream=False
+                )
+            else:
+                prediction = prefill_and_generate_capture(
+                    model, tokenizer, input_tensor.to(device), max_new_tokens, use_cuda_graph, mode = mode, force_think = force_think, chunk_size = chunk_size,echo_stream=False,
+                )
+            # print(f"prediction:{prediction}")
+            sample["label"] = label
+            sample["prediction"] = prediction
+            sample.pop("output", None)
+
+            preds.append(prediction)
+            refs.append(label)
+
+        metrics = calc_metrics(preds, refs)
+        # print(f"metrics:{metrics}")
+
+        pred_file = Path(output_dir) / 'predictions.json'
+        pred_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        with pred_file.open("w", encoding="utf-8") as f:
+            json.dump(dataset, f, ensure_ascii=False, indent=2)
+
+        metric_file = Path(output_dir) / 'metrics.json'
+        with metric_file.open("w", encoding="utf-8") as f:
+            json.dump(metrics, f, ensure_ascii=False, indent=2)
+            
+        print(f"Results of predictions saved in {pred_file}")
+        print(f"Results of metrics saved in {metric_file}")
+
+    while not is_test_data:
         content = input("Chat: ")
         if content.startswith('"""'):  # prefix """
             # multi lines input
@@ -334,6 +366,9 @@ if __name__ == "__main__":
         parser.add_argument("--save_adapter_path", default=None)
         parser.add_argument("--use_adapter", default=False)
         parser.add_argument("--use_adapter_path", default=None)
+        parser.add_argument("--is_test_data", default=False)
+        parser.add_argument("--test_data_path", default=None)
+        parser.add_argument("--output_dir", default=None)
 
         args = parser.parse_args()
 
@@ -349,23 +384,29 @@ if __name__ == "__main__":
             sft_data_path=args.sft_data_path,
             save_adapter_path=args.save_adapter_path,
             use_adapter=args.use_adapter,
-            use_adapter_path=args.use_adapter_path
+            use_adapter_path=args.use_adapter_path,
+            is_test_data=args.is_test_data,
+            test_data_path=args.test_data_path,
+            output_dir= args.output_dir
         )
 
     else:
         local_chat(
-            model_path="/mnt/data/models/DeepSeek-V2-Lite-Chat",
-            model_config_path="ktransformers/configs/model_config",
-            gguf_path="/mnt/data/models/DeepSeek-V2-Lite-Chat/",
+            model_path="/mnt/data/models/DeepSeek-R1-GGUF-Q4_K_M",
+            model_config_path="/mnt/data/models/DeepSeek-R1-GGUF-Q4_K_M/config",
+            gguf_path="/mnt/data/models/DeepSeek-R1-GGUF-Q4_K_M",
             cpu_infer=112,
             max_new_tokens=1000,
             force_think=False,
-            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx.yaml",
+            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V3-Chat-sft-amx.yaml",
             is_sft=True,
-            # sft_data_path="test_adapter/ESC_inst_train_noinst.json",
-            sft_data_path="test_adapter/500token_test.json",
-            save_adapter_path="test_adapter/demo_adapter_test_final_amx_KT_target_qkvo",
-            use_adapter=False,
-            use_adapter_path="test_adapter/demo_adapter_final_amx_KT_target_qkvo/checkpoint-660"
+            sft_data_path="test_adapter/ESC_inst_train.json",
+            # sft_data_path="test_adapter/500token_test.json",
+            save_adapter_path="test_adapter/demo_adapter_ESC_V3_final_amx_KT_target_all",
+            use_adapter=True,
+            use_adapter_path="test_adapter/demo_adapter_ESC_final_amx_KT_target_all/checkpoint-428",
+            is_test_data=True,
+            test_data_path="test_adapter/ESC_inst_test.json", # TODO: 目前这个不能超过512token，建议还是写个截断。
+            output_dir="test_adapter/demo_adapter_ESC_final_amx_KT_target_all/checkpoint-428-tmp",
         )
         

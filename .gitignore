@@ -73,3 +73,5 @@ ktransformers/ktransformers_ext/Makefile
 *.pt
 
 debug/*
+
+test_adapter/ESC_inst_all.json

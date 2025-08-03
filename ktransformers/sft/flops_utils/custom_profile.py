@@ -8,7 +8,7 @@ import sys, os
 project_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, project_dir)
 
-from ktransformers.util.utils import simple_prefill_and_generate_for_test
+from ktransformers.util.utils import prefill_and_generate
 
 # logger = logging.getLogger(__name__)
 # logger.setLevel(logging.INFO)

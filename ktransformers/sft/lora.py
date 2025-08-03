@@ -18,7 +18,6 @@ from pathlib import Path
 
 from ktransformers.sft.peft_utils.mapping import inject_adapter_in_model, get_peft_model
 from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
-from ktransformers.util.utils import simple_prefill_and_generate_for_test
 from ktransformers.sft.flops_utils.custom_profile import custom_profile
 from ktransformers.operators.experts import KExpertsTorch, KTransformersExperts
 # from ktransformers.sft.load_lora import get_custom_peft_model
@@ -491,7 +490,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     #     with torch.no_grad():
     #         # model(*inputs)
     #         # model.model to deal with the PeftModelForCaualLM temp
-    #         simple_prefill_and_generate_for_test(
+    #         prefill_and_generate(
     #             model.model, tokenizer, input_tensor.cuda(), max_new_tokens=1000, use_cuda_graph=False, mode = 'normal', force_think = False, chunk_prefill_size = 8192,
     #         )
     #     recursive_traverse(model)
