@@ -550,6 +550,10 @@ class KSFTExpertsCPU(torch.autograd.Function):
             KSFTExpertsCPU.weights_cpu = torch.zeros((num_experts_per_tok), device="cpu", dtype=torch.float32, pin_memory=True)
             KSFTExpertsCPU.output_cpu = torch.zeros((self.config.hidden_size), device="cpu", pin_memory=True, dtype=torch.bfloat16)
             
+        self.gate = None
+        self.up = None
+        self.down = None
+            
     def submit_for_one_decode(self, input_tensor, expert_ids, weights):
         KSFTExpertsCPU.input_tensor_cpu.copy_(input_tensor, non_blocking=True)
         KSFTExpertsCPU.expert_ids_cpu.copy_(expert_ids, non_blocking=True)
@@ -617,10 +621,10 @@ class KSFTExpertsCPU(torch.autograd.Function):
         # 把 qlen / k 留给 backward
         ctx.saved_dims = (qlen, k)
         ctx._time_fwd  = t_fwd
-        # print(f"qlen ,k:{qlen}, {k}")
+        print(f"qlen ,k:{qlen}, {k}")
         
-        # print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
-            #   f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
+        print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
+              f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
 
         return result
         
@@ -667,11 +671,11 @@ class KSFTExpertsCPU(torch.autograd.Function):
         qlen, k  = ctx.saved_dims          # 正确的 q / k
         flops_bw = 10 * qlen * k * H_FIXED * M_FIXED
         tflops_b = flops_bw / t_bw / 1e12
-        # print(f"qlen:{qlen}, k:{k}")
+        print(f"qlen:{qlen}, k:{k}")
 
-        # print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
-        #       f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
-        # print("XXY", end="")
+        print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
+              f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
+        print("XXY", end="")
         
         return input_grad.to(device=ctx.out_device), None, None, None, None, None, None
     

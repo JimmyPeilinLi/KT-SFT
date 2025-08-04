@@ -392,9 +392,9 @@ if __name__ == "__main__":
 
     else:
         local_chat(
-            model_path="/mnt/data/models/DeepSeek-R1-GGUF-Q4_K_M",
-            model_config_path="/mnt/data/models/DeepSeek-R1-GGUF-Q4_K_M/config",
-            gguf_path="/mnt/data/models/DeepSeek-R1-GGUF-Q4_K_M",
+            model_path="/mnt/data/models/Qwen3-235B-A22B-Instruct-2507",
+            model_config_path="/mnt/data/models/Qwen3-235B-A22B-Instruct-2507",
+            gguf_path="/mnt/data/models/Qwen3-235B-A22B-Instruct-2507",
             cpu_infer=112,
             max_new_tokens=1000,
             force_think=False,
@@ -403,9 +403,9 @@ if __name__ == "__main__":
             sft_data_path="test_adapter/ESC_inst_train.json",
             # sft_data_path="test_adapter/500token_test.json",
             save_adapter_path="test_adapter/demo_adapter_ESC_V3_final_amx_KT_target_all",
-            use_adapter=True,
+            use_adapter=False,
             use_adapter_path="test_adapter/demo_adapter_ESC_final_amx_KT_target_all/checkpoint-428",
-            is_test_data=True,
+            is_test_data=False,
             test_data_path="test_adapter/ESC_inst_test.json", # TODO: 目前这个不能超过512token，建议还是写个截断。
             output_dir="test_adapter/demo_adapter_ESC_final_amx_KT_target_all/checkpoint-428-tmp",
         )

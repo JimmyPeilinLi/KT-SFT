@@ -12,6 +12,7 @@ Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
 
 
 import ctypes
+import time
 import torch
 from torch import Tensor, nn
 if not torch.xpu.is_available():
@@ -919,6 +920,7 @@ class KTransformersLinear(BaseInjectedModule, KLinearBase):
         self.mode = InferenceState.UNLOAD
 
     def forward(self, x, bsz_tensor=None):
+        # linear_fwd_st = time.time()
         if self.mode == InferenceState.PREFILL:
             assert self.prefill_linear is not None, "cpu linear is not initialized"
             y = self.prefill_linear.forward(x, bsz_tensor)
@@ -932,6 +934,9 @@ class KTransformersLinear(BaseInjectedModule, KLinearBase):
                 self.generate_linear.weight = self.orig_module.generate_linear.weight
                 self.weight = self.orig_module.generate_linear.weight
                 y = self.generate_linear.forward(x, bsz_tensor)
+        
+        # linear_fwd_end = time.time()
+        # print(f"[KTLinear] Forward time: {linear_fwd_end-linear_fwd_st}")
         return y
 
     def load(self, w: dict | nn.Parameter | tuple | None = None, mode: InferenceState = InferenceState.GENERATE):

@@ -75,3 +75,5 @@ ktransformers/ktransformers_ext/Makefile
 debug/*
 
 test_adapter/ESC_inst_all.json
+
+!requirements-sft.txt
