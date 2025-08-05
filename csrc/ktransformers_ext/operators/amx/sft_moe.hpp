@@ -32,46 +32,12 @@
 #ifdef USE_NUMA
 #include <numa.h>
 #include <numaif.h>
-void *numa_alloc_aligned(size_t size, int node, size_t alignment) {
-  void *ptr = numa_alloc_onnode(size, node);
-  assert(reinterpret_cast<intptr_t>(ptr) % 64 == 0);
-  return ptr;
-}
+// void *numa_alloc_aligned(size_t size, int node, size_t alignment) {
+//   void *ptr = numa_alloc_onnode(size, node);
+//   assert(reinterpret_cast<intptr_t>(ptr) % 64 == 0);
+//   return ptr;
+// }
 #endif
-
-// static inline __m512 exp_avx512(__m512 x) {
-//   const __m512 log2e = _mm512_set1_ps(1.44269504089f);
-//   const __m512 c1 = _mm512_set1_ps(0.69314718056f);
-
-//   __m512 y = _mm512_mul_ps(x, log2e);
-//   __m512i int_part = _mm512_cvtps_epi32(y);
-//   __m512 frac_part = _mm512_sub_ps(y, _mm512_cvtepi32_ps(int_part));
-
-//   const __m512 poly_1 = _mm512_set1_ps(0.9999999995f);
-//   const __m512 poly_2 = _mm512_set1_ps(0.6931471805f);
-//   const __m512 poly_3 = _mm512_set1_ps(0.2402265069f);
-//   const __m512 poly_4 = _mm512_set1_ps(0.0555041087f);
-//   const __m512 poly_5 = _mm512_set1_ps(0.0096181291f);
-//   const __m512 poly_6 = _mm512_set1_ps(0.0013333558f);
-
-//   __m512 frac_exp = _mm512_fmadd_ps(
-//       frac_part, poly_6,
-//       _mm512_fmadd_ps(frac_part, poly_5,
-//                       _mm512_fmadd_ps(frac_part, poly_4,
-//                                       _mm512_fmadd_ps(frac_part, poly_3, _mm512_fmadd_ps(frac_part, poly_2, poly_1)))));
-
-//   __m512 two_pow_i = _mm512_scalef_ps(_mm512_set1_ps(1.0f), _mm512_cvtepi32_ps(int_part));
-//   return _mm512_mul_ps(two_pow_i, frac_exp);
-// }
-
-// static inline __m512 act_fn(__m512 gate_val, __m512 up_val) {
-//   __m512 neg_gate_val = _mm512_sub_ps(_mm512_setzero_ps(), gate_val);
-//   __m512 exp_neg_gate = exp_avx512(neg_gate_val);
-//   __m512 denom = _mm512_add_ps(_mm512_set1_ps(1.0f), exp_neg_gate);
-//   __m512 act_val = _mm512_div_ps(gate_val, denom);
-
-//   return _mm512_mul_ps(act_val, up_val);
-// }
 
 static inline __m512 sigmoid(__m512 x) {
   __m512 neg = _mm512_sub_ps(_mm512_setzero_ps(), x);
@@ -92,25 +58,6 @@ static inline __m512 act_fn_grad(__m512 x) {
   __m512 x_term = _mm512_mul_ps(x, one_minus_sigmoid);
   __m512 one_plus_x_term = _mm512_add_ps(_mm512_set1_ps(1.0f), x_term);
   return _mm512_mul_ps(sigmoid_val, one_plus_x_term);
-}
-
-// static inline float bf16_to_fp32(ggml_bf16_t v) {
-//     uint16_t lo16;
-//     std::memcpy(&lo16, &v, sizeof(lo16));   // 取出 16 bit 数据
-//     uint32_t tmp = uint32_t(lo16) << 16; // 放到高 16 位
-//     float out;
-//     std::memcpy(&out, &tmp, sizeof(float));
-//     return out;
-// }
-
-// 把 ggml_bf16_t 数组转换成可读字符串（逗号分隔）
-std::string int8_row_to_string(const int8_t* row, int len) {
-    std::string s;
-    for (int i = 0; i < len; ++i) {
-        if (i) s += ", ";
-        s += std::to_string(row[i]);
-    }
-    return s;
 }
 
 struct SFT_AMX_MOEConfig {
@@ -139,9 +86,9 @@ private:
   void *up_proj_;   // [expert_num * intermediate_size * hidden_size ( /32 if quantized)]
   void *down_proj_; // [expert_num * hidden_size * intermediate_size ( /32 if quantized)]
 
-  void *gate_proj_t_; // [expert_num * intermediate_size * hidden_size]
-  void *up_proj_t_;   // [expert_num * intermediate_size * hidden_size]
-  void *down_proj_t_; // [expert_num * hidden_size * intermediate_size]
+  void *gate_proj_t_; // [expert_num * hidden_size * intermediate_size]
+  void *up_proj_t_;   // [expert_num * hidden_size * intermediate_size]
+  void *down_proj_t_; // [expert_num * intermediate_size * hidden_size]
 
   ggml_bf16_t *m_local_input_;       // [routed_expert_num * max_len * hidden_size]
   ggml_bf16_t *m_local_gate_output_; // [routed_expert_num * max_len * intermediate_size]
@@ -194,9 +141,15 @@ private:
   std::vector<std::shared_ptr<typename T::BufferC>> down_t_bc_;
 
   // TODO: NUMA
+#ifdef USE_NUMA
+  std::vector<std::vector<std::shared_ptr<typename T::BufferB>>> gate_t_bb_numa_;
+  std::vector<std::vector<std::shared_ptr<typename T::BufferB>>> up_t_bb_numa_;
+  std::vector<std::vector<std::shared_ptr<typename T::BufferB>>> down_t_bb_numa_;
+#else
   std::vector<std::shared_ptr<typename T::BufferB>> gate_t_bb_;
   std::vector<std::shared_ptr<typename T::BufferB>> up_t_bb_;
   std::vector<std::shared_ptr<typename T::BufferB>> down_t_bb_;
+#endif
 
   int* m_local_token_indices_;                                   // [routed_expert_num * max_len]
   int* m_local_expert_positions_;                               // [routed_expert_num * max_len]
@@ -358,7 +311,26 @@ public:
           std::make_shared<typename T::BufferA>(config_.max_len, config_.hidden_size, down_t_ba_ptr[i]));
       down_t_bc_.push_back(std::make_shared<typename T::BufferC>(config_.max_len, config_.intermediate_size, down_t_bc_ptr[i]));
 
-      // TODO: NUMA
+#ifdef USE_NUMA
+      int numa_nodes = numa_num_configured_nodes();
+      gate_t_bb_numa_.resize(numa_nodes);
+      up_t_bb_numa_.resize(numa_nodes);
+      down_t_bb_numa_.resize(numa_nodes);
+      for (int j = 0; j < numa_nodes; j++) {
+        void *gate_t_bb_ptr =
+            numa_alloc_aligned(T::BufferB::required_size(config_.hidden_size, config_.intermediate_size), j, 64);
+        gate_t_bb_numa_[j].push_back(
+            std::make_shared<typename T::BufferB>(config_.hidden_size, config_.intermediate_size, gate_t_bb_ptr));
+        void *up_t_bb_ptr =
+            numa_alloc_aligned(T::BufferB::required_size(config_.hidden_size, config_.intermediate_size), j, 64);
+        up_t_bb_numa_[j].push_back(
+            std::make_shared<typename T::BufferB>(config_.hidden_size, config_.intermediate_size, up_t_bb_ptr));
+        void *down_t_bb_ptr =
+            numa_alloc_aligned(T::BufferB::required_size(config_.intermediate_size, config_.hidden_size), j, 64);
+        down_t_bb_numa_[j].push_back(
+            std::make_shared<typename T::BufferB>(config_.intermediate_size, config_.hidden_size, down_t_bb_ptr));
+      }
+#else
       void *gate_t_bb_ptr =
           std::aligned_alloc(64, T::BufferB::required_size(config_.hidden_size, config_.intermediate_size));
       gate_t_bb_.push_back(
@@ -373,6 +345,7 @@ public:
           std::aligned_alloc(64, T::BufferB::required_size(config_.intermediate_size, config_.hidden_size));
       down_t_bb_.push_back(
           std::make_shared<typename T::BufferB>(config_.intermediate_size, config_.hidden_size, down_t_bb_ptr));
+#endif
     }
 
     m_local_token_indices_ptr_.resize(config_.expert_num);
@@ -433,78 +406,21 @@ public:
         [&](int task_id) {
           uint64_t expert_idx = task_id / nth;
           int ith = task_id % nth;
+#ifdef USE_NUMA
+          int numa_nodes = numa_num_configured_nodes();
+          for (int j = 0; j < numa_nodes; j++) {
+            down_t_bb_numa_[j][expert_idx]->from_mat((ggml_bf16_t *)down_proj_t_ +
+                                                         expert_idx * config_.intermediate_size * config_.hidden_size,
+                                                     ith, nth);
+          }
+#else
           down_t_bb_[expert_idx]->from_mat((ggml_bf16_t *)down_proj_t_ +
                                              expert_idx * config_.intermediate_size * config_.hidden_size,
                                          ith, nth);
+#endif
         },
         nullptr);
-
-	// if constexpr (std::is_same_v<typename T::dt, ggml_bf16_t>) {
-	// 	// 确保 debug/ 目录存在
-	// 	std::filesystem::create_directories("debug");
-
-	// 	int tail_cols = 1024;
-	// 	for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
-	// 		auto buf = down_t_bb_[expert_idx].get();
-	// 		std::cout << "k: " << buf->k << "; n: " << buf->n << std::endl;
-	// 		// 打开对应 expert 的文件
-	// 		std::string path = "debug/" + std::to_string(expert_idx) + "_down_bb_t_debug.txt";
-	// 		std::ofstream ofs(path, std::ios::out);
-	// 		if (!ofs) {
-	// 			std::cerr << "Failed to open " << path << " for writing\n";
-	// 			continue;
-	// 		}
-
-	// 		ofs << "==== Expert " << expert_idx << " ====\n";
-	// 		for (int n_idx = 0; n_idx < buf->k; ++n_idx) {
-	// 			// 明确当作 int8 读
-	// 			const int8_t* row = reinterpret_cast<const int8_t*>(buf->b) + n_idx * buf->n;
-
-	// 			// 写整行
-	// 			ofs << "row[" << n_idx << "] = { "
-	// 				<< int8_row_to_string(row, buf->n)
-	// 				<< " }\n";
-	// 		}
-
-	// 		ofs.close();
-	// 	}
-	// }
-
-	// if constexpr (std::is_same_v<typename T::dt, int8_t>) {
-	// 	for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
-	// 		auto buf = down_t_bb_[expert_idx].get();
-
-	// 		// 打开对应 expert 的文件
-	// 		std::string path = "debug/" + std::to_string(expert_idx) + "_down_bb_t_debug3.bin";
-	// 		std::ofstream ofs(path, std::ios::binary);
-	// 		for (int n_idx = 0; n_idx < buf->k; ++n_idx) {
-	// 			const int8_t* row = reinterpret_cast<const int8_t*>(buf->b) + n_idx * buf->n;
-	// 			for (int j = 0; j < buf->n; ++j) {
-	// 				float v = row[j];
-	// 				ofs.write(reinterpret_cast<const char*>(&v), sizeof(v));
-	// 			}
-	// 		}
-	// 		ofs.close();
-	// 	}
-	// }
-
-	
-	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-	// 	// 打开对应 expert 的文件
-	// 	std::string path = "debug/" + std::to_string(expert_idx) + "_up_proj_t.bin";
-	// 	std::ofstream ofs(path, std::ios::binary);
-	// 	std::cout << "config_.hidden_size: " << config_.hidden_size << std::endl;
-	// 	std::cout << "config_.intermediate_size: " << config_.intermediate_size << std::endl;
-	// 	for (int n_idx = 0; n_idx < config_.intermediate_size; ++n_idx) {
-	// 		const int8_t* row = reinterpret_cast<const int8_t*>(config_.down_proj + expert_idx * n_idx * config_.hidden_size);
-	// 		for (int j = 0; j < config_.hidden_size; ++j) {
-	// 			float v = row[j];
-	// 			ofs.write(reinterpret_cast<const char*>(&v), sizeof(v));
-	// 		}
-	// 	}
-	// 	ofs.close();
-	// }
-
+        
     nth = T::recommended_nth(config_.hidden_size);
     backend->do_work_stealing_job(
         nth * config_.expert_num, nullptr,
@@ -523,12 +439,23 @@ public:
                                              expert_idx * config_.hidden_size * config_.intermediate_size,
                                          ith, nth);
 #endif
-          up_t_bb_[expert_idx]->from_mat((ggml_bf16_t *)up_proj_t_ +
-                                             expert_idx * config_.hidden_size * config_.intermediate_size,
-                                         ith, nth);
+#ifdef USE_NUMA
+          for (int j = 0; j < numa_nodes; j++) {
+            gate_t_bb_numa_[j][expert_idx]->from_mat((ggml_bf16_t *)gate_proj_t_ +
+                                                         expert_idx * config_.hidden_size * config_.intermediate_size,
+                                                     ith, nth);
+            up_t_bb_numa_[j][expert_idx]->from_mat((ggml_bf16_t *)up_proj_t_ +
+                                                       expert_idx * config_.hidden_size * config_.intermediate_size,
+                                                   ith, nth);
+          }
+#else
           gate_t_bb_[expert_idx]->from_mat((ggml_bf16_t *)gate_proj_t_ +
                                              expert_idx * config_.hidden_size * config_.intermediate_size,
                                          ith, nth);
+          up_t_bb_[expert_idx]->from_mat((ggml_bf16_t *)up_proj_t_ +
+                                             expert_idx * config_.hidden_size * config_.intermediate_size,
+                                         ith, nth);
+#endif
         },
         nullptr);
   }
@@ -621,41 +548,6 @@ public:
         },
         nullptr);
 	
-	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_ba_ori_", (ggml_bf16_t*)m_local_gate_output_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// }
-	// if constexpr (std::is_same_v<typename T::dt, int8_t>) {
-	// 	std::cout << "GO INTO forward output" << std::endl;
-	// 	// 确保 debug/ 目录存在
-	// 	std::filesystem::create_directories("debug");
-
-	// 	for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
-	// 		auto buf = down_ba_[expert_idx].get();
-	// 		// std::cout << "k: " << buf->k << "; n: " << buf->n << std::endl;
-	// 		// 打开对应 expert 的文件
-	// 		std::string path = "debug/" + std::to_string(expert_idx) + "_down_ba_debug.txt";
-	// 		std::ofstream ofs(path, std::ios::out);
-	// 		if (!ofs) {
-	// 			std::cerr << "Failed to open " << path << " for writing\n";
-	// 			continue;
-	// 		}
-
-	// 		ofs << "==== Expert " << expert_idx << " ====\n";
-	// 		ofs << "buf_k: " << buf->k << "\n";
-	// 		for (int n_idx = 0; n_idx < m_local_num_[expert_idx]; ++n_idx) {
-	// 			// 明确当作 bfloat16 读
-	// 			const int8_t* row = reinterpret_cast<const int8_t*>(buf->a) + n_idx * buf->k;
-
-	// 			// 写整行
-	// 			ofs << "row[" << n_idx << "] = { "
-	// 				<< int8_row_to_string(row, buf->k)
-	// 				<< " }\n";
-	// 		}
-
-	// 		ofs.close();
-	// 	}
-	// 	std::cout << "OUT INTO forward output" << std::endl;
-	// }
     nth = T::recommended_nth(config_.hidden_size);
     backend->do_work_stealing_job(
         nth * activated_expert, [&](int _) { T::config(); },
@@ -752,41 +644,6 @@ public:
           down_t_ba_[expert_idx]->from_mat(m_local_num_[expert_idx], m_local_down_output_grad_ptr_[expert_idx], 0, 1);
         },
         nullptr);
-		
-	// // for debug
-	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_output_grad_", (ggml_bf16_t*)m_local_down_output_grad_ptr_[expert_idx], config_.hidden_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// }
-	
-	// if constexpr (std::is_same_v<typename T::dt, int8_t>) {
-	// 	// 确保 debug/ 目录存在
-	// 	std::filesystem::create_directories("debug");
-
-	// 	for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
-	// 		auto buf = down_t_ba_[expert_idx].get();
-	// 		// std::cout << "k: " << buf->k << "; n: " << buf->n << std::endl;
-	// 		// 打开对应 expert 的文件
-	// 		std::string path = "debug/" + std::to_string(expert_idx) + "_down_ba_t_debug.txt";
-	// 		std::ofstream ofs(path, std::ios::out);
-	// 		if (!ofs) {
-	// 			std::cerr << "Failed to open " << path << " for writing\n";
-	// 			continue;
-	// 		}
-
-	// 		ofs << "==== Expert " << expert_idx << " ====\n";
-	// 		for (int n_idx = 0; n_idx < m_local_num_[expert_idx]; ++n_idx) {
-	// 			// 明确当作 bfloat16 读
-	// 			const int8_t* row = reinterpret_cast<const int8_t*>(buf->a) + n_idx * buf->k;
-
-	// 			// 写整行
-	// 			ofs << "row[" << n_idx << "] = { "
-	// 				<< int8_row_to_string(row, buf->k)
-	// 				<< " }\n";
-	// 		}
-
-	// 		ofs.close();
-	// 	}
-	// }
 
     int nth = T::recommended_nth(config_.intermediate_size);  
     backend->do_work_stealing_job(
@@ -795,16 +652,28 @@ public:
           int expert_idx = m_expert_id_map_[task_id / nth];
           int ith = task_id % nth;
 
-        //   // TODO: cache
+          // TODO: cache
+#ifdef USE_NUMA
           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
-                      gate_up_ba_[expert_idx], gate_bb_[expert_idx], gate_bc_[expert_idx], ith, nth, use_amx);
+                       gate_up_ba_[expert_idx], gate_bb_numa_[Backend::numa_node][expert_idx], gate_bc_[expert_idx],
+                       ith, nth, use_amx);
           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
-                      gate_up_ba_[expert_idx], up_bb_[expert_idx], up_bc_[expert_idx], ith, nth, use_amx);
-          gate_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_gate_output_ptr_[expert_idx], ith, nth);
-          up_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_up_output_ptr_[expert_idx], ith, nth);
+                       gate_up_ba_[expert_idx], up_bb_numa_[Backend::numa_node][expert_idx], up_bc_[expert_idx], ith,
+                       nth, use_amx);
+#else
+          amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
+                       gate_up_ba_[expert_idx], gate_bb_[expert_idx], gate_bc_[expert_idx], ith, nth, use_amx);
+          amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
+                       gate_up_ba_[expert_idx], up_bb_[expert_idx], up_bc_[expert_idx], ith, nth, use_amx);
+#endif
 
+#ifdef USE_NUMA
+          amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
+                      down_t_ba_[expert_idx], down_t_bb_numa_[Backend::numa_node][expert_idx], down_t_bc_[expert_idx], ith, nth, use_amx);
+#else
           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
                       down_t_ba_[expert_idx], down_t_bb_[expert_idx], down_t_bc_[expert_idx], ith, nth, use_amx);
+#endif
           down_t_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_down_input_grad_ptr_[expert_idx], ith, nth);
 
 
@@ -846,36 +715,6 @@ public:
         },
         nullptr);
 
-	// for debug
-	// if constexpr (std::is_same_v<typename T::dt, ggml_bf16_t>) {	
-	// 	for (int expert_idx = 0; expert_idx < config_.expert_num; ++expert_idx) {
-	// 		auto buf = down_t_ba_[expert_idx].get();
-
-	// 		// 打开对应 expert 的文件
-	// 		std::string path = "debug/" + std::to_string(expert_idx) + "_down_ba_t_debug3.bin";
-	// 		std::ofstream ofs(path, std::ios::binary);
-	// 		for (int n_idx = 0; n_idx < m_local_num_[expert_idx]; ++n_idx) {
-	// 			const ggml_bf16_t* row = reinterpret_cast<const ggml_bf16_t*>(buf->a) + n_idx * buf->k;
-	// 			for (int j = 0; j < buf->k; ++j) {
-	// 				float v = row[j];
-	// 				ofs.write(reinterpret_cast<const char*>(&v), sizeof(v));
-	// 			}
-	// 		}
-	// 		ofs.close();
-	// 	}
-	// }
-	
-	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_t_ba_", (ggml_bf16_t*)m_local_down_output_grad_ptr_[expert_idx], config_.hidden_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// }
-	
-	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_t_bb_", (ggml_bf16_t *)down_proj_t_ + expert_idx * config_.intermediate_size * config_.hidden_size, config_.hidden_size * config_.intermediate_size, GGML_TYPE_BF16);
-	// }
-
-	// for (uint64_t expert_idx = 0; expert_idx < (uint64_t)config_.expert_num; ++expert_idx) {
-	// 	dump_grad_bin("cpp_layer0_E_End"+std::to_string(expert_idx)+"_down_t_bc_", (ggml_bf16_t*)m_local_down_input_grad_ptr_[expert_idx], config_.intermediate_size * m_local_num_[expert_idx], GGML_TYPE_BF16);
-	// }
 
     backend->do_work_stealing_job(
         activated_expert, nullptr,
@@ -891,10 +730,17 @@ public:
         [&](int task_id) {
           int expert_idx = m_expert_id_map_[task_id / nth];
           int ith = task_id % nth;
+#ifdef USE_NUMA
+          amx::mat_mul(m_local_num_[expert_idx], config_.hidden_size, config_.intermediate_size,
+                      gate_t_ba_[expert_idx], gate_t_bb_numa_[Backend::numa_node][expert_idx], gate_t_bc_[expert_idx], ith, nth, use_amx);
+          amx::mat_mul(m_local_num_[expert_idx], config_.hidden_size, config_.intermediate_size,
+                      up_t_ba_[expert_idx], up_t_bb_numa_[Backend::numa_node][expert_idx], up_t_bc_[expert_idx], ith, nth, use_amx);
+#else
           amx::mat_mul(m_local_num_[expert_idx], config_.hidden_size, config_.intermediate_size,
                       gate_t_ba_[expert_idx], gate_t_bb_[expert_idx], gate_t_bc_[expert_idx], ith, nth, use_amx);
           amx::mat_mul(m_local_num_[expert_idx], config_.hidden_size, config_.intermediate_size,
                       up_t_ba_[expert_idx], up_t_bb_[expert_idx], up_t_bc_[expert_idx], ith, nth, use_amx);
+#endif
           gate_t_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_gate_input_grad_ptr_[expert_idx], ith, nth);
           up_t_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_up_input_grad_ptr_[expert_idx], ith, nth);
         },
