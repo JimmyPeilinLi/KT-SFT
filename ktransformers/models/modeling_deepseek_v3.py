@@ -1703,7 +1703,8 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel, GenerationMixin):
         )
 
         hidden_states = outputs[0]
-        logits = self.lm_head(hidden_states[:,-1:,:])
+        # logits = self.lm_head(hidden_states[:,-1:,:])
+        logits = self.lm_head(hidden_states)
         logits = logits.float()
 
         loss = None

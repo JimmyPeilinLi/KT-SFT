@@ -130,7 +130,7 @@ dot.render("PEFT_compute_one_layer_model_graph", format="svg")  # 保存为SVG�
 #     fp16=True,                   
 # )
 
-class ModifiedTrainer(Trainer):
+class KTrainer(Trainer):
     def save_model(self, output_dir=None, _internal_call=False):
         # 改写trainer的save_model，在checkpoint的时候只存lora权重
         os.makedirs(output_dir, exist_ok=True)
@@ -140,7 +140,7 @@ class ModifiedTrainer(Trainer):
         }
         torch.save(saved_params, os.path.join(output_dir, "adapter_model.bin"))
 
-trainer = ModifiedTrainer(
+trainer = KTrainer(
     model=model,
     train_dataset=train_dataset,
     args=transformers.TrainingArguments(

@@ -44,8 +44,8 @@ import time
 from ktransformers.operators.cpuinfer import CPUInfer
 from ktransformers.util.grad_wrapper import maybe_no_grad
 
-H_FIXED = 2048
-M_FIXED = 1408
+H_FIXED = 7168
+M_FIXED = 2048
 
 def deduplicate_and_sort(lst):
     return sorted(set(lst))
@@ -621,10 +621,10 @@ class KSFTExpertsCPU(torch.autograd.Function):
         # 把 qlen / k 留给 backward
         ctx.saved_dims = (qlen, k)
         ctx._time_fwd  = t_fwd
-        print(f"qlen ,k:{qlen}, {k}")
+        # print(f"qlen ,k:{qlen}, {k}")
         
-        print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
-              f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
+        # print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
+        #       f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
 
         return result
         
@@ -671,11 +671,10 @@ class KSFTExpertsCPU(torch.autograd.Function):
         qlen, k  = ctx.saved_dims          # 正确的 q / k
         flops_bw = 10 * qlen * k * H_FIXED * M_FIXED
         tflops_b = flops_bw / t_bw / 1e12
-        print(f"qlen:{qlen}, k:{k}")
+        # print(f"qlen:{qlen}, k:{k}")
 
-        print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
-              f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
-        print("XXY", end="")
+        # print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
+        #       f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
         
         return input_grad.to(device=ctx.out_device), None, None, None, None, None, None
     

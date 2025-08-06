@@ -15,6 +15,7 @@ import gc
 from tqdm import tqdm
 import os, torch, json, tempfile
 from pathlib import Path
+from accelerate import Accelerator
 
 from ktransformers.sft.peft_utils.mapping import inject_adapter_in_model, get_peft_model
 from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
@@ -60,7 +61,7 @@ def preprocess_function(batch, tokenizer, max_len=512):
     tokenized_inputs = tokenizer(full_inputs, padding="max_length", truncation=True, max_length=max_len)
     tokenized_outputs = tokenizer(batch["output"], padding="max_length", truncation=True, max_length=max_len)
 
-	# need batch=false, just for debug and test
+    # need batch=false, just for debug and test
     # print("🔹Instruction tokens:", len(tokenizer.tokenize(instruction)))
     # print("🔹Input tokens:", len(tokenizer.tokenize(inputs)))
     # print("🔹Instruction+Input tokens:", len(tokenizer.tokenize(full_input)))
@@ -69,12 +70,16 @@ def preprocess_function(batch, tokenizer, max_len=512):
     tokenized_inputs["labels"] = tokenized_outputs["input_ids"]
     return tokenized_inputs
 
-class ModifiedTrainer(Trainer):
+class KTrainer(Trainer):
     def save_model(self, output_dir=None, _internal_call=False):
         output_dir = output_dir or self.args.output_dir
         os.makedirs(output_dir, exist_ok=True)
         # 只保存 LoRA adapter（含 adapter_config.json）
         self.model.save_pretrained(output_dir)
+        
+    def _move_model_to_device(self, model, device):
+        print("[KTrainer] Due to the placement feature in KTransformers, skip moving model to", device)
+        return model
 
 def inspect_device(model, write_file):
     for name, module in model.named_modules(): 
@@ -354,6 +359,23 @@ def collect_gradients(model, input_ids):
     
     return grads
 
+def report_meta_tensors(model):
+    import torch, inspect
+    meta_modules = []
+    for mod_name, mod in model.named_modules():
+        metas = []
+        # 仅检查当前模块自身（不递归）挂载的参数/缓冲
+        for n, p in list(mod.named_parameters(recurse=False)):
+            if getattr(p, "is_meta", False) and p.is_meta:
+                metas.append(("param", n, tuple(p.shape)))
+        for n, b in list(mod.named_buffers(recurse=False)):
+            if getattr(b, "is_meta", False) and b.is_meta:
+                metas.append(("buffer", n, tuple(b.shape)))
+        if metas:
+            print(f"[META] {mod_name} ({type(mod).__name__}): {metas}")
+            meta_modules.append((mod_name, type(mod).__name__, metas))
+    return meta_modules
+
 def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is_profiler=False):
 
     torch.autograd.set_detect_anomaly(True) # 在反向传播出错时，PyTorch 会提供更详细的堆栈信息
@@ -414,9 +436,9 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     # dot = make_dot(loss, params=dict(model.named_parameters()))
     # dot.render("KT_compute_cpuinfer_moe_model_graph", format="svg")
     
-    # return
+    # _ = report_meta_tensors(model)
     
-    trainer = ModifiedTrainer(
+    trainer = KTrainer(
         model=model,
         train_dataset=train_dataset,
         args=training_args,
@@ -424,6 +446,9 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         )
     )
+    trainer.accelerator = Accelerator(device_placement=False)
+    # first_batch = next(iter(trainer.get_train_dataloader()))
+    # print("Batch keys:", list(first_batch.keys()))
 
     print("-------------------------START TRAINING!!!-------------------------")
 
@@ -564,7 +589,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     #     #     )
     #     # }
 
-    #     trainer = ModifiedTrainer(
+    #     trainer = KTrainer(
     #         model=model,
     #         train_dataset=train_dataset,
     #         args=training_args,            # 使用修改后的参数
@@ -644,7 +669,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     # print_lora_params(model)
 
     # 被带profile的Trainer替代
-    # trainer = ModifiedTrainer(
+    # trainer = KTrainer(
     #     model=model,
     #     train_dataset=train_dataset,
     #     args=transformers.TrainingArguments(

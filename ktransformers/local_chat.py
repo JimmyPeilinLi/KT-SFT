@@ -392,13 +392,17 @@ if __name__ == "__main__":
 
     else:
         local_chat(
-            model_path="/mnt/data/models/Qwen3-235B-A22B-Instruct-2507",
-            model_config_path="/mnt/data/models/Qwen3-235B-A22B-Instruct-2507",
-            gguf_path="/mnt/data/models/Qwen3-235B-A22B-Instruct-2507",
+            model_path="/mnt/data2/models/DeepSeek-V3-0324-BF16",
+            model_config_path="ktransformers/configs/model_config",
+            gguf_path="/mnt/data2/models/DeepSeek-V3-0324-BF16",
+            # model_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
+            # model_config_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
+            # gguf_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
             cpu_infer=112,
             max_new_tokens=1000,
             force_think=False,
             optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V3-Chat-sft-amx.yaml",
+            # optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx.yaml",
             is_sft=True,
             sft_data_path="test_adapter/ESC_inst_train.json",
             # sft_data_path="test_adapter/500token_test.json",

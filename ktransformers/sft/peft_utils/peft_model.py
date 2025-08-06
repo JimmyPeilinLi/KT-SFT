@@ -1432,6 +1432,7 @@ class PeftModelForCausalLM(PeftModel):
 
             with self._enable_peft_forward_hooks(**kwargs):
                 kwargs = {k: v for k, v in kwargs.items() if k not in self.special_peft_forward_args}
+                kwargs.pop("num_items_in_batch", None)
                 if isinstance(self.base_model, LoraModel):
                     return self.base_model.model(
                         input_ids=input_ids,
