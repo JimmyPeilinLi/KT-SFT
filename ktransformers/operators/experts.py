@@ -571,10 +571,10 @@ class KSFTExpertsCPU(torch.autograd.Function):
         
         # generate, capture and run cuda graph
         # torch.set_printoptions(threshold=float('inf'))
-        print(expert_ids)
-        expert_ids.cpu().numpy().tofile('debug_expert_ids.txt', sep='\n')
-        print(expert_ids.size())
-        print(xx)
+        # print(expert_ids)
+        # expert_ids.cpu().numpy().tofile('debug_expert_ids.txt', sep='\n')
+        # print(expert_ids.size())
+        # print(xx)
         if input_tensor.size(0)==1 and torch.cuda.is_current_stream_capturing():
             # TODO: this branch is unreachable, but the shape of input_tensor([1,hidden_size]) and input_tensor_cpu([hidden_size]) is not compatible
             #print("capturing experts")
@@ -625,10 +625,10 @@ class KSFTExpertsCPU(torch.autograd.Function):
         # 把 qlen / k 留给 backward
         ctx.saved_dims = (qlen, k)
         ctx._time_fwd  = t_fwd
-        # print(f"qlen ,k:{qlen}, {k}")
+        print(f"qlen ,k:{qlen}, {k}")
         
-        # print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
-        #       f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
+        print(f"[KSFTExpertsCPU] Forward  : {flops_fwd/1e9:.3f} GFLOPs | "
+              f"{tflops_f:.2f} TFLOPS ({t_fwd*1e3:.2f} ms)")
 
         return result
         
@@ -675,10 +675,10 @@ class KSFTExpertsCPU(torch.autograd.Function):
         qlen, k  = ctx.saved_dims          # 正确的 q / k
         flops_bw = 10 * qlen * k * H_FIXED * M_FIXED
         tflops_b = flops_bw / t_bw / 1e12
-        # print(f"qlen:{qlen}, k:{k}")
+        print(f"qlen:{qlen}, k:{k}")
 
-        # print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
-        #       f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
+        print(f"[KSFTExpertsCPU] Backward : {flops_bw/1e9:.3f} GFLOPs | "
+              f"{tflops_b:.2f} TFLOPS ({t_bw*1e3:.2f} ms)")
         
         return input_grad.to(device=ctx.out_device), None, None, None, None, None, None
     

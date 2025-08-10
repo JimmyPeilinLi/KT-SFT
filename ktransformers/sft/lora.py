@@ -2,20 +2,38 @@ import transformers
 from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorForSeq2Seq
 from transformers import Trainer, TrainingArguments
 from transformers.trainer import TRAINING_ARGS_NAME
-from transformers.utils import is_accelerate_available, logging
+from transformers.training_args import OptimizerNames, ParallelMode
+from transformers.utils import (
+    is_datasets_available,
+    is_sagemaker_mp_enabled,
+    is_torch_xpu_available,
+    is_torch_mlu_available,
+    is_torch_musa_available,
+    is_torch_npu_available,
+    is_torch_mps_available,
+    is_torch_hpu_available,
+    is_accelerate_available,
+    is_apex_available,
+    logging,
+)
+from torch.utils.data import DataLoader, IterableDataset
+from transformers import Trainer
+from transformers.trainer_utils import seed_worker
+from transformers import TrainerCallback
 from packaging import version
-import torch
-from torch.utils.data import DataLoader
-from datasets import Dataset
-from peft import LoraConfig, TaskType
 import os
 import inspect
 import functools
+from typing import Union, Any
+
+import torch
+from torch.utils.data import DataLoader
+from peft import LoraConfig, TaskType
+from datasets import Dataset
 from torchviz import make_dot
 from torch.profiler import profile, record_function, ProfilerActivity
 import torch.nn.functional as F
 import torch.nn as nn
-from transformers import TrainerCallback
 import gc
 from tqdm import tqdm
 import os, torch, json, tempfile
@@ -24,8 +42,12 @@ from accelerate import Accelerator
 if is_accelerate_available("0.28.0"):
     from accelerate.utils import DataLoaderConfiguration
 from accelerate import __version__ as accelerate_version
+if is_apex_available():
+    from apex import amp
 if version.parse(accelerate_version) > version.parse("1.3.0"):
         from accelerate.utils import TorchTensorParallelPlugin
+if is_sagemaker_mp_enabled():
+    from transformers.trainer_utils import smp_forward_backward
 
 from ktransformers.sft.peft_utils.mapping import inject_adapter_in_model, get_peft_model
 from ktransformers.sft.peft_utils.lora_layer import KTransformersLinearLora
@@ -111,6 +133,7 @@ class KTrainer(Trainer):
         print("[KTrainer] Due to the placement feature in KTransformers, skip moving model to", device)
         return model
     
+    # 禁止 Trainer 在 n_gpu>1 时套 DataParallel
     def _wrap_model(self, model, training=True, dataloader=None):
         self.model_wrapped = model
         return model
@@ -242,6 +265,151 @@ class KTrainer(Trainer):
             dataloader_config.split_batches = False
             dataloader_config.dispatch_batches = False
             dataloader_config.even_batches = False
+            
+    # ★ 核心修正：训练 DataLoader 的 batch_size 固定用 per_device，不乘 n_gpu
+    def get_train_dataloader(self) -> DataLoader:
+        """
+        Returns the training DataLoader with per_device_train_batch_size
+        (no implicit multipliers by number of visible GPUs).
+        """
+        if self.train_dataset is None:
+            raise ValueError("Trainer: training requires a train_dataset.")
+
+        train_dataset = self.train_dataset
+        data_collator = self.data_collator
+
+        # 与原生一致：基于 datasets 的移除无用列；否则包一层剔列的 collator
+        if is_datasets_available():
+            try:
+                import datasets  # 仅用于 isinstance 检查
+                if isinstance(train_dataset, datasets.Dataset):
+                    train_dataset = self._remove_unused_columns(train_dataset, description="training")
+                else:
+                    data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
+            except Exception:
+                # datasets 不可用或版本不兼容时，退化到剔列 collator
+                data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
+        else:
+            data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
+
+        # 这里与原生不同：batch_size 用 per_device，不用 self._train_batch_size
+        dataloader_params = {
+            "batch_size": self.args.per_device_train_batch_size,   # ★ 不乘 n_gpu
+            "collate_fn": data_collator,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        # 非 IterableDataset 时，补充 sampler / drop_last / worker_init_fn / prefetch_factor
+        if not isinstance(train_dataset, IterableDataset):
+            dataloader_params["sampler"] = self._get_train_sampler()
+            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["worker_init_fn"] = seed_worker
+            # 仅当 num_workers>0 且设置了 prefetch_factor 时才传（与 torch DataLoader 要求一致）
+            if self.args.dataloader_num_workers > 0 and self.args.dataloader_prefetch_factor is not None:
+                dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        dl = DataLoader(train_dataset, **dataloader_params)
+
+        # 为了完全显式，告诉 Accelerate 不要做 device_placement
+        try:
+            prepared = self.accelerator.prepare(dl, device_placement=[False])
+        except TypeError:
+            # 某些 accelerate 版本没有 device_placement 参数，直接 prepare
+            prepared = self.accelerator.prepare(dl)
+
+        return prepared
+    
+    # === 训练步：与原生一致，唯一改动是最后返回时把 loss 挪到 self.args.device ===
+    def training_step(
+        self,
+        model: torch.nn.Module,
+        inputs: dict[str, Union[torch.Tensor, Any]],
+        num_items_in_batch=None
+    ) -> torch.Tensor:
+        model.train()
+        if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
+            self.optimizer.train()
+
+        # ★ 关键：保留原生的数据准备（会把 batch 张量放到 self.args.device，
+        #  你的自定义算子/替换模块很多是据此决定内部流向的）
+        inputs = self._prepare_inputs(inputs)
+
+        if is_sagemaker_mp_enabled():
+            loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
+            # ★ 返回值放到 args.device，直接满足 HF 的设备检查
+            return loss_mb.reduce_mean().detach().to(self.args.device)
+
+        # 与原生一致的上下文（amp/autocast 等）
+        with self.compute_loss_context_manager():
+            loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+
+        # 释放 batch
+        del inputs
+
+        # 原生的 empty_cache 步骤（照抄）
+        if (
+            self.args.torch_empty_cache_steps is not None
+            and self.state.global_step % self.args.torch_empty_cache_steps == 0
+        ):
+            if is_torch_xpu_available():
+                torch.xpu.empty_cache()
+            elif is_torch_mlu_available():
+                torch.mlu.empty_cache()
+            elif is_torch_musa_available():
+                torch.musa.empty_cache()
+            elif is_torch_npu_available():
+                torch.npu.empty_cache()
+            elif is_torch_mps_available(min_version="2.0"):
+                torch.mps.empty_cache()
+            elif is_torch_hpu_available():
+                logger.warning(
+                    "`torch_empty_cache_steps` is set but HPU device/backend does not support empty_cache()."
+                )
+            else:
+                torch.cuda.empty_cache()
+
+        kwargs = {}
+
+        # LOMO 需要学习率
+        if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+            kwargs["learning_rate"] = self._get_learning_rate()
+
+        # 多卡数据并行情况下做均值（你现在是模型并行，但保持兼容）
+        if self.args.n_gpu > 1:
+            loss = loss.mean()
+
+        # Apex/amp 路径
+        if self.use_apex:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:  # type: ignore
+                scaled_loss.backward()
+        else:
+            # 与原生一致：当 loss 不是用户自定义计算时，按梯度累积步数缩放
+            if not self.model_accepts_loss_kwargs and self.compute_loss_func is None:
+                loss = loss / self.args.gradient_accumulation_steps
+
+            # DeepSpeed 关闭 gas 缩放
+            if getattr(self.accelerator, "distributed_type", None) and \
+               str(self.accelerator.distributed_type) == "DistributedType.DEEPSPEED":
+                kwargs["scale_wrt_gas"] = False
+
+            self.accelerator.backward(loss, **kwargs)
+
+        # ★ 唯一改动：返回给 Trainer 的 loss 必须在 self.args.device
+        ret = loss.detach()
+        if ret.device != self.args.device:
+            ret = ret.to(self.args.device, non_blocking=True)
+
+        # 一次性调试（可开 `KT_DBG_STEP=1` 查看）
+        if os.environ.get("KT_DBG_STEP", "0") == "1" and not hasattr(self, "_kt_dbg_once"):
+            try:
+                print(f"[KT-DBG] args.device={self.args.device}  loss(before)={loss.device}  loss(return)={ret.device}")
+            except Exception:
+                pass
+            self._kt_dbg_once = True
+
+        return ret
 
 def _short(t):
     return tuple(t.shape) if isinstance(t, torch.Tensor) else type(t)
@@ -762,7 +930,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
         "non_blocking=", getattr(cfg, "non_blocking", None),
     )
     print("--------------------NEW DEBUG--------------------")
-    install_shape_probes(trainer.model)
+    # install_shape_probes(trainer.model) # print some debug info about multi-gpu placement.
     trainer.train()
 
     # input_ids = torch.randint(0, 1000, (32, 128), device="cuda:0")
