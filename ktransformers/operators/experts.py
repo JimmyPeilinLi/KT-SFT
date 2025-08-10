@@ -570,7 +570,11 @@ class KSFTExpertsCPU(torch.autograd.Function):
         # print("Go into the forward")
         
         # generate, capture and run cuda graph
-        # print(expert_ids)
+        # torch.set_printoptions(threshold=float('inf'))
+        print(expert_ids)
+        expert_ids.cpu().numpy().tofile('debug_expert_ids.txt', sep='\n')
+        print(expert_ids.size())
+        print(xx)
         if input_tensor.size(0)==1 and torch.cuda.is_current_stream_capturing():
             # TODO: this branch is unreachable, but the shape of input_tensor([1,hidden_size]) and input_tensor_cpu([hidden_size]) is not compatible
             #print("capturing experts")

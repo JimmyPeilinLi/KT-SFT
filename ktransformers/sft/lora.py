@@ -14,6 +14,7 @@ import functools
 from torchviz import make_dot
 from torch.profiler import profile, record_function, ProfilerActivity
 import torch.nn.functional as F
+import torch.nn as nn
 from transformers import TrainerCallback
 import gc
 from tqdm import tqdm
@@ -37,6 +38,7 @@ logger = logging.get_logger(__name__)
 # FOR: not A or H GPU
 os.environ["NCCL_P2P_DISABLE"]  = "1"
 os.environ["NCCL_IB_DISABLE"]  = "1"
+os.environ["KT_DEBUG_MOE"] = "1"
 
 layer_data = {}  # 存储各层输入输出数据
 
@@ -80,135 +82,12 @@ def preprocess_function(batch, tokenizer, max_len=512):
 
     tokenized_inputs["labels"] = tokenized_outputs["input_ids"]
     return tokenized_inputs
-
-class KTrainer(Trainer):
-    def save_model(self, output_dir=None, _internal_call=False):
-        output_dir = output_dir or self.args.output_dir
-        os.makedirs(output_dir, exist_ok=True)
-        # 只保存 LoRA adapter（含 adapter_config.json）
-        self.model.save_pretrained(output_dir)
-        
-    def _move_model_to_device(self, model, device):
-        print("[KTrainer] Due to the placement feature in KTransformers, skip moving model to", device)
-        return model
-    
-    def create_accelerator_and_postprocess(self):
-        if getattr(self, "accelerator", None) is None:
-            self.accelerator = KAccelerator(device_placement=False)
-            
-        # # We explicitly don't rely on the `Accelerator` to do gradient accumulation
-        # grad_acc_kwargs = {}
-        # if is_accelerate_available("0.28.0") and self.args.accelerator_config.gradient_accumulation_kwargs is not None:
-        #     grad_acc_kwargs = self.args.accelerator_config.gradient_accumulation_kwargs
-
-        # # check if num_steps is attempted to be passed in gradient_accumulation_kwargs
-        # if "num_steps" in grad_acc_kwargs:
-        #     if self.args.gradient_accumulation_steps > 1:
-        #         # raise because we do not know which setting is intended.
-        #         raise ValueError(
-        #             "The `AcceleratorConfig`'s `num_steps` is set but `gradient_accumulation_steps` is greater than 1 in the passed `TrainingArguments`"
-        #             "If using the passed `AcceleratorConfig` is desired, do not set the `TrainingArguments` `gradient_accumulation_steps`."
-        #         )
-        #     else:
-        #         self.args.gradient_accumulation_steps = grad_acc_kwargs["num_steps"]
-
-        # accelerator_config = self.args.accelerator_config.to_dict()
-
-        # if is_accelerate_available("0.28.0"):
-        #     # Extract dataloader config params from accelerator config
-        #     dataloader_params = ["split_batches", "dispatch_batches", "even_batches", "use_seedable_sampler"]
-        #     dataloader_config = DataLoaderConfiguration(
-        #         **{param: accelerator_config.pop(param) for param in dataloader_params}
-        #     )
-        #     if is_accelerate_available("1.1.0"):
-        #         dataloader_config.data_seed = self.args.data_seed
-
-        # non_blocking = accelerator_config.pop("non_blocking")
-        # if not is_accelerate_available("0.30.0"):
-        #     if non_blocking:
-        #         raise ImportError(
-        #             "`non_blocking` is only supported in accelerate v0.30.0 and above. Please upgrade accelerate to use this feature."
-        #         )
-        # else:
-        #     if non_blocking and not self.args.dataloader_pin_memory:
-        #         logger.warning(
-        #             "`non_blocking` is enabled but `dataloader_pin_memory` is not. For the best performance, it's recommended to enable both."
-        #         )
-        #     dataloader_config.non_blocking = non_blocking
-        # # this would have been updated above, no need for it anymore
-        # accelerator_config.pop("gradient_accumulation_kwargs")
-
-        # args = {
-        #     "deepspeed_plugin": self.args.deepspeed_plugin,
-        # }
-        # if is_accelerate_available("0.28.0"):
-        #     args["dataloader_config"] = dataloader_config
-        # else:
-        #     args.update(accelerator_config)
-        # # tp is initialized at Accelerator init phase so
-        # # args should be prepared here
-        # if self.args.tp_size > 1:
-        #     self.is_tp_enabled = True
-        #     if version.parse(accelerate_version) > version.parse("1.3.0"):
-        #         args["torch_tp_plugin"] = TorchTensorParallelPlugin(tp_size=self.args.tp_size)
-        #     else:
-        #         raise ValueError("Requires accelerate>1.3.0 to use Tensor Parallelism.")
-
-        # # create accelerator object
-        # self.accelerator = Accelerator(**args)
-        # # some Trainer classes need to use `gather` instead of `gather_for_metrics`, thus we store a flag
-        # self.gather_function = self.accelerator.gather_for_metrics
-
-        # if "use_gather_object" in inspect.signature(self.gather_function).parameters.keys():
-        #     self.gather_function = functools.partial(
-        #         self.gather_function, use_gather_object=self.args.eval_use_gather_object
-        #     )
-
-        # # deepspeed and accelerate flags covering both trainer args and accelerate launcher
-        # self.is_deepspeed_enabled = getattr(self.accelerator.state, "deepspeed_plugin", None) is not None
-        # self.is_fsdp_enabled = getattr(self.accelerator.state, "fsdp_plugin", None) is not None
-        # self.is_tp_enabled = getattr(self.accelerator.state, "torch_tp_plugin", None) is not None
-        # # post accelerator creation setup
-        # if self.is_fsdp_enabled:
-        #     fsdp_plugin = self.accelerator.state.fsdp_plugin
-        #     for param in ["limit_all_gathers", "activation_checkpointing"]:
-        #         setattr(fsdp_plugin, param, self.args.fsdp_config.get(param, getattr(fsdp_plugin, param)))
-        #     if fsdp_plugin.activation_checkpointing and self.args.gradient_checkpointing:
-        #         raise ValueError(
-        #             "The activation_checkpointing in FSDP config and the gradient_checkpointing in training arg "
-        #             "can't be set to True simultaneously. Please use FSDP's activation_checkpointing logic "
-        #             "when using FSDP."
-        #         )
-
-        # if self.is_deepspeed_enabled and getattr(self.args, "hf_deepspeed_config", None) is None:
-        #     self.propagate_args_to_deepspeed()
-
-        # # `save_only_model` can't be used with DeepSpeed/FSDP along with `load_best_model_at_end`
-        # if (
-        #     self.args.save_only_model
-        #     and (self.is_deepspeed_enabled or self.is_fsdp_enabled)
-        #     and self.args.load_best_model_at_end
-        # ):
-        #     wrapper = "DeepSpeed" if self.is_deepspeed_enabled else "FSDP"
-        #     raise ValueError(f"{wrapper} can't be used with `save_only_model` along with `load_best_model_at_end`.")
-
-        # # `auto_find_batch_size` isn't supported yet with DeepSpeed Zero-3
-        # if (
-        #     self.is_deepspeed_enabled
-        #     and self.accelerator.state.deepspeed_plugin.zero_stage == 3
-        #     and self.args.auto_find_batch_size
-        # ):
-        #     raise ValueError(
-        #         "`auto_find_batch_size` isn't supported yet with DeepSpeed Zero-3. Please consider using Zero-2, Zero-1, or FSDP"
-        #     )
-        # if (
-        #     self.args.save_only_model
-        #     and self.is_fsdp_enabled
-        #     and "SHARDED_STATE_DICT" in str(self.accelerator.state.fsdp_plugin.state_dict_type)
-        # ):
-        #     raise ValueError("save_only_model option is not compatible with FSDP state dict type 'SHARDED_STATE_DICT'")
     
 class KAccelerator(Accelerator):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("device_placement", False)
+        super().__init__(*args, **kwargs)
+        
     def prepare_model(self, model, *args, **kwargs):
         return model
     
@@ -220,6 +99,254 @@ class KAccelerator(Accelerator):
             else:
                 prepped.append(super().prepare(obj, **kwargs))
         return tuple(prepped) if len(prepped) > 1 else prepped[0]
+
+class KTrainer(Trainer):
+    def save_model(self, output_dir=None, _internal_call=False):
+        output_dir = output_dir or self.args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        # only save LoRA adapter（include adapter_config.json）
+        self.model.save_pretrained(output_dir)
+        
+    def _move_model_to_device(self, model, device):
+        print("[KTrainer] Due to the placement feature in KTransformers, skip moving model to", device)
+        return model
+    
+    def _wrap_model(self, model, training=True, dataloader=None):
+        self.model_wrapped = model
+        return model
+    
+    def create_accelerator_and_postprocess(self):
+        # We explicitly don't rely on the `Accelerator` to do gradient accumulation
+        grad_acc_kwargs = {}
+        if is_accelerate_available("0.28.0") and self.args.accelerator_config.gradient_accumulation_kwargs is not None:
+            grad_acc_kwargs = self.args.accelerator_config.gradient_accumulation_kwargs
+
+        # check if num_steps is attempted to be passed in gradient_accumulation_kwargs
+        if "num_steps" in grad_acc_kwargs:
+            if self.args.gradient_accumulation_steps > 1:
+                # raise because we do not know which setting is intended.
+                raise ValueError(
+                    "The `AcceleratorConfig`'s `num_steps` is set but `gradient_accumulation_steps` is greater than 1 in the passed `TrainingArguments`"
+                    "If using the passed `AcceleratorConfig` is desired, do not set the `TrainingArguments` `gradient_accumulation_steps`."
+                )
+            else:
+                self.args.gradient_accumulation_steps = grad_acc_kwargs["num_steps"]
+
+        accelerator_config = self.args.accelerator_config.to_dict()
+
+        if is_accelerate_available("0.28.0"):
+            # Extract dataloader config params from accelerator config
+            dataloader_params = ["split_batches", "dispatch_batches", "even_batches", "use_seedable_sampler"]
+            dataloader_config_dict = {param: accelerator_config.pop(param) for param in dataloader_params if param in accelerator_config}
+            if DataLoaderConfiguration is None:
+                raise ImportError("Your accelerate does not provide DataLoaderConfiguration but Trainer expects it.")
+            dataloader_config = DataLoaderConfiguration(**dataloader_config_dict)
+            if is_accelerate_available("1.1.0"):
+                dataloader_config.data_seed = self.args.data_seed
+        else:
+            dataloader_config = None
+
+        non_blocking = accelerator_config.pop("non_blocking", False)
+        if not is_accelerate_available("0.30.0"):
+            if non_blocking:
+                raise ImportError(
+                    "`non_blocking` is only supported in accelerate v0.30.0 and above. Please upgrade accelerate to use this feature."
+                )
+        else:
+            if non_blocking and not self.args.dataloader_pin_memory:
+                logger.warning("`non_blocking` is enabled but `dataloader_pin_memory` is not. For best performance, enable both.")
+            if dataloader_config is not None:
+                dataloader_config.non_blocking = non_blocking
+
+        accelerator_config.pop("gradient_accumulation_kwargs", None)
+
+        args = {
+            "deepspeed_plugin": self.args.deepspeed_plugin,
+            "device_placement": False,
+        }
+
+        if is_accelerate_available("0.28.0"):
+            args["dataloader_config"] = dataloader_config
+        else:
+            args.update(accelerator_config)
+
+        if getattr(self.args, "tp_size", 1) > 1:
+            self.is_tp_enabled = True
+            if version.parse(accelerate_version) > version.parse("1.3.0") and TorchTensorParallelPlugin is not None:
+                args["torch_tp_plugin"] = TorchTensorParallelPlugin(tp_size=self.args.tp_size)
+            else:
+                raise ValueError("Requires accelerate>1.3.0 to use Tensor Parallelism.")
+
+        self.accelerator = KAccelerator(**args)
+
+        try:
+            self.accelerator.state.device_ids = [0]
+            self.accelerator.state.num_processes = 1
+            self.accelerator.state.num_gpus = 1
+        except Exception:
+            pass
+
+        # some Trainer classes need to use `gather` instead of `gather_for_metrics`, thus we store a flag
+        self.gather_function = self.accelerator.gather_for_metrics
+
+        if "use_gather_object" in inspect.signature(self.gather_function).parameters.keys():
+            self.gather_function = functools.partial(
+                self.gather_function, use_gather_object=self.args.eval_use_gather_object
+            )
+
+        # deepspeed and accelerate flags covering both trainer args and accelerate launcher
+        self.is_deepspeed_enabled = getattr(self.accelerator.state, "deepspeed_plugin", None) is not None
+        self.is_fsdp_enabled = getattr(self.accelerator.state, "fsdp_plugin", None) is not None
+        self.is_tp_enabled = getattr(self.accelerator.state, "torch_tp_plugin", None) is not None
+        # post accelerator creation setup
+        if self.is_fsdp_enabled:
+            fsdp_plugin = self.accelerator.state.fsdp_plugin
+            for param in ["limit_all_gathers", "activation_checkpointing"]:
+                setattr(fsdp_plugin, param, self.args.fsdp_config.get(param, getattr(fsdp_plugin, param)))
+            if fsdp_plugin.activation_checkpointing and self.args.gradient_checkpointing:
+                raise ValueError(
+                    "The activation_checkpointing in FSDP config and the gradient_checkpointing in training arg "
+                    "can't be set to True simultaneously. Please use FSDP's activation_checkpointing logic "
+                    "when using FSDP."
+                )
+
+        if self.is_deepspeed_enabled and getattr(self.args, "hf_deepspeed_config", None) is None:
+            self.propagate_args_to_deepspeed()
+
+        # `save_only_model` can't be used with DeepSpeed/FSDP along with `load_best_model_at_end`
+        if (
+            self.args.save_only_model
+            and (self.is_deepspeed_enabled or self.is_fsdp_enabled)
+            and self.args.load_best_model_at_end
+        ):
+            wrapper = "DeepSpeed" if self.is_deepspeed_enabled else "FSDP"
+            raise ValueError(f"{wrapper} can't be used with `save_only_model` along with `load_best_model_at_end`.")
+
+        # `auto_find_batch_size` isn't supported yet with DeepSpeed Zero-3
+        if (
+            self.is_deepspeed_enabled
+            and self.accelerator.state.deepspeed_plugin.zero_stage == 3
+            and self.args.auto_find_batch_size
+        ):
+            raise ValueError(
+                "`auto_find_batch_size` isn't supported yet with DeepSpeed Zero-3. Please consider using Zero-2, Zero-1, or FSDP"
+            )
+        if (
+            self.args.save_only_model
+            and self.is_fsdp_enabled
+            and "SHARDED_STATE_DICT" in str(self.accelerator.state.fsdp_plugin.state_dict_type)
+        ):
+            raise ValueError("save_only_model option is not compatible with FSDP state dict type 'SHARDED_STATE_DICT'")
+        
+        if dataloader_config is not None:
+            dataloader_config.split_batches = False
+            dataloader_config.dispatch_batches = False
+            dataloader_config.even_batches = False
+
+def _short(t):
+    return tuple(t.shape) if isinstance(t, torch.Tensor) else type(t)
+
+def install_shape_probes(model):
+    if os.environ.get("KT_DEBUG_MOE","0") != "1":
+        print("[KT_DEBUG_MOE] off"); return
+
+    # 0) 打印 DataLoader 配置你已经有了，这里再贴一遍保险
+    try:
+        acc = trainer.accelerator
+        cfg = getattr(acc, "dataloader_config", None)
+        if cfg is not None:
+            print("[ACCEL DL CONFIG]",
+                  "split_batches=", getattr(cfg,"split_batches",None),
+                  "dispatch_batches=", getattr(cfg,"dispatch_batches",None),
+                  "even_batches=", getattr(cfg,"even_batches",None),
+                  "use_seedable_sampler=", getattr(cfg,"use_seedable_sampler",None),
+                  "non_blocking=", getattr(cfg,"non_blocking",None))
+    except Exception as e:
+        print("[ACCEL DL CONFIG] <err>", e)
+
+    # 1) 在 embed_tokens 入口打印 input_ids 的 (B,S)
+    try:
+        emb = model.base_model.model.model.embed_tokens
+        def _emb_pre(mod, inp):
+            x = inp[0]
+            if not hasattr(mod, "_dbg_once"):
+                print(f"[DBG] embed input_ids shape = {tuple(x.shape)}  (expect B,S)")
+                mod._dbg_once = True
+        emb.register_forward_pre_hook(_emb_pre)
+    except Exception as e:
+        print("[DBG] embed hook failed:", e)
+
+    # 2) 在第 0 个 decoder layer 入口/出口打印 hidden_states 形状
+    try:
+        first_layer = model.base_model.model.model.layers[0]
+        _orig_fwd = first_layer.forward
+        def _wrap_fwd(self, *args, **kwargs):
+            hs = args[0] if args else kwargs.get("hidden_states")
+            if not hasattr(self, "_dbg_once_in"):
+                print(f"[DBG] L0.in hidden_states = {_short(hs)}  (expect B,S,H)")
+                self._dbg_once_in = True
+            out = _orig_fwd(*args, **kwargs)
+            hs_out = out[0] if isinstance(out, (tuple, list)) else out
+            if not hasattr(self, "_dbg_once_out"):
+                print(f"[DBG] L0.out hidden_states = {_short(hs_out)}")
+                self._dbg_once_out = True
+            return out
+        first_layer.forward = MethodType(_wrap_fwd, first_layer)
+    except Exception as e:
+        print("[DBG] L0 wrap failed:", e)
+
+    # 3) 在一个 MoE 层的 mlp 入口打印（DeepseekV3 的 mlp 是 MoE）
+    try:
+        # 找到第一个含 MoE 的层（名字可能是 .mlp 或你自定义类）
+        moe_layer = None
+        for i, lyr in enumerate(model.base_model.model.model.layers):
+            if hasattr(lyr, "mlp"):
+                moe_layer = lyr.mlp
+                moe_idx = i
+                break
+        if moe_layer is not None:
+            _moe_orig = moe_layer.forward
+            def _moe_wrap(self, *args, **kwargs):
+                x = args[0] if args else kwargs.get("hidden_states")
+                if not hasattr(self, "_dbg_once"):
+                    # 这里很多 MoE 实现会把 (B,S,H) 展平成 (B*S,H) 再做 gate
+                    print(f"[DBG] MLP(in) @layer{moe_idx} hidden_states = {_short(x)}")
+                    if isinstance(x, torch.Tensor) and x.dim() == 3:
+                        B,S,H = x.shape
+                        print(f"[DBG] tokens before flatten = B*S = {B}*{S} = {B*S}")
+                    self._dbg_once = True
+                return _moe_orig(*args, **kwargs)
+            moe_layer.forward = MethodType(_moe_wrap, moe_layer)
+        else:
+            print("[DBG] no moe_layer found")
+    except Exception as e:
+        print("[DBG] moe wrap failed:", e)
+
+    # 4) 在 KTransformersExperts 入口打印 (N, …) 与 expert_ids/weights 形状（你之前装过，这里更完整）
+    try:
+        from ktransformers.operators.experts import KTransformersExperts
+        def _experts_pre(mod, args):
+            if hasattr(mod, "_dbg_once"): return
+            try:
+                input_tensor, expert_ids, weights = args[:3]
+                print(f"[DBG] experts.in input_tensor={tuple(input_tensor.shape)} "
+                      f"expert_ids={tuple(expert_ids.shape)} weights={tuple(weights.shape)}")
+                if input_tensor.dim()==2:
+                    N = input_tensor.shape[0]
+                    print(f"[DBG] N(input rows)={N}")
+                if expert_ids.dim()==2:
+                    T,K = expert_ids.shape
+                    print(f"[DBG] tokens(T)={T}, K={K}, T*K={T*K}")
+                mod._dbg_once = True
+            except Exception as e:
+                print("[DBG] experts hook parse err:", e)
+        count=0
+        for name,m in model.named_modules():
+            if isinstance(m, KTransformersExperts):
+                m.register_forward_pre_hook(_experts_pre); count+=1
+        print(f"[KT_DEBUG_MOE] installed experts hook on {count} modules.")
+    except Exception as e:
+        print("[DBG] experts hook failed:", e)
 
 def inspect_device(model, write_file):
     for name, module in model.named_modules(): 
@@ -358,7 +485,7 @@ def check_moe_gradients(model):
 
 def disable_all_dropout(module):
         for name, child in module.named_children():
-            if isinstance(child, torch.nn.Dropout):
+            if isinstance(child, nn.Dropout):
                 child.p = 0  # 直接修改概率参数
                 child.inplace = False  # 确保不影响原始数据
             disable_all_dropout(child)  # 递归处理子模块
@@ -443,7 +570,7 @@ def log_step_state(
     step: int,
     inputs: dict,
     loss: torch.Tensor,
-    model: torch.nn.Module,
+    model: nn.Module,
     log_dir: str = "train_logs",
 ):
     """
@@ -578,6 +705,22 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     
     # _ = report_meta_tensors(model)
     
+    print("=== SAMPLE INSPECT ===")
+    for i in range(2):
+        ex = train_dataset[i]  # HF datasets 的单条样本（已经过 preprocess_function）
+        summary = {}
+        for k,v in ex.items():
+            if isinstance(v, list):
+                if len(v)>0 and isinstance(v[0], list):
+                    summary[k] = f"list-of-lists len={len(v)} x len0={len(v[0])}"
+                else:
+                    summary[k] = f"list len={len(v)}"
+            elif torch.is_tensor(v):
+                summary[k] = f"tensor shape={tuple(v.shape)}"
+            else:
+                summary[k] = str(type(v))
+        print(f"[SAMPLE {i}]", summary)
+    
     trainer = KTrainer(
         model=model,
         train_dataset=train_dataset,
@@ -590,18 +733,36 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     # first_batch = next(iter(trainer.get_train_dataloader()))
     # print("Batch keys:", list(first_batch.keys()))
     
-    acc = KAccelerator(device_placement=False)
-    acc.state.device_ids = [0]
-    acc.state.num_processes = 1
-    acc.state.num_gpus = 1
-    trainer.accelerator = acc
+    # acc = KAccelerator(device_placement=False)
+    # acc.state.device_ids = [0]
+    # acc.state.num_processes = 1
+    # acc.state.num_gpus = 1
+    # trainer.accelerator = acc
 
-    import torch.nn as nn
     print("Accelerator device_ids:", trainer.accelerator.state.device_ids)
+    print(f"type(trainer.model):{type(trainer.model)}")
+    print(f"type(trainer.accelerator):{type(trainer.accelerator)}")
+    
+    _ = trainer._wrap_model(trainer.model, training=True)
     assert not isinstance(trainer.model, nn.DataParallel), "Model was wrapped with DataParallel unexpectedly"
+    
+    print("WRAP FUNC:", KTrainer._wrap_model is Trainer._wrap_model)   # 应为 False
+    print("IS DP:", isinstance(trainer.model, nn.DataParallel))         # 应为 False
+    print("IS DP WRAPPED:", isinstance(getattr(trainer, "model_wrapped", None), nn.DataParallel))  # 应为 False
     
     print("-------------------------START TRAINING!!!-------------------------")
 
+    cfg = getattr(trainer.accelerator, "dataloader_config", None)
+    print(
+        "[ACCEL DL CONFIG]",
+        "split_batches=", getattr(cfg, "split_batches", None),
+        "dispatch_batches=", getattr(cfg, "dispatch_batches", None),
+        "even_batches=", getattr(cfg, "even_batches", None),
+        "use_seedable_sampler=", getattr(cfg, "use_seedable_sampler", None),
+        "non_blocking=", getattr(cfg, "non_blocking", None),
+    )
+    print("--------------------NEW DEBUG--------------------")
+    install_shape_probes(trainer.model)
     trainer.train()
 
     # input_ids = torch.randint(0, 1000, (32, 128), device="cuda:0")
@@ -692,7 +853,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
 
     # def print_dropout_status(module, prefix=""):
     #     for name, child in module.named_children():
-    #         if isinstance(child, torch.nn.Dropout):
+    #         if isinstance(child, nn.Dropout):
     #             print(f"{prefix}{name}: p={child.p}, training={child.training}")
     #         print_dropout_status(child, prefix + name + ".")
     

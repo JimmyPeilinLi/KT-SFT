@@ -392,9 +392,9 @@ if __name__ == "__main__":
 
     else:
         local_chat(
-            model_path="/mnt/data/models/DeepSeek-R1-BF16",
+            model_path="/mnt/data2/models/DeepSeek-R1-BF16",
             model_config_path="ktransformers/configs/model_config",
-            gguf_path="/mnt/data/models/DeepSeek-R1-BF16",
+            gguf_path="/mnt/data2/models/DeepSeek-R1-BF16",
             # model_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
             # model_config_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
             # gguf_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
