@@ -126,7 +126,7 @@
     kwargs:
       per_layer_prefill_intput_threshold: 0 # 0 is close layer wise prefill
       transfer_map: 
-        30: "cuda:1"
+        7: "cuda:1"
 
 - match:
     name: "^model\\.layers\\.[0-6]\\."

@@ -830,11 +830,19 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
 
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
-        target_modules=[
-            "q_proj",
+        target_modules=[ # TODO: 这里需要写入到shell里面，每个模型的template是不一样的
+            # "q_proj", # FOR DeepSeek-V2-Lite
+            "q_a_proj", # FOR DeepSeek-V3&R1
+            "q_b_proj",
             "kv_a_proj_with_mqa",
             "kv_b_proj",
-            "o_proj"
+            "o_proj",
+            "mlp.gate_proj",
+            "mlp.up_proj",
+            "mlp.down_proj",
+            "shared_experts.gate_proj",
+            "shared_experts.up_proj",
+            "shared_experts.down_proj",
         ],
         r=8,
         lora_alpha=32,
@@ -864,6 +872,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     model.print_trainable_parameters() 
     
     # print(f"model:{model}")
+    # return
     
     # output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
     # loss = output.logits.mean()
