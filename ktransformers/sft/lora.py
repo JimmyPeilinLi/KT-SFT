@@ -967,7 +967,7 @@ def lora_and_load_adapter_for_debug(model, tokenizer, sft_data_path, save_adapte
     training_args = TrainingArguments(
         output_dir=save_adapter_path,
         per_device_train_batch_size=1,
-        gradient_accumulation_steps=16,
+        gradient_accumulation_steps=1,
         num_train_epochs=1,
         learning_rate=3e-4,
         fp16=False,
