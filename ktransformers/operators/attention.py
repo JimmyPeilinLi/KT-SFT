@@ -135,8 +135,17 @@ class KDeepseekV2Attention(BaseInjectedModule, DeepseekV2Attention):
 
         # q_nope [bsz, self.num_heads, q_len, self.qk_nope_head_dim]
         # q_pe [bsz, self.num_heads, q_len, self.qk_rope_head_dim]
-        k_pe = k_pe.view(bsz, 1, -1, self.qk_rope_head_dim)[:,:,:attention_mask.size(-1),:]
-        compressed_kv = compressed_kv.view(bsz, 1, -1, self.kv_lora_rank)[:,:,:attention_mask.size(-1),:]
+        
+        
+        # k_pe = k_pe.view(bsz, 1, -1, self.qk_rope_head_dim)[:,:,:attention_mask.size(-1),:]
+        # compressed_kv = compressed_kv.view(bsz, 1, -1, self.kv_lora_rank)[:,:,:attention_mask.size(-1),:]
+        kv_len = kv_seq_len if attention_mask is None else attention_mask.size(-1)
+
+        k_pe = k_pe.view(bsz, 1, -1, self.qk_rope_head_dim)[:, :, :kv_len, :]
+        compressed_kv = compressed_kv.view(bsz, 1, -1, self.kv_lora_rank)[:, :, :kv_len, :]
+        
+        
+        
         # k_pe [bsz, 1, cache_len, self.qk_rope_head_dim]
         # compressed_kv [bsz, 1, cache_len,self.kv_lora_rank]
         q_nope = torch.matmul(q_nope, q_absorb)
@@ -171,8 +180,11 @@ class KDeepseekV2Attention(BaseInjectedModule, DeepseekV2Attention):
         attn_weights = nn.functional.softmax(
             attn_weights, dim=-1, dtype=torch.float32
         ).to(q_pe.dtype)
+        # attn_weights = nn.functional.dropout(
+        #     attn_weights, p=self.attention_dropout, training=self.training
+        # )
         attn_weights = nn.functional.dropout(
-            attn_weights, p=self.attention_dropout, training=self.training
+            attn_weights, p=0.0, training=self.training
         )
         
         attn_output = torch.einsum('bhql,blc->bhqc', attn_weights, compressed_kv)
@@ -693,54 +705,64 @@ class KDeepseekV2Attention(BaseInjectedModule, DeepseekV2Attention):
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        if torch.xpu.is_available():
-            return self.forward_xpu(
-                hidden_states,
-                attention_mask,
-                position_ids,
-                past_key_value,
-                output_attentions,
-                use_cache,
-                cache_position,
-                **kwargs,
-            )
-        elif (os.name == 'nt'
-              or get_compute_capability() < 8
-              or hidden_states.device.type == 'cpu'
-              or device_manager.gpu_vendor != GPUVendor.NVIDIA):
-            return self.forward_windows(
-                hidden_states,
-                attention_mask,
-                position_ids,
-                past_key_value,
-                output_attentions,
-                use_cache,
-                cache_position,
-                **kwargs,
-            )
-        else:
-            if flashinfer_enabled:
-                return self.forward_linux_flashinfer(
-                    hidden_states,
-                    attention_mask,
-                    position_ids,
-                    past_key_value,
-                    output_attentions,
-                    use_cache,
-                    cache_position,
-                    **kwargs,
-                )
-            else:
-                return self.forward_linux_triton(
-                    hidden_states,
-                    attention_mask,
-                    position_ids,
-                    past_key_value,
-                    output_attentions,
-                    use_cache,
-                    cache_position,
-                    **kwargs,
-                )
+        # if torch.xpu.is_available():
+        #     return self.forward_xpu(
+        #         hidden_states,
+        #         attention_mask,
+        #         position_ids,
+        #         past_key_value,
+        #         output_attentions,
+        #         use_cache,
+        #         cache_position,
+        #         **kwargs,
+        #     )
+        # elif (os.name == 'nt'
+        #       or get_compute_capability() < 8
+        #       or hidden_states.device.type == 'cpu'
+        #       or device_manager.gpu_vendor != GPUVendor.NVIDIA):
+        #     return self.forward_windows(
+        #         hidden_states,
+        #         attention_mask,
+        #         position_ids,
+        #         past_key_value,
+        #         output_attentions,
+        #         use_cache,
+        #         cache_position,
+        #         **kwargs,
+        #     )
+        # else:
+        #     if flashinfer_enabled:
+        #         return self.forward_linux_flashinfer(
+        #             hidden_states,
+        #             attention_mask,
+        #             position_ids,
+        #             past_key_value,
+        #             output_attentions,
+        #             use_cache,
+        #             cache_position,
+        #             **kwargs,
+        #         )
+        #     else:
+        #         return self.forward_linux_triton(
+        #             hidden_states,
+        #             attention_mask,
+        #             position_ids,
+        #             past_key_value,
+        #             output_attentions,
+        #             use_cache,
+        #             cache_position,
+        #             **kwargs,
+        #         )
+        return self.forward_windows(
+            hidden_states,
+            attention_mask,
+            position_ids,
+            past_key_value,
+            output_attentions,
+            use_cache,
+            cache_position,
+            **kwargs,
+        )
 
 
 class KLlamaAttention(BaseInjectedModule):

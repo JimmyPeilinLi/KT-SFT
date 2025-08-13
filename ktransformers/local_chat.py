@@ -36,7 +36,7 @@ from ktransformers.util.utils import load_weights, prefill_and_generate, prefill
 from ktransformers.server.config.config import Config
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled
 from ktransformers.util.vendors import device_manager, get_device, to_device, GPUVendor
-from ktransformers.sft.lora import inject_lora_layer, lora_and_load_adapter
+from ktransformers.sft.lora import inject_lora_layer, lora_and_load_adapter, lora_and_load_adapter_for_debug
 from ktransformers.util.custom_loader import GGUFLoader, SafeTensorLoader
 from ktransformers.util.globals import GLOBAL_CONFIG
 from ktransformers.sft.metrics import calc_metrics
@@ -81,6 +81,22 @@ default_optimize_rules = {
     "MixtralForCausalLM": ktransformer_rules_dir + "Mixtral.yaml",
 }
 
+import os
+os.environ["PYTHONHASHSEED"] = "42"        # 修复 dict/set 顺序
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # 保证 cublas 可复现（需在 import torch 前更稳）
+
+import random, numpy as np, torch
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
+
+torch.backends.cuda.matmul.allow_tf32 = False
+torch.backends.cudnn.allow_tf32 = False
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+torch.use_deterministic_algorithms(True)  # 若有不支持确定性的算子会直接抛错，便于定位
 
 def local_chat(
     model_path: str | None = None,
@@ -95,7 +111,7 @@ def local_chat(
     force_think: bool = False,
     chunk_size: int = 8192,
     device: str = "cuda",
-    is_sft: bool = False,
+    is_sft: bool = True,
     sft_data_path: str | None = None,
     save_adapter_path: str | None = None,
     use_adapter: bool = False,
@@ -179,7 +195,7 @@ def local_chat(
         GLOBAL_CONFIG._config["mod"] = "sft"
         print(f"sft with lora in dataset: {sft_data_path} ...")
         print(f"use_cuda_graph:{use_cuda_graph}")
-        lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path)
+        lora_and_load_adapter_for_debug(model, tokenizer, sft_data_path, save_adapter_path)
 
     if use_adapter == True:
         GLOBAL_CONFIG._config["mod"] = "sft"
@@ -392,23 +408,23 @@ if __name__ == "__main__":
 
     else:
         local_chat(
-            model_path="/mnt/data2/models/DeepSeek-R1-BF16",
-            model_config_path="ktransformers/configs/model_config",
-            gguf_path="/mnt/data2/models/DeepSeek-R1-BF16",
-            # model_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
-            # model_config_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
-            # gguf_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
+            # model_path="/mnt/data2/models/DeepSeek-R1-BF16",
+            # model_config_path="ktransformers/configs/model_config",
+            # gguf_path="/mnt/data2/models/DeepSeek-R1-BF16",
+            model_path="/mnt/data/models/DeepSeek-V2-Lite-Chat",
+            model_config_path="/mnt/data/models/DeepSeek-V2-Lite-Chat",
+            gguf_path="/mnt/data/models/DeepSeek-V2-Lite-Chat",
             cpu_infer=112,
             max_new_tokens=1000,
             force_think=False,
-            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V3-Chat-sft-amx-multi-gpu.yaml",
-            # optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx-multi-gpu.yaml",
+            # optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V3-Chat-sft-amx-multi-gpu.yaml",
+            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx.yaml",
             is_sft=True,
             sft_data_path="test_adapter/ESC_inst_train.json",
             # sft_data_path="test_adapter/500token_test.json",
-            save_adapter_path="test_adapter/demo_adapter_ESC_V3_final_amx_KT_target_all",
+            save_adapter_path="test_adapter/test2_KT_deepseekV2_ESC_AFwithShare",
             use_adapter=False,
-            use_adapter_path="test_adapter/demo_adapter_ESC_final_amx_KT_target_all/checkpoint-428",
+            use_adapter_path="test_adapter/KT_deepseekV3_ESC_AFwithShare/checkpoint-385",
             is_test_data=False,
             test_data_path="test_adapter/ESC_inst_test.json", # TODO: 目前这个不能超过512token，建议还是写个截断。
             output_dir="test_adapter/demo_adapter_ESC_final_amx_KT_target_all/checkpoint-428-tmp",

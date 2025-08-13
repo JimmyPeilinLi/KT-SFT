@@ -191,7 +191,9 @@ def main():
 
         # --dump-all 时将所有张量写文件
         if args.dump_all:
-            dump_tensors(state, out_dir=f"{st_path.stem}_dump")
+            parent_dir = d.parent  # 获取 ckpt_dir 的父目录
+            out_dir = parent_dir / f"{st_path.stem}_dump"
+            dump_tensors(state, out_dir=str(out_dir))
 
     # ========== 其它 state_dict ==========
     if (d / "optimizer.pt").exists():

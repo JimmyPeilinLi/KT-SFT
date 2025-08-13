@@ -36,7 +36,9 @@ import torch.nn.functional as F
 import torch.nn as nn
 import gc
 from tqdm import tqdm
-import os, torch, json, tempfile
+import os, torch, json, tempfile, random, numpy as np
+import hashlib, time
+from collections import OrderedDict
 from pathlib import Path
 from accelerate import Accelerator
 if is_accelerate_available("0.28.0"):
@@ -56,6 +58,8 @@ from ktransformers.operators.experts import KExpertsTorch, KTransformersExperts
 # from ktransformers.sft.load_lora import get_custom_peft_model
 
 logger = logging.get_logger(__name__)
+
+SEED = 42
 
 # FOR: not A or H GPU
 os.environ["NCCL_P2P_DISABLE"]  = "1"
@@ -775,7 +779,7 @@ def log_step_state(
 
 def collect_gradients(model, input_ids):
     # 确保可复现性
-    torch.manual_seed(42)
+    torch.manual_seed(SEED)
     
     output = model(input_ids=input_ids)
     
@@ -811,6 +815,273 @@ def report_meta_tensors(model):
             meta_modules.append((mod_name, type(mod).__name__, metas))
     return meta_modules
 
+def set_reproducible(seed=SEED):
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    # 关闭 TF32，避免不同设备/驱动产生微小差异
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
+    # CUDNN 可复现模式 & 固定算法选择
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # 要求所有算子走确定性实现（不支持的算子会直接报错，便于你定位）
+    torch.use_deterministic_algorithms(True, warn_only=False)
+
+    # CPU 并行的规约顺序也可能引入微差，收紧线程数
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+
+def disable_all_dropouts(model):
+    # 改 config
+    cfg = getattr(model, "config", None)
+    if cfg is not None:
+        for name in dir(cfg):
+            if "dropout" in name.lower() or "layerdrop" in name.lower():
+                try:
+                    val = getattr(cfg, name)
+                    if isinstance(val, (float, int)):
+                        setattr(cfg, name, 0.0)
+                except Exception:
+                    pass
+
+    # 改模块（nn.Dropout / 部分实现里自定义 Dropout）
+    for m in model.modules():
+        if isinstance(m, torch.nn.Dropout):
+            m.p = 0.0
+        # 某些实现有 m.dropout_p / m.attn_dropout 等自定义字段
+        for attr in ("p", "dropout", "dropout_p", "attn_dropout", "attention_dropout", "activation_dropout"):
+            if hasattr(m, attr):
+                try:
+                    v = getattr(m, attr)
+                    if isinstance(v, (float, int)):
+                        setattr(m, attr, 0.0)
+                except Exception:
+                    pass
+
+def _peek_lora_targets(model, target_modules):
+    hits = []
+    for name, module in model.named_modules():
+        for pat in target_modules:
+            if pat in name:
+                hits.append(name)
+                break
+    hits = sorted(set(hits))
+    print("[LoRA targets count]", len(hits))
+    for n in hits[:20]:
+        print("  ", n)
+    return hits
+
+def _tensor_sha256_as_f32(t) -> str:
+    """
+    对任何 dtype 的张量，先安全地 cast 到 float32，再取字节做 sha256。
+    这样避免 numpy 对 bfloat16 不支持的问题，同时保证一致性。
+    """
+    x = t.detach().cpu().contiguous().to(torch.float32).view(-1)
+    arr = x.numpy()                     # float32 -> numpy 一定支持
+    return hashlib.sha256(arr.tobytes()).hexdigest()
+
+def snapshot_lora_to_json(model, json_path: str, tag: str = "init"):
+    """
+    遍历模型内所有 LoRA A/B 权重，记录到 JSON：
+    { "__meta__": {...}, "tensors": { "name": {"shape": [...], "dtype": "...", "sha256_f32": "..."} } }
+    """
+    tensors = OrderedDict()
+    count = 0
+    for n, m in model.named_modules():
+        if hasattr(m, "lora_A"):
+            for k, p in m.lora_A.items():
+                key = f"{n}.lora_A[{k}]"
+                tensors[key] = {
+                    "shape": list(p.weight.shape),
+                    "dtype": str(p.weight.dtype),
+                    "sha256_f32": _tensor_sha256_as_f32(p.weight),
+                }
+                count += 1
+        if hasattr(m, "lora_B"):
+            for k, p in m.lora_B.items():
+                key = f"{n}.lora_B[{k}]"
+                tensors[key] = {
+                    "shape": list(p.weight.shape),
+                    "dtype": str(p.weight.dtype),
+                    "sha256_f32": _tensor_sha256_as_f32(p.weight),
+                }
+                count += 1
+
+    meta = {
+        "tag": tag,
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "count": count,
+        "torch_version": torch.__version__,
+        "cuda": torch.version.cuda if torch.cuda.is_available() else None,
+        "device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+    }
+    payload = {"__meta__": meta, "tensors": tensors}
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    print(f"[LORA SNAPSHOT] saved {count} tensors to {json_path} tag={tag}")
+
+def lora_and_load_adapter_for_debug(model, tokenizer, sft_data_path, save_adapter_path, is_profiler=False):
+
+    torch.autograd.set_detect_anomaly(True)
+
+    dataset = Dataset.from_json(sft_data_path)
+
+    processed_dataset = dataset.map(lambda  examples: preprocess_function(examples, tokenizer), batched=True)
+    split_dataset = processed_dataset.train_test_split(test_size=0.1, seed=SEED, shuffle=False)
+
+    train_dataset = split_dataset["train"]
+    val_dataset = split_dataset["test"]
+
+    train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=False)
+    # val_dataloader = DataLoader(val_dataset, batch_size=8)
+
+    lora_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        target_modules=[ # TODO: 这里需要写入到shell里面，每个模型的template是不一样的
+            "q_proj", # FOR DeepSeek-V2-Lite
+            # "q_a_proj", # FOR DeepSeek-V3&R1
+            # "q_b_proj",
+            "kv_a_proj_with_mqa",
+            "kv_b_proj",
+            "o_proj",
+            "mlp.gate_proj",
+            "mlp.up_proj",
+            "mlp.down_proj",
+            "shared_experts.gate_proj",
+            "shared_experts.up_proj",
+            "shared_experts.down_proj",
+        ],
+        r=8,
+        lora_alpha=32,
+        lora_dropout=0.0,
+    )
+
+    training_args = TrainingArguments(
+        output_dir=save_adapter_path,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=16,
+        num_train_epochs=1,
+        learning_rate=3e-4,
+        fp16=False,
+        bf16=True,
+        logging_steps=10,
+        save_steps=1000,
+        max_steps=1,
+        dataloader_drop_last=True,
+        ddp_find_unused_parameters=False,
+        seed=SEED,                        # 训练全局种子
+        data_seed=SEED,                   # 数据相关的种子（采样/切分等）
+        group_by_length=False,            # 关闭按长度分桶（避免顺序变化）
+        dataloader_num_workers=0,
+        label_smoothing_factor=0.0,       # 若曾用过 label smoothing，这里明确关掉
+        gradient_checkpointing=False,     # 检查点重计算可能改计算路径；关掉更稳
+        optim="adamw_torch",
+    )
+
+    _peek_lora_targets(model, lora_config.target_modules)
+    # model = inject_adapter_in_model(lora_config, model)
+    model = get_peft_model(model, lora_config)
+    # model = get_custom_peft_model(model, lora_config)
+    disable_all_dropouts(model)
+    
+    torch.manual_seed(SEED); torch.cuda.manual_seed_all(SEED)
+    for name, mod in sorted(model.named_modules(), key=lambda x: x[0]):
+        if hasattr(mod, "lora_A"):
+            # A 随机、可复现
+            for _, p in sorted(mod.lora_A.items()):
+                torch.nn.init.normal_(p.weight, mean=0.0, std=0.02)
+        if hasattr(mod, "lora_B"):
+            # B 全 0
+            for _, p in sorted(mod.lora_B.items()):
+                torch.nn.init.zeros_(p.weight)
+
+    model.config.use_cache = False
+
+    model.print_trainable_parameters() 
+    
+    # print(f"model:{model}")
+    # return
+    
+    # output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
+    # loss = output.logits.mean()
+        
+    # dot = make_dot(loss, params=dict(model.named_parameters()))
+    # dot.render("KT_compute_cpuinfer_moe_model_graph", format="svg")
+    
+    # _ = report_meta_tensors(model)
+    
+    print("=== SAMPLE INSPECT ===")
+    for i in range(2):
+        ex = train_dataset[i]  # HF datasets 的单条样本（已经过 preprocess_function）
+        summary = {}
+        for k,v in ex.items():
+            if isinstance(v, list):
+                if len(v)>0 and isinstance(v[0], list):
+                    summary[k] = f"list-of-lists len={len(v)} x len0={len(v[0])}"
+                else:
+                    summary[k] = f"list len={len(v)}"
+            elif torch.is_tensor(v):
+                summary[k] = f"tensor shape={tuple(v.shape)}"
+            else:
+                summary[k] = str(type(v))
+        print(f"[SAMPLE {i}]", summary)
+    
+    trainer = KTrainer(
+        model=model,
+        train_dataset=train_dataset,
+        args=training_args,
+        data_collator=DataCollatorForSeq2Seq(
+            tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
+        )
+    )
+    # first_batch = next(iter(trainer.get_train_dataloader()))
+    # print("Batch keys:", list(first_batch.keys()))
+    
+    # acc = KAccelerator(device_placement=False)
+    # acc.state.device_ids = [0]
+    # acc.state.num_processes = 1
+    # acc.state.num_gpus = 1
+    # trainer.accelerator = acc
+
+    # print("Accelerator device_ids:", trainer.accelerator.state.device_ids)
+    # print(f"type(trainer.model):{type(trainer.model)}")
+    # print(f"type(trainer.accelerator):{type(trainer.accelerator)}")
+    
+    _ = trainer._wrap_model(trainer.model, training=True)
+    assert not isinstance(trainer.model, nn.DataParallel), "Model was wrapped with DataParallel unexpectedly"
+    
+    # print("WRAP FUNC:", KTrainer._wrap_model is Trainer._wrap_model)   # 应为 False
+    # print("IS DP:", isinstance(trainer.model, nn.DataParallel))         # 应为 False
+    # print("IS DP WRAPPED:", isinstance(getattr(trainer, "model_wrapped", None), nn.DataParallel))  # 应为 False
+    
+    print("-------------------------START TRAINING!!!-------------------------")
+
+    # cfg = getattr(trainer.accelerator, "dataloader_config", None)
+    # print(
+    #     "[ACCEL DL CONFIG]",
+    #     "split_batches=", getattr(cfg, "split_batches", None),
+    #     "dispatch_batches=", getattr(cfg, "dispatch_batches", None),
+    #     "even_batches=", getattr(cfg, "even_batches", None),
+    #     "use_seedable_sampler=", getattr(cfg, "use_seedable_sampler", None),
+    #     "non_blocking=", getattr(cfg, "non_blocking", None),
+    # )
+    # print("--------------------NEW DEBUG--------------------")
+    # install_shape_probes(trainer.model) # print some debug info about multi-gpu placement.
+    snap_init_path = os.path.join(save_adapter_path, "lora_snapshot_init.json")
+    os.makedirs(save_adapter_path, exist_ok=True)
+    snapshot_lora_to_json(model, snap_init_path, tag="init")
+    trainer.train()
+    snap_after_path = os.path.join(save_adapter_path, "lora_snapshot_after_step.json")
+    snapshot_lora_to_json(model, snap_after_path, tag="after_step")
+
 def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is_profiler=False):
 
     torch.autograd.set_detect_anomaly(True) # 在反向传播出错时，PyTorch 会提供更详细的堆栈信息
@@ -831,9 +1102,9 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         target_modules=[ # TODO: 这里需要写入到shell里面，每个模型的template是不一样的
-            # "q_proj", # FOR DeepSeek-V2-Lite
-            "q_a_proj", # FOR DeepSeek-V3&R1
-            "q_b_proj",
+            "q_proj", # FOR DeepSeek-V2-Lite
+            # "q_a_proj", # FOR DeepSeek-V3&R1
+            # "q_b_proj",
             "kv_a_proj_with_mqa",
             "kv_b_proj",
             "o_proj",
@@ -854,7 +1125,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
         per_device_train_batch_size=1,
         gradient_accumulation_steps=16,
         num_train_epochs=1,
-        # max_steps=4, # TODO: FOR TEST, will override any value given in num_train_epochs
+        # max_steps=1, # TODO: FOR TEST, will override any value given in num_train_epochs
         learning_rate=3e-4,
         fp16=False,
         logging_steps=10,
@@ -1193,11 +1464,19 @@ def inject_lora_layer(model):
 
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
-        target_modules=[
-            "q_proj",
+        target_modules=[ # TODO: 这里需要写入到shell里面，每个模型的template是不一样的
+            "q_proj", # FOR DeepSeek-V2-Lite
+            # "q_a_proj", # FOR DeepSeek-V3&R1
+            # "q_b_proj",
             "kv_a_proj_with_mqa",
             "kv_b_proj",
-            "o_proj"
+            "o_proj",
+            "mlp.gate_proj",
+            "mlp.up_proj",
+            "mlp.down_proj",
+            "shared_experts.gate_proj",
+            "shared_experts.up_proj",
+            "shared_experts.down_proj",
         ],
         r=8,
         lora_alpha=16,
