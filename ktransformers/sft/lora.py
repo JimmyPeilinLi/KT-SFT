@@ -21,7 +21,6 @@ from transformers import Trainer
 from transformers.trainer_utils import seed_worker
 from transformers import TrainerCallback
 from packaging import version
-import os
 import inspect
 import functools
 from typing import Union, Any
@@ -36,7 +35,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 import gc
 from tqdm import tqdm
-import os, torch, json, tempfile, random, numpy as np
+import os, torch, json, tempfile, random, numpy as np, math, re
 import hashlib, time
 from collections import OrderedDict
 from pathlib import Path
@@ -928,6 +927,79 @@ def snapshot_lora_to_json(model, json_path: str, tag: str = "init"):
         json.dump(payload, f, ensure_ascii=False, indent=2)
     print(f"[LORA SNAPSHOT] saved {count} tensors to {json_path} tag={tag}")
 
+def _canonical_lora_param_name(pname: str) -> str:
+    """
+    生成“逻辑稳定”的参数名，用于派生随机种子：
+    - 去掉所有 ".orig_module"
+    - 去掉可能重复的 ".model" 链（可选，防御性）
+    - 折叠连续的多余点
+    """
+    s = pname
+    s = s.replace(".orig_module", "")
+    # 可选：把 ...model.model.model... 这种重复缩一缩（不同封装层可能叠加）
+    s = re.sub(r"(\.model)+\.", ".model.", s)
+    s = re.sub(r"\.{2,}", ".", s)  # 防御性
+    return s
+
+def _u01_from_sha256_bytes(b: bytes) -> float:
+    x = int.from_bytes(b[:8], "little", signed=False) & ((1<<53)-1)
+    return (x + 1) / (1<<53)
+
+def _hashed_normal_pair(seed_int: int, tag: str) -> tuple[float, float]:
+    h1 = hashlib.sha256(f"{seed_int}|{tag}|a".encode()).digest()
+    h2 = hashlib.sha256(f"{seed_int}|{tag}|b".encode()).digest()
+    u1 = _u01_from_sha256_bytes(h1)
+    u2 = _u01_from_sha256_bytes(h2)
+    r = math.sqrt(-2.0 * math.log(max(u1, 1e-18)))
+    theta = 2.0 * math.pi * u2
+    return r * math.cos(theta), r * math.sin(theta)
+
+def _seed64_from_canonical(base_seed: int, canonical_name: str) -> int:
+    h = hashlib.sha256(f"{base_seed}|{canonical_name}".encode()).digest()
+    return int.from_bytes(h[:8], "little", signed=False)
+
+@torch.no_grad()
+def deterministic_lora_init_by_param_canonical(model: torch.nn.Module, base_seed: int = 42, std: float = 0.02):
+    """
+    基于“规范化后的参数名”的确定性初始化：
+      - 遍历 model.named_parameters()，仅处理 *.lora_A.*.weight / *.lora_B.*.weight
+      - lora_A: CPU 上用 sha256+Box-Muller 生成 N(0, std)，CPU 上 cast 到目标 dtype，再搬运
+      - lora_B: 全 0（CPU）
+    """
+    # 收集
+    loraA, loraB = [], []
+    for pname, p in model.named_parameters():
+        if ".lora_A." in pname and pname.endswith(".weight"):
+            loraA.append((pname, p))
+        elif ".lora_B." in pname and pname.endswith(".weight"):
+            loraB.append((pname, p))
+    # 稳定排序（但我们不依赖顺序，只是便于调试）
+    loraA.sort(key=lambda x: x[0])
+    loraB.sort(key=lambda x: x[0])
+
+    # A: 按规范名派生子种子 → 生成
+    for pname, p in loraA:
+        cname = _canonical_lora_param_name(pname)
+        seed64 = _seed64_from_canonical(base_seed, cname)
+        shape = tuple(p.shape)
+        n = int(np.prod(shape))
+        vals = np.empty(n, dtype=np.float32)
+        i = 0
+        while i < n:
+            z0, z1 = _hashed_normal_pair(seed64, f"idx={i}")
+            vals[i] = z0 * std
+            if i + 1 < n:
+                vals[i + 1] = z1 * std
+            i += 2
+        w_cpu_f32 = torch.from_numpy(vals.reshape(*shape))
+        w_cpu_cast = w_cpu_f32.to(dtype=p.dtype, device="cpu")
+        p.data.copy_(w_cpu_cast.to(device=p.device, dtype=p.dtype))
+
+    # B: 0
+    for pname, p in loraB:
+        zeros = torch.zeros_like(p, device="cpu")
+        p.data.copy_(zeros.to(device=p.device, dtype=p.dtype))
+
 def lora_and_load_adapter_for_debug(model, tokenizer, sft_data_path, save_adapter_path, is_profiler=False):
 
     torch.autograd.set_detect_anomaly(True)
@@ -967,14 +1039,14 @@ def lora_and_load_adapter_for_debug(model, tokenizer, sft_data_path, save_adapte
     training_args = TrainingArguments(
         output_dir=save_adapter_path,
         per_device_train_batch_size=1,
-        gradient_accumulation_steps=1,
+        gradient_accumulation_steps=16,
         num_train_epochs=1,
         learning_rate=3e-4,
         fp16=False,
         bf16=True,
         logging_steps=10,
         save_steps=1000,
-        max_steps=1,
+        max_steps=20,
         dataloader_drop_last=True,
         ddp_find_unused_parameters=False,
         seed=SEED,                        # 训练全局种子
@@ -991,17 +1063,7 @@ def lora_and_load_adapter_for_debug(model, tokenizer, sft_data_path, save_adapte
     model = get_peft_model(model, lora_config)
     # model = get_custom_peft_model(model, lora_config)
     disable_all_dropouts(model)
-    
-    torch.manual_seed(SEED); torch.cuda.manual_seed_all(SEED)
-    for name, mod in sorted(model.named_modules(), key=lambda x: x[0]):
-        if hasattr(mod, "lora_A"):
-            # A 随机、可复现
-            for _, p in sorted(mod.lora_A.items()):
-                torch.nn.init.normal_(p.weight, mean=0.0, std=0.02)
-        if hasattr(mod, "lora_B"):
-            # B 全 0
-            for _, p in sorted(mod.lora_B.items()):
-                torch.nn.init.zeros_(p.weight)
+    deterministic_lora_init_by_param_canonical(model, base_seed=SEED, std=0.02)
 
     model.config.use_cache = False
 
@@ -1018,22 +1080,26 @@ def lora_and_load_adapter_for_debug(model, tokenizer, sft_data_path, save_adapte
     
     # _ = report_meta_tensors(model)
     
-    print("=== SAMPLE INSPECT ===")
-    for i in range(2):
-        ex = train_dataset[i]  # HF datasets 的单条样本（已经过 preprocess_function）
-        summary = {}
-        for k,v in ex.items():
-            if isinstance(v, list):
-                if len(v)>0 and isinstance(v[0], list):
-                    summary[k] = f"list-of-lists len={len(v)} x len0={len(v[0])}"
-                else:
-                    summary[k] = f"list len={len(v)}"
-            elif torch.is_tensor(v):
-                summary[k] = f"tensor shape={tuple(v.shape)}"
-            else:
-                summary[k] = str(type(v))
-        print(f"[SAMPLE {i}]", summary)
+    # print("=== SAMPLE INSPECT ===")
+    # for i in range(2):
+    #     ex = train_dataset[i]  # HF datasets 的单条样本（已经过 preprocess_function）
+    #     summary = {}
+    #     for k,v in ex.items():
+    #         if isinstance(v, list):
+    #             if len(v)>0 and isinstance(v[0], list):
+    #                 summary[k] = f"list-of-lists len={len(v)} x len0={len(v[0])}"
+    #             else:
+    #                 summary[k] = f"list len={len(v)}"
+    #         elif torch.is_tensor(v):
+    #             summary[k] = f"tensor shape={tuple(v.shape)}"
+    #         else:
+    #             summary[k] = str(type(v))
+    #     print(f"[SAMPLE {i}]", summary)
     
+    snap_bef_init_path = os.path.join(save_adapter_path, "lora_snapshot_bef_init.json")
+    os.makedirs(save_adapter_path, exist_ok=True)
+    snapshot_lora_to_json(model, snap_bef_init_path, tag="init")
+
     trainer = KTrainer(
         model=model,
         train_dataset=train_dataset,
@@ -1078,7 +1144,9 @@ def lora_and_load_adapter_for_debug(model, tokenizer, sft_data_path, save_adapte
     snap_init_path = os.path.join(save_adapter_path, "lora_snapshot_init.json")
     os.makedirs(save_adapter_path, exist_ok=True)
     snapshot_lora_to_json(model, snap_init_path, tag="init")
+    
     trainer.train()
+    
     snap_after_path = os.path.join(save_adapter_path, "lora_snapshot_after_step.json")
     snapshot_lora_to_json(model, snap_after_path, tag="after_step")
 
@@ -1103,8 +1171,8 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
         task_type=TaskType.CAUSAL_LM,
         target_modules=[ # TODO: 这里需要写入到shell里面，每个模型的template是不一样的
             "q_proj", # FOR DeepSeek-V2-Lite
-            # "q_a_proj", # FOR DeepSeek-V3&R1
-            # "q_b_proj",
+            "q_a_proj", # FOR DeepSeek-V3&R1
+            "q_b_proj",
             "kv_a_proj_with_mqa",
             "kv_b_proj",
             "o_proj",
@@ -1479,7 +1547,7 @@ def inject_lora_layer(model):
             "shared_experts.down_proj",
         ],
         r=8,
-        lora_alpha=16,
+        lora_alpha=32,
         lora_dropout=0.0,
     )
     
