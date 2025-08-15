@@ -188,12 +188,12 @@ def local_chat(
         
         # TODO: 判断如果是GGUF格式的adapter，把他跟原来的模型一起处理一下，在后面进行推理
         if use_adapter_path.endswith('.gguf'):
-            inject_lora_layer(model)
+            inject_lora_layer(model, use_adapter_path)
             adapter_gguf_loader = GGUFLoader(use_adapter_path)
             load_weights(model, adapter_gguf_loader, adapter_gguf=True)
             model.train()
         else:
-            inject_lora_layer(model)
+            inject_lora_layer(model, use_adapter_path)
             
             adapter_loader = SafeTensorLoader(use_adapter_path)
             device = next(model.parameters()).device
@@ -392,25 +392,25 @@ if __name__ == "__main__":
 
     else:
         local_chat(
-            model_path="/mnt/data2/models/DeepSeek-R1-BF16",
-            model_config_path="ktransformers/configs/model_config",
-            gguf_path="/mnt/data2/models/DeepSeek-R1-BF16",
-            # model_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
-            # model_config_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
-            # gguf_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
+            # model_path="/mnt/data/data/DeepSeek-V3-671B-BF16",
+            # model_config_path="/mnt/data/data/DeepSeek-V3-671B-BF16",
+            # gguf_path="/mnt/data/data/DeepSeek-V3-671B-BF16",
+            model_path="/mnt/data/data/DeepSeek-V2-Lite-Chat",
+            model_config_path="/mnt/data/data/DeepSeek-V2-Lite-Chat",
+            gguf_path="/mnt/data/data/DeepSeek-V2-Lite-Chat",
             cpu_infer=112,
             max_new_tokens=1000,
             force_think=False,
-            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V3-Chat-sft-amx-multi-gpu.yaml",
-            # optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx-multi-gpu.yaml",
-            is_sft=True,
+            # optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V3-Chat-sft-amx-multi-gpu.yaml",
+            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx.yaml",
+            is_sft=False,
             sft_data_path="test_adapter/ESC_inst_train.json",
             # sft_data_path="test_adapter/500token_test.json",
-            save_adapter_path="test_adapter/demo_adapter_ESC_V3_final_amx_KT_target_all",
-            use_adapter=False,
-            use_adapter_path="test_adapter/demo_adapter_ESC_final_amx_KT_target_all/checkpoint-428",
-            is_test_data=False,
-            test_data_path="test_adapter/ESC_inst_test.json", # TODO: 目前这个不能超过512token，建议还是写个截断。
-            output_dir="test_adapter/demo_adapter_ESC_final_amx_KT_target_all/checkpoint-428-tmp",
+            save_adapter_path="/mnt/data/data/lpl/test_adapter/KT_deepseekV3_ESC_AFSnoKV_amx",
+            use_adapter=True,
+            use_adapter_path="/mnt/data/data/lpl/test_adapter/llamafactory_deepseekV2_WEST_AFS",
+            is_test_data=True,
+            test_data_path="test_adapter/western_test.json", # TODO: 目前这个不能超过512token，建议还是写个截断。
+            output_dir="/mnt/data/data/lpl/test_adapter/llamafactory_deepseekV2_WEST_AFS",
         )
         

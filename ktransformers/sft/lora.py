@@ -831,11 +831,11 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         target_modules=[ # TODO: 这里需要写入到shell里面，每个模型的template是不一样的
-            # "q_proj", # FOR DeepSeek-V2-Lite
+            "q_proj", # FOR DeepSeek-V2-Lite
             "q_a_proj", # FOR DeepSeek-V3&R1
             "q_b_proj",
-            "kv_a_proj_with_mqa",
-            "kv_b_proj",
+            # "kv_a_proj_with_mqa",
+            # "kv_b_proj",
             "o_proj",
             "mlp.gate_proj",
             "mlp.up_proj",
@@ -1189,21 +1189,52 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
 
     '''
 
-def inject_lora_layer(model):
+def inject_lora_layer(model, use_adapter_path):
+
+    cfg_path = os.path.join(use_adapter_path, "adapter_config.json")
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    
+    # 兼容/清洗
+    task_type_str = (data.get("task_type") or "CAUSAL_LM").upper()
+    # bias 字段：'none' | 'all' | 'lora_only'（有的旧导出用 lora_bias=True/False）
+    bias = data.get("bias", "none")
+    if bias in (None, False):
+        bias = "none"
+    # 兼容旧字段 lora_bias（True 表示仅 LoRA 层带 bias）
+    if data.get("lora_bias") is True and bias == "none":
+        bias = "lora_only"
+
+    # target_modules 既可为 list 也可能是逗号分隔字符串
+    tmods = data.get("target_modules")
+    if isinstance(tmods, str):
+        tmods = [m.strip() for m in tmods.split(",") if m.strip()]
+
+    # modules_to_save 可为 None 或 list
+    mts = data.get("modules_to_save", None)
+    if isinstance(mts, str):
+        mts = [m.strip() for m in mts.split(",") if m.strip()]
+
+    # rank/alpha 的 pattern 可能是空 dict；传 None 更干净
+    rank_pattern = data.get("rank_pattern") or None
+    alpha_pattern = data.get("alpha_pattern") or None
 
     lora_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        target_modules=[
-            "q_proj",
-            "kv_a_proj_with_mqa",
-            "kv_b_proj",
-            "o_proj"
-        ],
-        r=8,
-        lora_alpha=16,
-        lora_dropout=0.0,
+        r=data.get("r", 8),
+        lora_alpha=data.get("lora_alpha", 32),
+        lora_dropout=float(data.get("lora_dropout", 0.0)),
+        bias=bias,
+        task_type=TaskType[task_type_str],       # 例如 TaskType.CAUSAL_LM
+        target_modules=tmods,                    # 例如 ["q_proj","k_proj",...]
+        modules_to_save=mts,
+        init_lora_weights=bool(data.get("init_lora_weights", True)),
+        inference_mode=bool(data.get("inference_mode", True)),
+        use_rslora=bool(data.get("use_rslora", False)),
+        use_dora=bool(data.get("use_dora", False)),
     )
+    print(f"lora_config:{lora_config.__dict__}")
     
-    model = inject_adapter_in_model(lora_config, model)
-
-    
+    # model = inject_adapter_in_model(lora_config, model)
+    model = get_peft_model(model, lora_config)
+    model.config.use_cache = False
+    model.eval()
