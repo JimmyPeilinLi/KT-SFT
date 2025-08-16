@@ -918,14 +918,24 @@ class KExpertsTorch(KExpertsBase):
 
         if load_by_experts:
             if isinstance(w, dict):
-                for i in tqdm(range(self.expert_num), desc=f"Dequanting for KExpertsTorch {self.key}"):
-                    up_weights = self.gguf_loader.load_expert_tensor(self.key + ".ffn_up_exps.weight", w["up"], i, self.elements_per_tensor, device=self.device)
-                    gate_weights = self.gguf_loader.load_expert_tensor(self.key + ".ffn_gate_exps.weight", w["gate"], i, self.elements_per_tensor, device=self.device)
-                    down_weights = self.gguf_loader.load_expert_tensor(self.key + ".ffn_down_exps.weight", w["down"], i, self.elements_per_tensor, device=self.device)
-                    
-                    self.up[i] = up_weights
-                    self.gate[i] = gate_weights
-                    self.down[i] = down_weights
+                if isinstance(self.gguf_loader, SafeTensorLoader): 
+                    for i in tqdm(range(self.expert_num), desc=f"Loading experts(safetensors) for {self.key}"):
+                        up_k   = f"{self.key}.{i}.up_proj.weight"
+                        gate_k = f"{self.key}.{i}.gate_proj.weight"
+                        down_k = f"{self.key}.{i}.down_proj.weight"
+                        
+                        self.up[i]   = self.gguf_loader.load_tensor(up_k,   device=self.device).contiguous()
+                        self.gate[i] = self.gguf_loader.load_tensor(gate_k, device=self.device).contiguous()
+                        self.down[i] = self.gguf_loader.load_tensor(down_k, device=self.device).contiguous()
+                else: # GGUFLoader
+                    for i in tqdm(range(self.expert_num), desc=f"Dequanting for KExpertsTorch {self.key}"):
+                        up_weights = self.gguf_loader.load_expert_tensor(self.key + ".ffn_up_exps.weight", w["up"], i, self.elements_per_tensor, device=self.device)
+                        gate_weights = self.gguf_loader.load_expert_tensor(self.key + ".ffn_gate_exps.weight", w["gate"], i, self.elements_per_tensor, device=self.device)
+                        down_weights = self.gguf_loader.load_expert_tensor(self.key + ".ffn_down_exps.weight", w["down"], i, self.elements_per_tensor, device=self.device)
+                        
+                        self.up[i] = up_weights
+                        self.gate[i] = gate_weights
+                        self.down[i] = down_weights
         else:
             if isinstance(w, dict):
                 for i in range(self.expert_num):

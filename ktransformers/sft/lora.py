@@ -58,9 +58,9 @@ from ktransformers.operators.experts import KExpertsTorch, KTransformersExperts
 logger = logging.get_logger(__name__)
 
 # FOR: not A or H GPU
-os.environ["NCCL_P2P_DISABLE"]  = "1"
-os.environ["NCCL_IB_DISABLE"]  = "1"
-os.environ["KT_DEBUG_MOE"] = "1"
+# os.environ["NCCL_P2P_DISABLE"]  = "1"
+# os.environ["NCCL_IB_DISABLE"]  = "1"
+# os.environ["KT_DEBUG_MOE"] = "1"
 
 layer_data = {}  # 存储各层输入输出数据
 
@@ -73,8 +73,8 @@ def record_layer_io(module, input, output, layer_name):
 # 注册钩子
 hooks = []
 target_layers = [
-    'base_model.model.model.orig_module.layers.0.self_attn.kv_a_proj_with_mqa',
-    'base_model.model.model.orig_module.layers.0.self_attn.kv_b_proj',
+    # 'base_model.model.model.orig_module.layers.0.self_attn.kv_a_proj_with_mqa',
+    # 'base_model.model.model.orig_module.layers.0.self_attn.kv_b_proj',
     # 'base_model.model.model.orig_module.layers.1.self_attn.kv_a_proj_with_mqa',
     # 'base_model.model.model.orig_module.layers.1.self_attn.kv_b_proj'
 ]
@@ -854,7 +854,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
         per_device_train_batch_size=1,
         gradient_accumulation_steps=16,
         num_train_epochs=1,
-        # max_steps=4, # TODO: FOR TEST, will override any value given in num_train_epochs
+        max_steps=30, # TODO: FOR TEST, will override any value given in num_train_epochs
         learning_rate=3e-4,
         fp16=False,
         logging_steps=10,
