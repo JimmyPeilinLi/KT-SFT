@@ -230,6 +230,28 @@ def local_chat(
         model.generation_config.pad_token_id = model.generation_config.eos_token_id
     model.eval()
     logging.basicConfig(level=logging.INFO)
+    
+    # @torch.no_grad()
+    # def first_token_argmax_baseline(model, tokenizer, prompt_text, device):
+    #     model.eval()
+    #     enc = tokenizer.apply_chat_template([{"role":"user","content":prompt_text}],
+    #                                         add_generation_prompt=True, return_tensors="pt")
+    #     x = enc.to(device)
+    #     # 注意：这里用 input_ids，走标准前向，不走你自定义的 inputs_embeds 路径
+    #     logits = model(input_ids=x, use_cache=False, return_dict=False)[0]
+    #     return int(torch.argmax(logits[:, -1, :], dim=-1)[0])
+
+    # # —— 立即对拍一次（可用你的“时尚趋势”问题作为 prompt）——
+    # try:
+    #     device_map = model.gguf_loader.tensor_device_map
+    #     from ktransformers.util.utils import get_device, torch_device_mapping
+    #     torch_device = get_device('model.layers.0.self_attn', device_map)
+    #     torch_device = torch_device_mapping.get(torch_device, torch_device)
+    #     probe_id = first_token_argmax_baseline(model, tokenizer, "你听说过今年的时尚趋势吗？", torch_device)
+    #     print(f"[FIRST-TOKEN PROBE] argmax id = {probe_id} ({tokenizer.decode([probe_id])!r})")
+    # except Exception as e:
+    #     print("[FIRST-TOKEN PROBE] failed:", e)
+    #     return
 
     system = platform.system()
     # for debug
@@ -301,6 +323,7 @@ def local_chat(
         print(f"Results of metrics saved in {metric_file}")
 
     while not is_test_data:
+        GLOBAL_CONFIG._config["mod"] = "infer"
         content = input("Chat: ")
         if content.startswith('"""'):  # prefix """
             # multi lines input
@@ -401,16 +424,16 @@ if __name__ == "__main__":
             cpu_infer=112,
             max_new_tokens=1000,
             force_think=False,
-            # optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V3-Chat-sft-amx-multi-gpu.yaml",
-            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx.yaml",
-            is_sft=True,
+            # optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V3-Chat-multi-gpu.yaml",
+            optimize_config_path="/home/lpl/KT-SFT/ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx.yaml",
+            is_sft=False,
             sft_data_path="test_adapter/western_train.json",
             # sft_data_path="test_adapter/500token_test.json",
             save_adapter_path="/mnt/data/data/lpl/test_adapter/KT_singleCPU_deepseekV2_WEST_AFSnoKV_amx",
-            use_adapter=False,
-            use_adapter_path="/mnt/data/data/lpl/test_adapter/llamafactory_deepseekV2_WEST_AFS",
+            use_adapter=True,
+            use_adapter_path="/mnt/data/data/lpl/test_adapter/KT_singleCPU_deepseekV2_WEST_AFSnoKV_amx/checkpoint-594",
             is_test_data=False,
             test_data_path="test_adapter/western_test.json", # TODO: 目前这个不能超过512token，建议还是写个截断。
-            output_dir="/mnt/data/data/lpl/test_adapter/llamafactory_deepseekV2_WEST_AFS",
+            output_dir="/mnt/data/data/lpl/test_adapter/KT_singleCPU_deepseekV2_WEST_AFSnoKV_amx/checkpoint-594",
         )
         

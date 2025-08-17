@@ -854,11 +854,11 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
         per_device_train_batch_size=1,
         gradient_accumulation_steps=16,
         num_train_epochs=1,
-        max_steps=30, # TODO: FOR TEST, will override any value given in num_train_epochs
+        # max_steps=30, # TODO: FOR TEST, will override any value given in num_train_epochs
         learning_rate=3e-4,
         fp16=False,
         logging_steps=10,
-        save_steps=1000,
+        save_steps=200,
         dataloader_drop_last=True,
         ddp_find_unused_parameters=False,
     )
@@ -871,6 +871,9 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
 
     model.print_trainable_parameters() 
     
+    debug_path = os.path.join(save_adapter_path, "model_infra_debug.json")
+    with open(debug_path, "w", encoding="utf-8") as f:
+        json.dump({"model": str(model)}, f, ensure_ascii=False, indent=2)
     # print(f"model:{model}")
     # return
     

@@ -666,6 +666,8 @@ public:
           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
                        gate_up_ba_[expert_idx], up_bb_[expert_idx], up_bc_[expert_idx], ith, nth, use_amx);
 #endif
+          gate_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_gate_output_ptr_[expert_idx], ith, nth);
+          up_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_up_output_ptr_[expert_idx], ith, nth);
 
 #ifdef USE_NUMA
           amx::mat_mul(m_local_num_[expert_idx], config_.intermediate_size, config_.hidden_size,
