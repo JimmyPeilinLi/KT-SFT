@@ -32,7 +32,7 @@ from ktransformers.models.modeling_qwen2_moe import Qwen2MoeForCausalLM
 from ktransformers.models.modeling_deepseek_v3 import DeepseekV3ForCausalLM
 from ktransformers.models.modeling_llama import LlamaForCausalLM
 from ktransformers.models.modeling_mixtral import MixtralForCausalLM
-from ktransformers.util.utils import load_weights, prefill_and_generate, prefill_and_generate_capture, get_compute_capability, xpu_fp16_model
+from ktransformers.util.utils import load_weights, prefill_and_generate, get_compute_capability, xpu_fp16_model
 from ktransformers.server.config.config import Config
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled
 from ktransformers.util.vendors import device_manager, get_device, to_device, GPUVendor
@@ -89,7 +89,7 @@ def local_chat(
     gguf_path: str | None = None,
     max_new_tokens: int = 1000,
     cpu_infer: int = Config().cpu_infer,
-    use_cuda_graph: bool = False,
+    use_cuda_graph: bool = True,
     prompt_file : str | None = None,
     mode: str = "normal",
     force_think: bool = False,
@@ -419,13 +419,13 @@ if __name__ == "__main__":
             # model_config_path="/mnt/data/data/DeepSeek-V3-671B-BF16",
             # gguf_path="/mnt/data/data/DeepSeek-V3-671B-BF16",
             model_path="/mnt/data/data/DeepSeek-V2-Lite-Chat",
-            model_config_path="/mnt/data/data/DeepSeek-V2-Lite-Chat",
+            model_config_path="ktransformers/configs/model_config/",
             gguf_path="/mnt/data/data/DeepSeek-V2-Lite-Chat",
             cpu_infer=112,
             max_new_tokens=1000,
             force_think=False,
             # optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V3-Chat-multi-gpu.yaml",
-            optimize_config_path="/home/lpl/KT-SFT/ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx.yaml",
+            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx-multi-gpu.yaml",
             is_sft=False,
             sft_data_path="test_adapter/western_train.json",
             # sft_data_path="test_adapter/500token_test.json",

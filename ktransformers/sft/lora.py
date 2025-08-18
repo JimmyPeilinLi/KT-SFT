@@ -834,8 +834,8 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
             "q_proj", # FOR DeepSeek-V2-Lite
             "q_a_proj", # FOR DeepSeek-V3&R1
             "q_b_proj",
-            # "kv_a_proj_with_mqa",
-            # "kv_b_proj",
+            "kv_a_proj_with_mqa",
+            "kv_b_proj",
             "o_proj",
             "mlp.gate_proj",
             "mlp.up_proj",
@@ -855,7 +855,7 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
         gradient_accumulation_steps=16,
         num_train_epochs=1,
         # max_steps=30, # TODO: FOR TEST, will override any value given in num_train_epochs
-        learning_rate=3e-4,
+        learning_rate=1e-4,
         fp16=False,
         logging_steps=10,
         save_steps=200,
@@ -874,8 +874,6 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     debug_path = os.path.join(save_adapter_path, "model_infra_debug.json")
     with open(debug_path, "w", encoding="utf-8") as f:
         json.dump({"model": str(model)}, f, ensure_ascii=False, indent=2)
-    # print(f"model:{model}")
-    # return
     
     # output = model(input_ids=torch.tensor([[1,2,3]], dtype=torch.int32, device="cuda:0"))
     # loss = output.logits.mean()
@@ -883,23 +881,6 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     # dot = make_dot(loss, params=dict(model.named_parameters()))
     # dot.render("KT_compute_cpuinfer_moe_model_graph", format="svg")
     
-    # _ = report_meta_tensors(model)
-    
-    print("=== SAMPLE INSPECT ===")
-    for i in range(2):
-        ex = train_dataset[i]  # HF datasets 的单条样本（已经过 preprocess_function）
-        summary = {}
-        for k,v in ex.items():
-            if isinstance(v, list):
-                if len(v)>0 and isinstance(v[0], list):
-                    summary[k] = f"list-of-lists len={len(v)} x len0={len(v[0])}"
-                else:
-                    summary[k] = f"list len={len(v)}"
-            elif torch.is_tensor(v):
-                summary[k] = f"tensor shape={tuple(v.shape)}"
-            else:
-                summary[k] = str(type(v))
-        print(f"[SAMPLE {i}]", summary)
     
     trainer = KTrainer(
         model=model,
@@ -909,6 +890,32 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         )
     )
+    
+    _ = trainer._wrap_model(trainer.model, training=True)
+    assert not isinstance(trainer.model, nn.DataParallel), "Model was wrapped with DataParallel unexpectedly"
+    
+    trainer.train()
+    
+    '''
+    # multi-gpu dataloader test
+    # _ = report_meta_tensors(model)
+    
+    # print("=== SAMPLE INSPECT ===")
+    # for i in range(2):
+    #     ex = train_dataset[i]  # HF datasets 的单条样本（已经过 preprocess_function）
+    #     summary = {}
+    #     for k,v in ex.items():
+    #         if isinstance(v, list):
+    #             if len(v)>0 and isinstance(v[0], list):
+    #                 summary[k] = f"list-of-lists len={len(v)} x len0={len(v[0])}"
+    #             else:
+    #                 summary[k] = f"list len={len(v)}"
+    #         elif torch.is_tensor(v):
+    #             summary[k] = f"tensor shape={tuple(v.shape)}"
+    #         else:
+    #             summary[k] = str(type(v))
+    #     print(f"[SAMPLE {i}]", summary)
+    
     # trainer.accelerator = Accelerator(device_placement=False)
     # first_batch = next(iter(trainer.get_train_dataloader()))
     # print("Batch keys:", list(first_batch.keys()))
@@ -919,34 +926,31 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
     # acc.state.num_gpus = 1
     # trainer.accelerator = acc
 
-    print("Accelerator device_ids:", trainer.accelerator.state.device_ids)
-    print(f"type(trainer.model):{type(trainer.model)}")
-    print(f"type(trainer.accelerator):{type(trainer.accelerator)}")
+    # print("Accelerator device_ids:", trainer.accelerator.state.device_ids)
+    # print(f"type(trainer.model):{type(trainer.model)}")
+    # print(f"type(trainer.accelerator):{type(trainer.accelerator)}")
     
-    _ = trainer._wrap_model(trainer.model, training=True)
-    assert not isinstance(trainer.model, nn.DataParallel), "Model was wrapped with DataParallel unexpectedly"
+    # print("WRAP FUNC:", KTrainer._wrap_model is Trainer._wrap_model)   # 应为 False
+    # print("IS DP:", isinstance(trainer.model, nn.DataParallel))         # 应为 False
+    # print("IS DP WRAPPED:", isinstance(getattr(trainer, "model_wrapped", None), nn.DataParallel))  # 应为 False
     
-    print("WRAP FUNC:", KTrainer._wrap_model is Trainer._wrap_model)   # 应为 False
-    print("IS DP:", isinstance(trainer.model, nn.DataParallel))         # 应为 False
-    print("IS DP WRAPPED:", isinstance(getattr(trainer, "model_wrapped", None), nn.DataParallel))  # 应为 False
-    
-    print("-------------------------START TRAINING!!!-------------------------")
+    # print("-------------------------START TRAINING!!!-------------------------")
 
-    cfg = getattr(trainer.accelerator, "dataloader_config", None)
-    print(
-        "[ACCEL DL CONFIG]",
-        "split_batches=", getattr(cfg, "split_batches", None),
-        "dispatch_batches=", getattr(cfg, "dispatch_batches", None),
-        "even_batches=", getattr(cfg, "even_batches", None),
-        "use_seedable_sampler=", getattr(cfg, "use_seedable_sampler", None),
-        "non_blocking=", getattr(cfg, "non_blocking", None),
-    )
-    print("--------------------NEW DEBUG--------------------")
+    # cfg = getattr(trainer.accelerator, "dataloader_config", None)
+    # print(
+    #     "[ACCEL DL CONFIG]",
+    #     "split_batches=", getattr(cfg, "split_batches", None),
+    #     "dispatch_batches=", getattr(cfg, "dispatch_batches", None),
+    #     "even_batches=", getattr(cfg, "even_batches", None),
+    #     "use_seedable_sampler=", getattr(cfg, "use_seedable_sampler", None),
+    #     "non_blocking=", getattr(cfg, "non_blocking", None),
+    # )
+    # print("--------------------NEW DEBUG--------------------")
     # install_shape_probes(trainer.model) # print some debug info about multi-gpu placement.
-    trainer.train()
 
     # input_ids = torch.randint(0, 1000, (32, 128), device="cuda:0")
     # gradients = collect_gradients(model, input_ids)
+    '''
     
     # with open(f"/home/lpl/KT-SFT/tmp/KSFTExpertsCPU_grads.txt", "w") as f:
     #     f.write("\n".join(gradients))

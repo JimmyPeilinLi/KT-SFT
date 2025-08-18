@@ -4,20 +4,20 @@ from transformers.utils import logging
 logger = logging.get_logger(__name__)
 
 DEEPSEEK_PRETRAINED_CONFIG_ARCHIVE_MAP = {}
-class DeepseekV3Config(PretrainedConfig):
+class DeepseekV2Config(PretrainedConfig):
     r"""
-    This is the configuration class to store the configuration of a [`DeepseekV3Model`]. It is used to instantiate an DeepSeek
+    This is the configuration class to store the configuration of a [`DeepseekV2Model`]. It is used to instantiate an DeepSeek
     model according to the specified arguments, defining the model architecture. Instantiating a configuration with the
-    defaults will yield a similar configuration to that of the DeepSeek-V3.
+    defaults will yield a similar configuration to that of the DeepSeek-V2.
 
     Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
     documentation from [`PretrainedConfig`] for more information.
 
 
     Args:
-        vocab_size (`int`, *optional*, defaults to 129280):
+        vocab_size (`int`, *optional*, defaults to 102400):
             Vocabulary size of the Deep model. Defines the number of different tokens that can be represented by the
-            `inputs_ids` passed when calling [`DeepseekV3Model`]
+            `inputs_ids` passed when calling [`DeepseekV2Model`]
         hidden_size (`int`, *optional*, defaults to 4096):
             Dimension of the hidden representations.
         intermediate_size (`int`, *optional*, defaults to 11008):
@@ -26,8 +26,6 @@ class DeepseekV3Config(PretrainedConfig):
             Dimension of the MoE representations.
         num_hidden_layers (`int`, *optional*, defaults to 32):
             Number of hidden layers in the Transformer decoder.
-        num_nextn_predict_layers (`int`, *optional*, defaults to 1):
-            Number of nextn predict layers in the DeepSeekV3 Model.
         num_attention_heads (`int`, *optional*, defaults to 32):
             Number of attention heads for each attention layer in the Transformer decoder.
         n_shared_experts (`int`, *optional*, defaults to None):
@@ -102,55 +100,54 @@ class DeepseekV3Config(PretrainedConfig):
             The dropout ratio for the attention probabilities.
 
     ```python
-    >>> from transformers import DeepseekV3Model, DeepseekV3Config
+    >>> from transformers import DeepseekV2Model, DeepseekV2Config
 
-    >>> # Initializing a Deepseek-V3 style configuration
-    >>> configuration = DeepseekV3Config()
+    >>> # Initializing a Deepseek-V2 style configuration
+    >>> configuration = DeepseekV2Config()
 
     >>> # Accessing the model configuration
     >>> configuration = model.config
     ```"""
 
-    model_type = "deepseek_v3"
+    model_type = "deepseek_v2"
     keys_to_ignore_at_inference = ["past_key_values"]
 
     def __init__(
         self,
-        vocab_size=129280,
-        hidden_size=7168,
-        intermediate_size=18432,
-        moe_intermediate_size = 2048,
-        num_hidden_layers=61,
-        num_nextn_predict_layers=1,
-        num_attention_heads=128,
-        num_key_value_heads=128,
-        n_shared_experts = 1,
-        n_routed_experts = 256,
+        vocab_size=102400,
+        hidden_size=4096,
+        intermediate_size=11008,
+        moe_intermediate_size = 1407,
+        num_hidden_layers=30,
+        num_attention_heads=32,
+        num_key_value_heads=32,
+        n_shared_experts = None,
+        n_routed_experts = None,
         ep_size = 1,
-        routed_scaling_factor = 2.5,
+        routed_scaling_factor = 1.0,
         kv_lora_rank = 512,
         q_lora_rank = 1536,
         qk_rope_head_dim = 64,
         v_head_dim = 128,
         qk_nope_head_dim = 128,
-        topk_method = 'noaux_tc',
-        n_group = 8,
-        topk_group = 4,
-        num_experts_per_tok = 8,
+        topk_method = 'gready',
+        n_group = None,
+        topk_group = None,
+        num_experts_per_tok = None,
         moe_layer_freq = 1,
-        first_k_dense_replace = 3,
-        norm_topk_prob = True,
-        scoring_func = 'sigmoid',
+        first_k_dense_replace = 0,
+        norm_topk_prob = False,
+        scoring_func = 'softmax',
         aux_loss_alpha = 0.001,
         seq_aux = True,
         hidden_act="silu",
-        max_position_embeddings=4096,
+        max_position_embeddings=2048,
         initializer_range=0.02,
         rms_norm_eps=1e-6,
         use_cache=True,
         pad_token_id=None,
-        bos_token_id=0,
-        eos_token_id=1,
+        bos_token_id=100000,
+        eos_token_id=100001,
         pretraining_tp=1,
         tie_word_embeddings=False,
         rope_theta=10000.0,
@@ -165,7 +162,6 @@ class DeepseekV3Config(PretrainedConfig):
         self.intermediate_size = intermediate_size
         self.moe_intermediate_size = moe_intermediate_size
         self.num_hidden_layers = num_hidden_layers
-        self.num_nextn_predict_layers = num_nextn_predict_layers
         self.num_attention_heads = num_attention_heads
         self.n_shared_experts = n_shared_experts
         self.n_routed_experts = n_routed_experts

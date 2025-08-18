@@ -34,7 +34,7 @@ if not torch.xpu.is_available():
 import socket
 
 from transformers.generation.logits_process import LogitsProcessor
-from transformers import TextStreamer
+# from transformers import TextStreamer # !!! this will override the TextStreamer from ktransformers.util.textstream
 
 class NoEosUntil(LogitsProcessor):
     def __init__(self, prompt_len: int, min_gen_len: int, eos_ids):
@@ -468,8 +468,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         prefill_time = first_token_time
         if force_think:
             print("<think>")
-        # print(stream.put(next_token), end="", flush=True)
-        stream.put(next_token)
+        print(stream.put(next_token.item()), end="", flush=True)
+        # stream.put(next_token.item())
         generated_ids[:, seq_length] = next_token
         tokens.append(int(next_token))
         inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
@@ -501,8 +501,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                 stream.end()
                 break
             else:
-                # print(stream.put(next_token), end="", flush=True)
-                stream.put(next_token)
+                print(stream.put(next_token.item()), end="", flush=True)
+                # stream.put(next_token.item())
             cache_position += 1
             position_ids = cache_position.unsqueeze(0)
         
