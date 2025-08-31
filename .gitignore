@@ -77,3 +77,5 @@ debug/*
 test_adapter/ESC_inst_all.json
 
 !requirements-sft.txt
+
+*-test*.yaml

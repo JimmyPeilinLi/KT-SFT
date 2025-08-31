@@ -11,6 +11,7 @@ from torch import nn
 import itertools
 import time
 import enum
+from typing import Any, List, Optional, Set
 from transformers import (
     LogitsProcessorList,
     TemperatureLogitsWarper,
@@ -49,45 +50,47 @@ class NoEosUntil(LogitsProcessor):
         return scores
 
 class SilentCaptureStreamer(TextStreamer):
-    """
-    - 完全不往终端打印任何内容（覆盖 on_finalized_text）
-    - 把流式与最终文本都累积到 self._buf（list），取值用 getvalue()
-    - put() 兼容 int/tensor，并返回 ""，保证 print(stream.put(...)) 也不会输出
-    - end() 做最终 flush，并返回 ""（同理不打印）
-    """
-    def __init__(self, tokenizer, **decode_kwargs):
-        # 你也可以传 decode_kwargs={"skip_special_tokens": True}
-        super().__init__(tokenizer, **decode_kwargs)
-        self._buf = []
+    def __init__(self, tokenizer: "AutoTokenizer", skip_prompt: bool = False, **decode_kwargs):
+        super().__init__(tokenizer, skip_prompt=skip_prompt, **decode_kwargs)
+        self._buf: List[str] = []
 
-    def put(self, value, **kwargs):
-        # 兼容你以前传 int 的习惯
+    def _append_piece(self, piece: Optional[str]):
+        if piece:
+            self._buf.append(piece)
+
+    def put(self, value) -> str:
+        tokens: List[int] = []
         if isinstance(value, int):
-            value = torch.tensor([value], dtype=torch.long)
-        # 交给父类做缓存与解码；父类会在合适时机调用 on_finalized_text()
-        super().put(value, **kwargs)
-        # 返回空串，避免调用方的 print(...) 打出字符或 'None'
+            tokens = [value]
+        else:
+            try:
+                import torch
+                if isinstance(value, torch.Tensor):
+                    tokens = list(map(int, value.view(-1).tolist()))
+                elif isinstance(value, (list, tuple)) and all(isinstance(x, int) for x in value):
+                    tokens = list(value)
+                else:
+                    raise ValueError("Unsupported value type for SilentCaptureStreamer.put")
+            except Exception:
+                if isinstance(value, (list, tuple)) and all(isinstance(x, int) for x in value):
+                    tokens = list(value)
+                else:
+                    raise ValueError("Unsupported value type for SilentCaptureStreamer.put")
+        for t in tokens:
+            piece = super().put(t)
+            self._append_piece(piece)
         return ""
 
-    # 旧版本 TextStreamer 可能用 on_text；新版本用 on_finalized_text
-    # 两个都兜住，保证不打印且能累积
-    def on_text(self, text: str, **kwargs):
-        if text:
-            self._buf.append(text)
-        # 不调用 super().on_text(...)，以免打印
-
-    def on_finalized_text(self, text: str, stream_end: bool = False):
-        if text:
-            self._buf.append(text)
-        # 不 print，保持静默
-
-    def end(self):
-        # 触发父类把残留缓存 flush 出来（会再次调用 on_finalized_text）
-        super().end()
-        return ""  # 仍然返回空串，让 print(stream.end()) 也不显示
+    def end(self) -> str:
+        piece = super().end()
+        self._append_piece(piece)
+        return ""
 
     def getvalue(self) -> str:
         return "".join(self._buf)
+
+    def clear(self):
+        self._buf.clear()
 
 warm_uped = False
 
@@ -369,7 +372,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                 torch.xpu.set_device(torch_device)
             else:
                 raise RuntimeError(f"The device: {torch_device} is not available")
-            inputs_embeds = model.model.embed_tokens(cur_token.to("cpu")).to(torch_device)
+            inputs_embeds = model.model.embed_tokens(cur_token.to(torch_device)).to(torch_device)
             # with torch.cuda.stream(custom_stream):
             logits=model(inputs_embeds=inputs_embeds,
                         position_ids=position_ids,
@@ -393,7 +396,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         if mode == "long_context":
             inputs_embeds = model.model.embed_tokens(inputs.to("cpu"))
         else:
-            inputs_embeds = model.model.embed_tokens(inputs.to("cpu")).to(torch_device)
+            print(f"torch_device:{torch_device}")
+            inputs_embeds = model.model.embed_tokens(inputs.to(torch_device)).to(torch_device)
         if use_flashinfer_mla:
             MLAWrapperSingleton.update_buffer(past_key_values.max_pages)
             MLAWrapperSingleton.need_plan_all()
@@ -557,7 +561,7 @@ def prefill_and_generate_capture(
                 torch.xpu.set_device(torch_device)
             else:
                 raise RuntimeError(f"The device: {torch_device} is not available")
-            inputs_embeds = model.model.embed_tokens(cur_token.to("cpu")).to(torch_device)
+            inputs_embeds = model.model.embed_tokens(cur_token.to(torch_device)).to(torch_device)
             # with torch.cuda.stream(custom_stream):
             logits=model(inputs_embeds=inputs_embeds,
                         position_ids=position_ids,
@@ -581,7 +585,7 @@ def prefill_and_generate_capture(
         if mode == "long_context":
             inputs_embeds = model.model.embed_tokens(inputs.to("cpu"))
         else:
-            inputs_embeds = model.model.embed_tokens(inputs.to("cpu")).to(torch_device)
+            inputs_embeds = model.model.embed_tokens(inputs.to(torch_device)).to(torch_device)
         if use_flashinfer_mla:
             MLAWrapperSingleton.update_buffer(past_key_values.max_pages)
             MLAWrapperSingleton.need_plan_all()

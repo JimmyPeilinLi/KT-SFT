@@ -20,6 +20,7 @@ from transformers import (
     AutoModelForCausalLM,
     GenerationConfig,
     TextStreamer,
+    EvalPrediction,
 )
 import json
 from pathlib import Path
@@ -32,14 +33,14 @@ from ktransformers.models.modeling_qwen2_moe import Qwen2MoeForCausalLM
 from ktransformers.models.modeling_deepseek_v3 import DeepseekV3ForCausalLM
 from ktransformers.models.modeling_llama import LlamaForCausalLM
 from ktransformers.models.modeling_mixtral import MixtralForCausalLM
-from ktransformers.util.utils import load_weights, prefill_and_generate, get_compute_capability, xpu_fp16_model
+from ktransformers.util.utils import load_weights, prefill_and_generate, prefill_and_generate_capture, get_compute_capability, xpu_fp16_model
 from ktransformers.server.config.config import Config
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled
 from ktransformers.util.vendors import device_manager, get_device, to_device, GPUVendor
 from ktransformers.sft.lora import inject_lora_layer, lora_and_load_adapter
 from ktransformers.util.custom_loader import GGUFLoader, SafeTensorLoader
 from ktransformers.util.globals import GLOBAL_CONFIG
-from ktransformers.sft.metrics import calc_metrics
+from ktransformers.sft.metrics import ComputeSimilarity
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
@@ -89,7 +90,7 @@ def local_chat(
     gguf_path: str | None = None,
     max_new_tokens: int = 1000,
     cpu_infer: int = Config().cpu_infer,
-    use_cuda_graph: bool = True,
+    use_cuda_graph: bool = True, # modify to false if using KExpertsTorch
     prompt_file : str | None = None,
     mode: str = "normal",
     force_think: bool = False,
@@ -306,14 +307,24 @@ def local_chat(
             preds.append(prediction)
             refs.append(label)
 
-        metrics = calc_metrics(preds, refs)
-        # print(f"metrics:{metrics}")
-
         pred_file = Path(output_dir) / 'predictions.json'
         pred_file.parent.mkdir(parents=True, exist_ok=True)
         
         with pred_file.open("w", encoding="utf-8") as f:
             json.dump(dataset, f, ensure_ascii=False, indent=2)
+
+        compute_metrics = ComputeSimilarity(tokenizer)
+        # print(f"metrics:{metrics}")
+        
+        enc_pred = tokenizer(preds, add_special_tokens=False, padding=True, return_tensors="np")
+        enc_ref  = tokenizer(refs,  add_special_tokens=False, padding=True, return_tensors="np")
+
+        ep = EvalPrediction(
+            predictions=enc_pred["input_ids"],   # numpy[int]，形状 [B, T_pred]
+            label_ids=enc_ref["input_ids"]       # numpy[int]，形状 [B, T_ref]
+        )
+
+        metrics = compute_metrics(ep, compute_result=True)
 
         metric_file = Path(output_dir) / 'metrics.json'
         with metric_file.open("w", encoding="utf-8") as f:
@@ -418,22 +429,22 @@ if __name__ == "__main__":
             # model_path="/mnt/data/data/DeepSeek-V3-671B-BF16",
             # model_config_path="/mnt/data/data/DeepSeek-V3-671B-BF16",
             # gguf_path="/mnt/data/data/DeepSeek-V3-671B-BF16",
-            model_path="/mnt/data/data/DeepSeek-V2-Lite-Chat",
-            model_config_path="ktransformers/configs/model_config/",
-            gguf_path="/mnt/data/data/DeepSeek-V2-Lite-Chat",
+            model_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
+            model_config_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
+            gguf_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
             cpu_infer=112,
             max_new_tokens=1000,
             force_think=False,
             # optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V3-Chat-multi-gpu.yaml",
-            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx-multi-gpu.yaml",
+            optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx-test.yaml",
             is_sft=False,
             sft_data_path="test_adapter/western_train.json",
             # sft_data_path="test_adapter/500token_test.json",
-            save_adapter_path="/mnt/data/data/lpl/test_adapter/KT_singleCPU_deepseekV2_WEST_AFSnoKV_amx",
+            save_adapter_path="/mnt/data/lpl_adapter/KT_PUREmultiGPU_deepseekV2_WEST_AFSnoKV",
             use_adapter=True,
-            use_adapter_path="/mnt/data/data/lpl/test_adapter/KT_singleCPU_deepseekV2_WEST_AFSnoKV_amx/checkpoint-594",
+            use_adapter_path="/mnt/data/lpl_adapter/KT_PUREmultiGPU_deepseekV2_WEST_AFSnoKV/checkpoint-594",
             is_test_data=False,
             test_data_path="test_adapter/western_test.json", # TODO: 目前这个不能超过512token，建议还是写个截断。
-            output_dir="/mnt/data/data/lpl/test_adapter/KT_singleCPU_deepseekV2_WEST_AFSnoKV_amx/checkpoint-594",
+            output_dir="/mnt/data/lpl_adapter/KT_PUREmultiGPU_deepseekV2_WEST_AFSnoKV/checkpoint-594",
         )
         

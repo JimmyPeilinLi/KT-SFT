@@ -815,6 +815,8 @@ def lora_and_load_adapter(model, tokenizer, sft_data_path, save_adapter_path, is
 
     torch.autograd.set_detect_anomaly(True) # 在反向传播出错时，PyTorch 会提供更详细的堆栈信息
     
+    Path(save_adapter_path).mkdir(parents=True, exist_ok=True)
+    
     # tokenizer = AutoTokenizer.from_pretrained('/data/model/Qwen2.5-7B-Instruct', trust_remote_code=True)
 
     dataset = Dataset.from_json(sft_data_path)
