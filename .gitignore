@@ -79,3 +79,6 @@ test_adapter/ESC_inst_all.json
 !requirements-sft.txt
 
 *-test*.yaml
+
+duipai_pure_tf
+data/dataset_info.json

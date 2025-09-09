@@ -372,7 +372,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                 torch.xpu.set_device(torch_device)
             else:
                 raise RuntimeError(f"The device: {torch_device} is not available")
-            inputs_embeds = model.model.embed_tokens(cur_token.to(torch_device)).to(torch_device)
+            inputs_embeds = model.model.embed_tokens(cur_token.to("cpu")).to(torch_device)
             # with torch.cuda.stream(custom_stream):
             logits=model(inputs_embeds=inputs_embeds,
                         position_ids=position_ids,
@@ -397,7 +397,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             inputs_embeds = model.model.embed_tokens(inputs.to("cpu"))
         else:
             print(f"torch_device:{torch_device}")
-            inputs_embeds = model.model.embed_tokens(inputs.to(torch_device)).to(torch_device)
+            inputs_embeds = model.model.embed_tokens(inputs.to("cpu")).to(torch_device)
         if use_flashinfer_mla:
             MLAWrapperSingleton.update_buffer(past_key_values.max_pages)
             MLAWrapperSingleton.need_plan_all()
@@ -561,7 +561,7 @@ def prefill_and_generate_capture(
                 torch.xpu.set_device(torch_device)
             else:
                 raise RuntimeError(f"The device: {torch_device} is not available")
-            inputs_embeds = model.model.embed_tokens(cur_token.to(torch_device)).to(torch_device)
+            inputs_embeds = model.model.embed_tokens(cur_token.to("cpu")).to(torch_device)
             # with torch.cuda.stream(custom_stream):
             logits=model(inputs_embeds=inputs_embeds,
                         position_ids=position_ids,
@@ -585,7 +585,7 @@ def prefill_and_generate_capture(
         if mode == "long_context":
             inputs_embeds = model.model.embed_tokens(inputs.to("cpu"))
         else:
-            inputs_embeds = model.model.embed_tokens(inputs.to(torch_device)).to(torch_device)
+            inputs_embeds = model.model.embed_tokens(inputs.to("cpu")).to(torch_device)
         if use_flashinfer_mla:
             MLAWrapperSingleton.update_buffer(past_key_values.max_pages)
             MLAWrapperSingleton.need_plan_all()
