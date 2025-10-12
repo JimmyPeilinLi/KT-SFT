@@ -114,7 +114,6 @@ class Engine:
     def __init__(self, args: ConfigArgs = default_args, generated_token_queue:Queue = None, broadcast_endpoint: str = None, kvcache_event: Event = None):
         self.args = args
 
-        # 子进程和父进程无法共享 config 变量
         for key, value in vars(args).items():
             if value is not None and hasattr(Config(), key):
                 setattr(Config(), key, value)

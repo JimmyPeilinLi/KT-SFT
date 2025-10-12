@@ -1,0 +1,1305 @@
+[
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/lora_test_module.py",
+    "modified_count": 19,
+    "lines": [
+      {
+        "line_no": 36,
+        "old": "        # 模拟原始线性层",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 58,
+        "old": "        # 需填充必要的初始化参数",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 68,
+        "old": "        self.layer.load(w=nn.Parameter(weight), mode = InferenceState.GENERATE) # 这里不存在矩阵转置，所以没有TBackward也很合理",
+        "new": "        self.layer.load(w=nn.Parameter(weight), mode = InferenceState.GENERATE)"
+      },
+      {
+        "line_no": 72,
+        "old": "        self.fc2 = nn.Linear(2048, 3072, bias=False) # 这里有一个矩阵转置的T，所以TBackward",
+        "new": "        self.fc2 = nn.Linear(2048, 3072, bias=False)"
+      },
+      {
+        "line_no": 85,
+        "old": "        # 需填充必要的初始化参数",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 95,
+        "old": "        self.layer.load(w=nn.Parameter(weight), device=\"cuda\") # 这里不存在矩阵转置，所以没有TBackward也很合理",
+        "new": "        self.layer.load(w=nn.Parameter(weight), device=\"cuda\")"
+      },
+      {
+        "line_no": 98,
+        "old": "        self.fc2 = nn.Linear(2048, 3072, bias=False) # 这里有一个矩阵转置的T，所以TBackward",
+        "new": "        self.fc2 = nn.Linear(2048, 3072, bias=False)"
+      },
+      {
+        "line_no": 116,
+        "old": "# # 对基础模型 WELL DONE for test!",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 126,
+        "old": "# # 对 LoRA 模型",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 143,
+        "old": "# 初始化模型并移动到GPU",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 146,
+        "old": "# 配置LoRA参数",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 148,
+        "old": "    r=8,  # LoRA秩",
+        "new": "    r=8,"
+      },
+      {
+        "line_no": 150,
+        "old": "    target_modules=[\"linear\"],  # 指定要注入LoRA的模块",
+        "new": "    target_modules=[\"linear\"],"
+      },
+      {
+        "line_no": 155,
+        "old": "# 应用LoRA适配器",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 157,
+        "old": "print(peft_model)  # 查看模型结构，确认LoRA注入",
+        "new": "print(peft_model)"
+      },
+      {
+        "line_no": 159,
+        "old": "# 生成测试输入",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 162,
+        "old": "# 前向传播",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 165,
+        "old": "# 生成计算图（注意捕捉所有参数）",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 169,
+        "old": "# 保存为SVG文件",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/moe_test_module.py",
+    "modified_count": 21,
+    "lines": [
+      {
+        "line_no": 33,
+        "old": "        # 确保计算确定性",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 38,
+        "old": "        # 预定义固定值",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 46,
+        "old": "            # 使用固定种子生成可重复数据",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 51,
+        "old": "                # 固定输入张量",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 54,
+        "old": "                # 固定选择的专家 (示例: 第一个样本选专家0和1，第二个样本选专家2和3)",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 57,
+        "old": "                # 固定权重 (示例: 每个样本的两个专家权重相同)",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 60,
+        "old": "        # 转移到目标设备",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 69,
+        "old": "        # 固定所有随机种子",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 74,
+        "old": "        # 初始化模型到目标设备",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 84,
+        "old": "        # 生成固定输入数据",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 87,
+        "old": "        # 确保模型参数在正确设备上",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 90,
+        "old": "        # 强制使用全精度计算",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 94,
+        "old": "        # 反向传播",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 98,
+        "old": "        # 收集梯度",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 107,
+        "old": "        # CPU运行",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 110,
+        "old": "        # GPU运行 (如果可用)",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 117,
+        "old": "            # 输入梯度比较",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 120,
+        "old": "            # self.assertLess(input_diff, 1e-5, f\"Input梯度差异过大: {input_diff.item()}\")",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 122,
+        "old": "            # 参数梯度比较",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 126,
+        "old": "                # self.assertLess(param_diff, 1e-5, f\"参数 {i} 梯度差异过大: {param_diff.item()}\")",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 128,
+        "old": "            # 模型梯度对比",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/local_chat.py",
+    "modified_count": 7,
+    "lines": [
+      {
+        "line_no": 190,
+        "old": "        # TODO: 判断如果是GGUF格式的adapter，把他跟原来的模型一起处理一下，在后面进行推理",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 244,
+        "old": "    #     # 注意：这里用 input_ids，走标准前向，不走你自定义的 inputs_embeds 路径",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 248,
+        "old": "    # # —— 立即对拍一次（可用你的“时尚趋势”问题作为 prompt）——",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 254,
+        "old": "    #     probe_id = first_token_argmax_baseline(model, tokenizer, \"你听说过今年的时尚趋势吗？\", torch_device)",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 326,
+        "old": "            predictions=enc_pred[\"input_ids\"],   # numpy[int]，形状 [B, T_pred]",
+        "new": "            predictions=enc_pred[\"input_ids\"],"
+      },
+      {
+        "line_no": 327,
+        "old": "            label_ids=enc_ref[\"input_ids\"]       # numpy[int]，形状 [B, T_ref]",
+        "new": "            label_ids=enc_ref[\"input_ids\"]"
+      },
+      {
+        "line_no": 451,
+        "old": "            test_data_path=\"test_adapter/western_test.json\", # TODO: 目前这个不能超过512token，建议还是写个截断。",
+        "new": "            test_data_path=\"test_adapter/western_test.json\","
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/moe_test_module_old.py",
+    "modified_count": 20,
+    "lines": [
+      {
+        "line_no": 33,
+        "old": "        # 确保计算确定性",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 36,
+        "old": "        # 初始化模型到CPU",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 50,
+        "old": "        # 固定随机种子",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 55,
+        "old": "        # 克隆模型时携带随机数状态",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 65,
+        "old": "        # 生成确定性输入数据",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 77,
+        "old": "        # 添加设备验证",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 87,
+        "old": "        # 前向传播",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 90,
+        "old": "        with torch.autocast(device_type=device, enabled=False):  # 强制禁用混合精度",
+        "new": "        with torch.autocast(device_type=device, enabled=False):"
+      },
+      {
+        "line_no": 93,
+        "old": "        # 反向传播",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 97,
+        "old": "        # # 可视化计算图",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 103,
+        "old": "        # 收集梯度",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 112,
+        "old": "        # # 验证基础模型参数类型",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 116,
+        "old": "        # 在CPU上运行",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 120,
+        "old": "        # 基础检查",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 124,
+        "old": "        # 如果GPU可用则在GPU上运行并比较",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 137,
+        "old": "            # 模型梯度对比",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 148,
+        "old": "    #     # 确保在CPU上运行",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 155,
+        "old": "    #     # # 可视化计算图",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 159,
+        "old": "    #     # 反向传播检查",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 163,
+        "old": "    #     # 验证梯度存在性",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/server/backend/interfaces/balance_serve.py",
+    "modified_count": 1,
+    "lines": [
+      {
+        "line_no": 117,
+        "old": "        # 子进程和父进程无法共享 config 变量",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/server/balance_serve/sched_rpc.py",
+    "modified_count": 24,
+    "lines": [
+      {
+        "line_no": 26,
+        "old": "        # 创建 Scheduler 实例并初始化",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 29,
+        "old": "        # 初始化 ZeroMQ 上下文和套接字",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 35,
+        "old": "        # 创建内部的 DEALER 套接字，用于与工作线程通信",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 39,
+        "old": "    # 启动调度器",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 43,
+        "old": "    # 停止调度器",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 47,
+        "old": "    # 处理客户端请求",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 49,
+        "old": "        # 使用 ZMQ 的内置代理，将前端请求分发给后端工作线程",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 52,
+        "old": "    # 工作线程处理请求",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 58,
+        "old": "                # 接收客户端请求",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 67,
+        "old": "                    query_add = params.get('query')  # 直接是一个 QueryAdd 对象",
+        "new": "                    query_add = params.get('query')"
+      },
+      {
+        "line_no": 68,
+        "old": "                    # 添加查询",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 70,
+        "old": "                    # 发送响应",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 76,
+        "old": "                    # 假设您的 Scheduler 类实现了 cancel 方法",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 82,
+        "old": "                    updates = params.get('updates')  # 直接是一个列表，包含 QueryUpdate 对象",
+        "new": "                    updates = params.get('updates')"
+      },
+      {
+        "line_no": 84,
+        "old": "                    # 更新最后一个批次",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 87,
+        "old": "                    # 直接发送 batch_todo 对象",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 109,
+        "old": "                    # 未知方法",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 114,
+        "old": "                # 处理异常并发送错误响应",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 118,
+        "old": "    # 启动 RPC 服务",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 123,
+        "old": "            # 在单独的线程中运行调度器",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 126,
+        "old": "            # 启动工作线程",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 127,
+        "old": "            for _ in range(10):  # 根据需要调整线程数",
+        "new": "            for _ in range(10):"
+      },
+      {
+        "line_no": 130,
+        "old": "            # 启动代理，开始监听请求",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 137,
+        "old": "    # 停止 RPC 服务",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/server/balance_serve/inference/query_manager.py",
+    "modified_count": 4,
+    "lines": [
+      {
+        "line_no": 45,
+        "old": "        # 遍历每个停止条件",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 49,
+        "old": "            # 如果停止条件比 query_tokens 长，跳过",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 60,
+        "old": "                return True  # 找到匹配的停止条件",
+        "new": "                return True"
+      },
+      {
+        "line_no": 63,
+        "old": "        return False  # 没有找到任何停止条件",
+        "new": "        return False"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/server/balance_serve/inference/model_runner.py",
+    "modified_count": 2,
+    "lines": [
+      {
+        "line_no": 43,
+        "old": "    # 如果输入不符合要求，assert掉",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 63,
+        "old": "        # 先注释掉",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/server/utils/sql_utils.py",
+    "modified_count": 2,
+    "lines": [
+      {
+        "line_no": 119,
+        "old": "                if what[key] is not None:  # 检查b中的字段是否为None",
+        "new": "                if what[key] is not None:"
+      },
+      {
+        "line_no": 120,
+        "old": "                    setattr(existing, key, what[key])  # 更新a的字段",
+        "new": "                    setattr(existing, key, what[key])"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/server/api/ollama/completions.py",
+    "modified_count": 2,
+    "lines": [
+      {
+        "line_no": 149,
+        "old": "            start_time = time()  # 记录开始时间（秒）",
+        "new": "            start_time = time()"
+      },
+      {
+        "line_no": 164,
+        "old": "            # 计算性能数据",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/operators/linear.py",
+    "modified_count": 2,
+    "lines": [
+      {
+        "line_no": 230,
+        "old": "        # 使用原始权重做矩阵乘法，模拟原始行为",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 232,
+        "old": "        # 反量化权重进行矩阵乘法",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/operators/experts.py",
+    "modified_count": 31,
+    "lines": [
+      {
+        "line_no": 445,
+        "old": "        # 统计相关属性",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 595,
+        "old": "            # 记录开始时间",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 622,
+        "old": "        flops_fwd = 6 * qlen * k * H_FIXED * M_FIXED # 2（2 次乘加）* 3（三个矩阵）= 6",
+        "new": "        flops_fwd = 6 * qlen * k * H_FIXED * M_FIXED"
+      },
+      {
+        "line_no": 625,
+        "old": "        # 把 qlen / k 留给 backward",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 654,
+        "old": "        # 调用C++后端",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 674,
+        "old": "        qlen, k  = ctx.saved_dims          # 正确的 q / k",
+        "new": "        qlen, k  = ctx.saved_dims"
+      },
+      {
+        "line_no": 899,
+        "old": "        # 统计相关属性",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 903,
+        "old": "        # 详细FLOPs记录格式: [{'gate': flops, 'act': ...}, ...]",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 907,
+        "old": "        # 参数量计算",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1029,
+        "old": "        # 初始化统计变量",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1044,
+        "old": "            # 分项FLOPs计算",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1052,
+        "old": "            # 累计总FLOPs",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1057,
+        "old": "            # 记录详细数据",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1067,
+        "old": "        # 记录本次调用信息",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1078,
+        "old": "    #     # 记录两次调用之间的时间间隔",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1087,
+        "old": "    #     # 初始化各阶段计时变量",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1099,
+        "old": "    #     # ====================== 数据迁移阶段 ======================",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1107,
+        "old": "    #     # ==================== 张量初始化与类型转换 ==================",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1118,
+        "old": "    #     # ==================== Expert Mask生成阶段 ==================",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1123,
+        "old": "    #     # ==================== 专家循环处理阶段 ======================",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1127,
+        "old": "    #                    desc=\"Loading experts\",     # 进度条左侧提示语",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1128,
+        "old": "    #                    unit=\"expert\"):             # 计量单位（可选）",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1131,
+        "old": "    #         # ---- 当前专家数据准备 ----",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1134,
+        "old": "    #         # ---- Gate计算阶段 ----",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1140,
+        "old": "    #         # ---- Up投影计算阶段 ----",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1145,
+        "old": "    #         # ---- 元素乘操作阶段 ----",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1150,
+        "old": "    #         # ---- Down投影计算阶段 ----",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1155,
+        "old": "    #         # ---- Index Add操作阶段 ----",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1161,
+        "old": "    #     # ==================== 结果转换回原设备 ======================",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1166,
+        "old": "    #     # ==================== 记录所有计时结果 ======================",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1197,
+        "old": "    #     # 更新最后一次调用时间戳",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/sft/metrics.py",
+    "modified_count": 1,
+    "lines": [
+      {
+        "line_no": 101,
+        "old": "                refs = [reference]                          # 单参考；多参考可传入多条 list",
+        "new": "                refs = [reference]"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/sft/torchviz_test.py",
+    "modified_count": 5,
+    "lines": [
+      {
+        "line_no": 5,
+        "old": "# 定义一个简单的神经网络架构",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 19,
+        "old": "# 创建模型实例",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 22,
+        "old": "# 生成一个随机输入",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 25,
+        "old": "# 前向传播",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 28,
+        "old": "# 使用 torchviz 进行可视化",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/sft/lora.py",
+    "modified_count": 34,
+    "lines": [
+      {
+        "line_no": 78,
+        "old": "    # 禁止 Trainer 在 n_gpu>1 时套 DataParallel",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 211,
+        "old": "    # ★ 核心修正：训练 DataLoader 的 batch_size 固定用 per_device，不乘 n_gpu",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 223,
+        "old": "        # 与原生一致：基于 datasets 的移除无用列；否则包一层剔列的 collator",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 226,
+        "old": "                import datasets  # 仅用于 isinstance 检查",
+        "new": "                import datasets"
+      },
+      {
+        "line_no": 232,
+        "old": "                # datasets 不可用或版本不兼容时，退化到剔列 collator",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 237,
+        "old": "        # 这里与原生不同：batch_size 用 per_device，不用 self._train_batch_size",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 239,
+        "old": "            \"batch_size\": self.args.per_device_train_batch_size,   # ★ 不乘 n_gpu",
+        "new": "            \"batch_size\": self.args.per_device_train_batch_size,"
+      },
+      {
+        "line_no": 246,
+        "old": "        # 非 IterableDataset 时，补充 sampler / drop_last / worker_init_fn / prefetch_factor",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 251,
+        "old": "            # 仅当 num_workers>0 且设置了 prefetch_factor 时才传（与 torch DataLoader 要求一致）",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 257,
+        "old": "        # 为了完全显式，告诉 Accelerate 不要做 device_placement",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 261,
+        "old": "            # 某些 accelerate 版本没有 device_placement 参数，直接 prepare",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 266,
+        "old": "    # === 训练步：与原生一致，唯一改动是最后返回时把 loss 挪到 self.args.device ===",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 277,
+        "old": "        # ★ 关键：保留原生的数据准备（会把 batch 张量放到 self.args.device，",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 278,
+        "old": "        #  你的自定义算子/替换模块很多是据此决定内部流向的）",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 283,
+        "old": "            # ★ 返回值放到 args.device，直接满足 HF 的设备检查",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 286,
+        "old": "        # 与原生一致的上下文（amp/autocast 等）",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 290,
+        "old": "        # 释放 batch",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 293,
+        "old": "        # 原生的 empty_cache 步骤（照抄）",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 317,
+        "old": "        # LOMO 需要学习率",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 321,
+        "old": "        # 多卡数据并行情况下做均值（你现在是模型并行，但保持兼容）",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 325,
+        "old": "        # Apex/amp 路径",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 330,
+        "old": "            # 与原生一致：当 loss 不是用户自定义计算时，按梯度累积步数缩放",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 334,
+        "old": "            # DeepSpeed 关闭 gas 缩放",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 341,
+        "old": "        # ★ 唯一改动：返回给 Trainer 的 loss 必须在 self.args.device",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 346,
+        "old": "        # 一次性调试（可开 `KT_DBG_STEP=1` 查看）",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 416,
+        "old": "        target_modules=[ # TODO: 这里需要写入到shell里面，每个模型的template是不一样的",
+        "new": "        target_modules=["
+      },
+      {
+        "line_no": 484,
+        "old": "    # 兼容/清洗",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 486,
+        "old": "    # bias 字段：'none' | 'all' | 'lora_only'（有的旧导出用 lora_bias=True/False）",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 490,
+        "old": "    # 兼容旧字段 lora_bias（True 表示仅 LoRA 层带 bias）",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 494,
+        "old": "    # target_modules 既可为 list 也可能是逗号分隔字符串",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 499,
+        "old": "    # modules_to_save 可为 None 或 list",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 504,
+        "old": "    # rank/alpha 的 pattern 可能是空 dict；传 None 更干净",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 513,
+        "old": "        task_type=TaskType[task_type_str],       # 例如 TaskType.CAUSAL_LM",
+        "new": "        task_type=TaskType[task_type_str],"
+      },
+      {
+        "line_no": 514,
+        "old": "        target_modules=tmods,                    # 例如 [\"q_proj\",\"k_proj\",...]",
+        "new": "        target_modules=tmods,"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/sft/peft_utils/lora_layer.py",
+    "modified_count": 7,
+    "lines": [
+      {
+        "line_no": 33,
+        "old": "    # TODO: 暂时不做卷积层的处理",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 51,
+        "old": "        # 添加对KTransformersLinear的处理",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 292,
+        "old": "        # print(\"Received kwargs:\", kwargs)  # 查看实际传递的参数",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1016,
+        "old": "class KTransformersLinearLora(KTransformersLinear, LoraLayer):  # 保持原始继承顺序",
+        "new": "class KTransformersLinearLora(KTransformersLinear, LoraLayer):"
+      },
+      {
+        "line_no": 1035,
+        "old": "        # 先初始化KTransformersLinear",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 1041,
+        "old": "            orig_module=orig_module.orig_module,  # 明确传递orig_module",
+        "new": "            orig_module=orig_module.orig_module,"
+      },
+      {
+        "line_no": 1049,
+        "old": "        # 再初始化LoraLayer",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/tests/mmlu_pro_test.py",
+    "modified_count": 5,
+    "lines": [
+      {
+        "line_no": 26,
+        "old": "        # 读取 Parquet 文件",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 34,
+        "old": "        # # 将数据集转换为 Pandas DataFrame",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 51,
+        "old": "        # 查看ABCD。。。的选项",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 84,
+        "old": "        # 添加 API Key",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 111,
+        "old": "    # 设置随机数种子",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/tests/test_client.py",
+    "modified_count": 1,
+    "lines": [
+      {
+        "line_no": 66,
+        "old": "                # 非 stream 模式下，一次性接收完整 json",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/tests/mmlu_test_multi.py",
+    "modified_count": 11,
+    "lines": [
+      {
+        "line_no": 26,
+        "old": "    # 1. 显式语句匹配（优先）",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 42,
+        "old": "    # 2. markdown 强调 **C**, **C. something**",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 47,
+        "old": "    # 3. 查找单引号中的 'C' 或 \"C\"",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 52,
+        "old": "    # 4. 倒数几行是否以 \"C.\" 或 \"C\" 开头",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 60,
+        "old": "    # 再不行就返回 None",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 104,
+        "old": "        'Authorization': 'Bearer '  # 如有需要，请填入 API Key",
+        "new": "        'Authorization': 'Bearer '"
+      },
+      {
+        "line_no": 127,
+        "old": "    # 打乱数据顺序，并选择需要测试的实例数",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 132,
+        "old": "    batch_size = 10  # 每批次最多 10 个实例",
+        "new": "    batch_size = 10"
+      },
+      {
+        "line_no": 143,
+        "old": "            # 正确答案：将数字转换成字母（0->A, 1->B, 2->C, 3->D）",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 158,
+        "old": "            # 写入结果时加锁保证线程安全",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 168,
+        "old": "    # 按批次处理，每批最多 10 个任务",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/tests/mmlu_test.py",
+    "modified_count": 4,
+    "lines": [
+      {
+        "line_no": 26,
+        "old": "        # 读取 Parquet 文件",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 42,
+        "old": "        # 查看ABCD。。。的选项",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 75,
+        "old": "        # 添加 API Key",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 102,
+        "old": "   # 设置随机数种子",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/tests/test_pytorch_q8.py",
+    "modified_count": 13,
+    "lines": [
+      {
+        "line_no": 3,
+        "old": "# 定义一个包含线性层的浮点模型",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 12,
+        "old": "# 创建浮点模型实例",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 17,
+        "old": "# 创建量化模型实例",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 19,
+        "old": "    model_fp32,          # 原始浮点模型",
+        "new": "    model_fp32,"
+      },
+      {
+        "line_no": 20,
+        "old": "    {torch.nn.Linear},   # 要量化的层类型集合",
+        "new": "    {torch.nn.Linear},"
+      },
+      {
+        "line_no": 21,
+        "old": "    dtype=torch.qint8    # 量化的目标数据类型",
+        "new": "    dtype=torch.qint8"
+      },
+      {
+        "line_no": 24,
+        "old": "# 测试模型",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 26,
+        "old": "input_fp32 = torch.randn(1, batch_size, in_features)  # 生成随机输入数据",
+        "new": "input_fp32 = torch.randn(1, batch_size, in_features)"
+      },
+      {
+        "line_no": 27,
+        "old": "output_int8 = model_int8(input_fp32)               # 通过量化模型运行数据",
+        "new": "output_int8 = model_int8(input_fp32)"
+      },
+      {
+        "line_no": 29,
+        "old": "# 打印输出形状验证",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 33,
+        "old": "# 比较原始模型和量化模型的输出",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 40,
+        "old": "# 计算平均误差",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 44,
+        "old": "# 打印模型类型信息",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/tests/humaneval/eval_api.py",
+    "modified_count": 1,
+    "lines": [
+      {
+        "line_no": 15,
+        "old": "        # 添加 API Key",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/tests/AIME_2024/eval_api.py",
+    "modified_count": 2,
+    "lines": [
+      {
+        "line_no": 20,
+        "old": "        # 添加 API Key",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 45,
+        "old": "        # 读取 Parquet 文件",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/util/inference_state.py",
+    "modified_count": 1,
+    "lines": [
+      {
+        "line_no": 1,
+        "old": "# 不然util/utils.py: InferenceState和sft/peft_utils/lora_layer.py:KTLinearLora循环引用",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/util/utils.py",
+    "modified_count": 2,
+    "lines": [
+      {
+        "line_no": 143,
+        "old": "    # TODO: 目前先把requires_grad直接设为True了，后面看看要不要改（因为load_cur_state_dict加载参数起来太麻烦了）",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 354,
+        "old": "    # TODO: 这块不知道是不是要修改为cuda:0，不知道不然会不会有错",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/util/globals.py",
+    "modified_count": 2,
+    "lines": [
+      {
+        "line_no": 5,
+        "old": "        # 设置默认值",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 28,
+        "old": "# 单例实例，供其他模块 import",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/util/custom_loader.py",
+    "modified_count": 1,
+    "lines": [
+      {
+        "line_no": 48,
+        "old": "        # 处理传入路径，确保是文件夹路径",
+        "new": "(deleted)"
+      }
+    ]
+  },
+  {
+    "path": "/home/lpl/KT-SFT/ktransformers/util/grad_wrapper.py",
+    "modified_count": 2,
+    "lines": [
+      {
+        "line_no": 27,
+        "old": "        # 使用了 @maybe_no_grad()",
+        "new": "(deleted)"
+      },
+      {
+        "line_no": 30,
+        "old": "        # 使用了 @maybe_no_grad",
+        "new": "(deleted)"
+      }
+    ]
+  }
+]

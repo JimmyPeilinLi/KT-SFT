@@ -30,10 +30,8 @@ torch.set_default_dtype(config.torch_dtype)
 
 class TestKExpertsTorch(unittest.TestCase):
     def setUp(self):
-        # 确保计算确定性
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-        # 初始化模型到CPU
         self.base_device = "cpu"
         self.num_experts = 8
         # model = KExpertsTorch(
@@ -47,12 +45,10 @@ class TestKExpertsTorch(unittest.TestCase):
         
     def _run_single_device_test(self, device, seed=42):
         """在指定设备上运行前向反向传播并返回梯度"""
-        # 固定随机种子
         torch.manual_seed(seed)
         if device == "cuda":
             torch.cuda.manual_seed_all(seed)
         
-        # 克隆模型时携带随机数状态
         model = KExpertsTorch(
             key="blk.1",
             gguf_loader=gguf_loader,
@@ -62,7 +58,6 @@ class TestKExpertsTorch(unittest.TestCase):
         )
         model.load(device=device)
 
-        # 生成确定性输入数据
         with torch.random.fork_rng():
             torch.manual_seed(seed)
             batch_size = 2
@@ -74,7 +69,6 @@ class TestKExpertsTorch(unittest.TestCase):
             weights = torch.randn(batch_size, model.config.num_experts_per_tok, device=device)
             weights = torch.softmax(weights, dim=-1)
         
-        # 添加设备验证
         print(f"input_tensor.device:{input_tensor.device}")
         print(f"torch.device(device):{torch.device(device)}")
         # assert input_tensor.device == torch.device(device)
@@ -84,23 +78,19 @@ class TestKExpertsTorch(unittest.TestCase):
         for name, param in model.named_parameters():
             print(name, param.size())
 
-        # 前向传播
         
         model.to(device)
-        with torch.autocast(device_type=device, enabled=False):  # 强制禁用混合精度
+        with torch.autocast(device_type=device, enabled=False):
             output = model(input_tensor, expert_ids, weights)
         
-        # 反向传播
         loss = output.sum()
 
         
-        # # 可视化计算图
         # dot = make_dot(output, params=dict(model.named_parameters()))
         # dot.render(f"origin_moe_{torch.device(device)}_graph", format="svg")
 
         loss.backward()
         
-        # 收集梯度
         gradients = {
             "input": input_tensor.grad.clone().cpu(),
             "loss": loss.clone().cpu(),
@@ -109,19 +99,15 @@ class TestKExpertsTorch(unittest.TestCase):
         return gradients
 
     def test_forward_gradient(self):
-        # # 验证基础模型参数类型
         # for param in model.parameters():
         #     self.assertEqual(param.dtype, config.torch_dtype)
         
-        # 在CPU上运行
         cpu_gradients = self._run_single_device_test("cpu")
         print(f"cpu_gradients: {cpu_gradients}")
         
-        # 基础检查
         self.assertIsNotNone(cpu_gradients["input"])
         self.assertTrue(all(g is not None for g in cpu_gradients["model"]))
         
-        # 如果GPU可用则在GPU上运行并比较
         if torch.cuda.is_available():
             gpu_gradients = self._run_single_device_test("cuda")
 
@@ -134,7 +120,6 @@ class TestKExpertsTorch(unittest.TestCase):
             self.assertTrue(torch.allclose(cpu_gradients["input"], gpu_gradients["input"], atol=1e-4, rtol=1e-3),
                         f"Input梯度差异超出阈值，最大差异: {max_diff.item()}")
 
-            # 模型梯度对比
             for i, (cpu_g, gpu_g) in enumerate(zip(cpu_gradients["model"], gpu_gradients["model"])):
                 diff = (cpu_g - gpu_g.cpu()).abs().max()
                 print(f"参数梯度 {i} 最大差异: {diff.item()}")
@@ -145,22 +130,18 @@ class TestKExpertsTorch(unittest.TestCase):
             raise ImportError("NO CUDA FOR TEST!!")
 
     # def test_detach_effect(self):
-    #     # 确保在CPU上运行
     #     input_tensor = torch.randn(1, model.config.hidden_size, device="cpu", requires_grad=True)
     #     expert_ids = torch.tensor([[0, 1]], device="cpu")
     #     weights = torch.tensor([[0.5, 0.5]], device="cpu")
 
     #     output = model(input_tensor, expert_ids, weights)
         
-    #     # # 可视化计算图
     #     # dot = make_dot(output, params=dict(model.named_parameters()))
     #     # dot.render("origin_moe_cpu_graph", format="svg")
         
-    #     # 反向传播检查
     #     loss = output.sum()
     #     loss.backward()
         
-    #     # 验证梯度存在性
     #     self.assertIsNotNone(input_tensor.grad)
     #     self.assertTrue(all(p.grad is not None for p in model.parameters()))
 

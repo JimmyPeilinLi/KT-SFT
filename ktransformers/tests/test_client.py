@@ -63,7 +63,6 @@ async def fetch_event_stream(session, payload, request_id, stream):
                     except Exception as e:
                         print(f"\nRequest {request_id}: Error parsing stream - {e}")
             else:
-                # 非 stream 模式下，一次性接收完整 json
                 response_data = await response.json()
                 choices = response_data.get("choices", [])
                 if choices:

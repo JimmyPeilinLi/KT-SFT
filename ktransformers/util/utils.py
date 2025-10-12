@@ -140,7 +140,6 @@ def set_module(model, submodule_key, module):
 
 def set_param(module: nn.Module, name: str, weights: torch.Tensor):
     
-    # TODO: 目前先把requires_grad直接设为True了，后面看看要不要改（因为load_cur_state_dict加载参数起来太麻烦了）
     param=nn.parameter.Parameter(weights, requires_grad=True)
     if isinstance(module, nn.Linear) and len(weights.shape)==1:
         param.unsqueeze_(0)
@@ -351,7 +350,6 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     batch_size, seq_length = inputs.shape
     device_map = model.gguf_loader.tensor_device_map
     torch_device = get_device('model.layers.0.self_attn', device_map)
-    # TODO: 这块不知道是不是要修改为cuda:0，不知道不然会不会有错
     # torch_device = "cuda:0" if torch_device == "cuda" else torch_device
     torch_device = torch_device_mapping[torch_device] if torch_device in torch_device_mapping else torch_device
     inputs = inputs.to(torch_device)

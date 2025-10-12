@@ -45,7 +45,6 @@ class SafeTensorLoader(ModelLoader):
         self.__load_tensor_file_map(file_path)
 
     def __load_tensor_file_map(self, file_path: str):
-        # 处理传入路径，确保是文件夹路径
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Path not found: {file_path}")
         if os.path.isfile(file_path):

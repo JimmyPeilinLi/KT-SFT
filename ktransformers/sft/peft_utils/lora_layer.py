@@ -30,7 +30,6 @@ def dispatch_default(
     else:
         target_orig_module = target
 
-    # TODO: 暂时不做卷积层的处理
     if isinstance(target_orig_module, torch.nn.Embedding):
         embedding_kwargs = kwargs.copy()
         embedding_kwargs.pop("fan_in_fan_out", None)
@@ -48,7 +47,6 @@ def dispatch_default(
         new_module = Linear(target, adapter_name, **kwargs)
 
     elif isinstance(target_orig_module, KTransformersLinear):
-        # 添加对KTransformersLinear的处理
         kwargs.update(lora_config.loftq_config)
         new_module = KTransformersLinearLora(target, adapter_name, **kwargs)
 
@@ -289,7 +287,6 @@ class LoraLayer(BaseTunerLayer):
     other_param_names = ("r", "lora_alpha", "scaling", "lora_dropout")
 
     def __init__(self, orig_module: nn.Module, ephemeral_gpu_offload: bool = False, **kwargs) -> None:
-        # print("Received kwargs:", kwargs)  # 查看实际传递的参数
         self.orig_module = orig_module
         self.r = {}
         self.lora_alpha = {}
@@ -1013,7 +1010,7 @@ class Embedding(nn.Module, LoraLayer):
         rep = super().__repr__()
         return "lora." + rep
     
-class KTransformersLinearLora(KTransformersLinear, LoraLayer):  # 保持原始继承顺序
+class KTransformersLinearLora(KTransformersLinear, LoraLayer):
     def __init__(
         self,
         orig_module: KTransformersLinear,
@@ -1032,13 +1029,12 @@ class KTransformersLinearLora(KTransformersLinear, LoraLayer):  # 保持原始�
         # super().__init__(orig_module, **kwargs)
         # print(f"KTransformersLinearLora:{KTransformersLinearLora.__mro__}")
         
-        # 先初始化KTransformersLinear
         KTransformersLinear.__init__(
             self,
             key=orig_module.key,
             gguf_loader=orig_module.gguf_loader,
             config=orig_module.config,
-            orig_module=orig_module.orig_module,  # 明确传递orig_module
+            orig_module=orig_module.orig_module,
             generate_device=orig_module.generate_device,
             prefill_device=orig_module.prefill_device,
             prefill_op="KLinearTorch",
@@ -1046,7 +1042,6 @@ class KTransformersLinearLora(KTransformersLinear, LoraLayer):  # 保持原始�
             **kwargs
         )
 
-        # 再初始化LoraLayer
         LoraLayer.__init__(self, orig_module=orig_module.orig_module, **kwargs)
 
         # self.load(mode = InferenceState.GENERATE) # for test

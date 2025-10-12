@@ -23,7 +23,6 @@ def extract_final_answer(text):
     """
     text = text.strip()
 
-    # 1. 显式语句匹配（优先）
     explicit_patterns = [
         r'Answer:\s*([A-D])\b',
         r'Correct answer:\s*([A-D])\b',
@@ -39,17 +38,14 @@ def extract_final_answer(text):
         if match:
             return match.group(1).upper()
 
-    # 2. markdown 强调 **C**, **C. something**
     markdown_match = re.findall(r'\*\*\s*([A-D])[\.\s]?', text)
     if markdown_match:
         return markdown_match[-1].upper()
 
-    # 3. 查找单引号中的 'C' 或 "C"
     quote_match = re.findall(r"['\"]([A-D])['\"]", text)
     if quote_match:
         return quote_match[-1].upper()
 
-    # 4. 倒数几行是否以 "C." 或 "C" 开头
     lines = text.splitlines()
     for line in reversed(lines[-5:]):
         line = line.strip()
@@ -57,7 +53,6 @@ def extract_final_answer(text):
         if match:
             return match.group(1).upper()
     
-    # 再不行就返回 None
     return None
 class DataEvaluator:
     def __init__(self):
@@ -101,7 +96,7 @@ def generate_text(api_url, question, model_name, stream=False):
     headers = {
         'accept': 'application/json',
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer '  # 如有需要，请填入 API Key
+        'Authorization': 'Bearer '
     }
     data = {
         "messages": [{"content": question, "role": "user"}],
@@ -124,12 +119,11 @@ def main(concurrent_requests, data_evaluator: DataEvaluator, result_file, log_fi
     results = []
     file_lock = threading.Lock()
     
-    # 打乱数据顺序，并选择需要测试的实例数
     random.seed(42)
     random.shuffle(data_evaluator.data)
     data_subset = data_evaluator.data[:min(concurrent_requests, len(data_evaluator.data))]
     
-    batch_size = 10  # 每批次最多 10 个实例
+    batch_size = 10
 
     def worker(index, data_item):
         nonlocal total_score
@@ -140,7 +134,6 @@ def main(concurrent_requests, data_evaluator: DataEvaluator, result_file, log_fi
             prediction = generate_text(api_url, question, model_name)
             if prediction is None:
                 raise Exception(f"Failed to get prediction for question: {question}")
-            # 正确答案：将数字转换成字母（0->A, 1->B, 2->C, 3->D）
             answer = chr(data_item['answer'] + 65)
             processed_prediction = data_evaluator.post_processing(prediction)
             score = data_evaluator.score(processed_prediction, answer)
@@ -155,7 +148,6 @@ def main(concurrent_requests, data_evaluator: DataEvaluator, result_file, log_fi
                 "exact_score": exact_score,
                 "time": elapsed_time
             }
-            # 写入结果时加锁保证线程安全
             with file_lock:
                 with open(result_file, 'a', encoding='utf-8') as f:
                     json.dump(result_data, f, ensure_ascii=False, indent=4)
@@ -165,7 +157,6 @@ def main(concurrent_requests, data_evaluator: DataEvaluator, result_file, log_fi
             print(f"Error processing request {index}: {e}")
             return None
 
-    # 按批次处理，每批最多 10 个任务
     for batch_start in range(0, len(data_subset), batch_size):
         batch = data_subset[batch_start: batch_start + batch_size]
         with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as executor:

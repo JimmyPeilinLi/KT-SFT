@@ -116,8 +116,8 @@ class SQLUtil(metaclass=Singleton):
         what = what.model_dump(mode="json")
         try:
             for key in what.keys():
-                if what[key] is not None:  # 检查b中的字段是否为None
-                    setattr(existing, key, what[key])  # 更新a的字段
+                if what[key] is not None:
+                    setattr(existing, key, what[key])
             session.commit()
             session.refresh(existing)
         except Exception as e:

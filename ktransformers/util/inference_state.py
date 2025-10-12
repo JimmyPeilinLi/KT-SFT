@@ -1,4 +1,3 @@
-# 不然util/utils.py: InferenceState和sft/peft_utils/lora_layer.py:KTLinearLora循环引用
 
 import enum
 

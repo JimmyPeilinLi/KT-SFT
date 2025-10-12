@@ -187,7 +187,6 @@ def local_chat(
         if is_sft == True:
             raise AttributeError("We do not support more than one adapter up to now...")
         
-        # TODO: 判断如果是GGUF格式的adapter，把他跟原来的模型一起处理一下，在后面进行推理
         if use_adapter_path.endswith('.gguf'):
             inject_lora_layer(model, use_adapter_path)
             adapter_gguf_loader = GGUFLoader(use_adapter_path)
@@ -199,6 +198,9 @@ def local_chat(
             adapter_loader = SafeTensorLoader(use_adapter_path)
             device = next(model.parameters()).device
             
+            # for name, param in model.named_parameters():
+            #     print(name, param.shape)
+
             for key in adapter_loader.tensor_file_map.keys():
                 try:
                     tensor = adapter_loader.load_tensor(key, device=device)
@@ -238,17 +240,14 @@ def local_chat(
     #     enc = tokenizer.apply_chat_template([{"role":"user","content":prompt_text}],
     #                                         add_generation_prompt=True, return_tensors="pt")
     #     x = enc.to(device)
-    #     # 注意：这里用 input_ids，走标准前向，不走你自定义的 inputs_embeds 路径
     #     logits = model(input_ids=x, use_cache=False, return_dict=False)[0]
     #     return int(torch.argmax(logits[:, -1, :], dim=-1)[0])
 
-    # # —— 立即对拍一次（可用你的“时尚趋势”问题作为 prompt）——
     # try:
     #     device_map = model.gguf_loader.tensor_device_map
     #     from ktransformers.util.utils import get_device, torch_device_mapping
     #     torch_device = get_device('model.layers.0.self_attn', device_map)
     #     torch_device = torch_device_mapping.get(torch_device, torch_device)
-    #     probe_id = first_token_argmax_baseline(model, tokenizer, "你听说过今年的时尚趋势吗？", torch_device)
     #     print(f"[FIRST-TOKEN PROBE] argmax id = {probe_id} ({tokenizer.decode([probe_id])!r})")
     # except Exception as e:
     #     print("[FIRST-TOKEN PROBE] failed:", e)
@@ -320,8 +319,8 @@ def local_chat(
         enc_ref  = tokenizer(refs,  add_special_tokens=False, padding=True, return_tensors="np")
 
         ep = EvalPrediction(
-            predictions=enc_pred["input_ids"],   # numpy[int]，形状 [B, T_pred]
-            label_ids=enc_ref["input_ids"]       # numpy[int]，形状 [B, T_ref]
+            predictions=enc_pred["input_ids"],
+            label_ids=enc_ref["input_ids"]
         )
 
         metrics = compute_metrics(ep, compute_result=True)
@@ -398,9 +397,9 @@ if __name__ == "__main__":
         parser.add_argument("--is_sft", type=lambda x: x.lower() == "true", default=False)
         parser.add_argument("--sft_data_path", default=None)
         parser.add_argument("--save_adapter_path", default=None)
-        parser.add_argument("--use_adapter", default=False)
+        parser.add_argument("--use_adapter", type=lambda x: x.lower() == "true", default=False)
         parser.add_argument("--use_adapter_path", default=None)
-        parser.add_argument("--is_test_data", default=False)
+        parser.add_argument("--is_test_data", type=lambda x: x.lower() == "true", default=False)
         parser.add_argument("--test_data_path", default=None)
         parser.add_argument("--output_dir", default=None)
 
@@ -429,22 +428,23 @@ if __name__ == "__main__":
             # model_path="/mnt/data/data/DeepSeek-V3-671B-BF16",
             # model_config_path="/mnt/data/data/DeepSeek-V3-671B-BF16",
             # gguf_path="/mnt/data/data/DeepSeek-V3-671B-BF16",
-            model_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
-            model_config_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
-            gguf_path="/mnt/data2/models/DeepSeek-V2-Lite-Chat",
-            cpu_infer=112,
+            model_path="/mnt/data/models/DeepSeek-V2-Lite-Chat",
+            model_config_path="/mnt/data/models/DeepSeek-V2-Lite-Chat",
+            gguf_path="/mnt/data/models/DeepSeek-V2-Lite-Chat",
+            cpu_infer=32,
             max_new_tokens=1000,
             force_think=False,
             # optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V3-Chat-multi-gpu.yaml",
             optimize_config_path="ktransformers/optimize/optimize_rules/DeepSeek-V2-Lite-Chat-sft-amx.yaml",
-            is_sft=True,
-            sft_data_path="test_adapter/western_train.json",
+            is_sft=False,
+            sft_data_path="test_adapter/NekoQA_train.json",
+            # sft_data_path="test_adapter/western_train.json",
             # sft_data_path="test_adapter/500token_test.json",
-            save_adapter_path="/mnt/data/lpl_adapter/KT_newLoader_CPU_deepseekV2_WEST_AFS",
-            use_adapter=False,
-            use_adapter_path="/mnt/data/lpl_adapter/TF_new_PUREmultiGPU_deepseekV2_WEST_AFS/checkpoint-660",
+            save_adapter_path="/mnt/data/lpl/test_adapter/test_KT_newLoader_singleGPU_deepseekV2_Neko_AFS",
+            use_adapter=True,
+            use_adapter_path="/mnt/data/lpl/test_adapter/llamafactory_deepseekV2_WEST_AFS/checkpoint-661",
             is_test_data=False,
-            test_data_path="test_adapter/western_test.json", # TODO: 目前这个不能超过512token，建议还是写个截断。
-            output_dir="/mnt/data/lpl_adapter/KT_PUREmultiGPU_deepseekV2_WEST_AFSnoKV/checkpoint-594",
+            test_data_path="test_adapter/western_test.json",
+            output_dir="/mnt/data/lpl/test_adapter/KT_newLoader_singleGPU_deepseekV2_WEST_AFS/baselines",
         )
         

@@ -146,7 +146,7 @@ async def chat(request: Request, input: OllamaChatCompletionRequest):
 
     if input.stream:
         async def inner():
-            start_time = time()  # 记录开始时间（秒）
+            start_time = time()
             tokens = []
 
             async for res in interface.inference(input_message, id):
@@ -161,7 +161,6 @@ async def chat(request: Request, input: OllamaChatCompletionRequest):
                         done=False
                     )
                     yield d.model_dump_json() + '\n'
-            # 计算性能数据
             end_time = time()
             total_duration = int((end_time - start_time) * 1_000_000_000) # unit: ns
             prompt_eval_count = raw_usage.prefill_count

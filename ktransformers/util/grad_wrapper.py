@@ -24,8 +24,6 @@ def maybe_no_grad(_func=None):
         return wrapper
 
     if _func is None:
-        # 使用了 @maybe_no_grad()
         return decorator
     else:
-        # 使用了 @maybe_no_grad
         return decorator(_func)

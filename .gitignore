@@ -82,3 +82,5 @@ test_adapter/ESC_inst_all.json
 
 duipai_pure_tf
 data/dataset_info.json
+
+test_adapter/*.json

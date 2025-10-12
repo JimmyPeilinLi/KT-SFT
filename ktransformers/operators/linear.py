@@ -227,9 +227,7 @@ class KLinearQ8(KLinearBase):
         
         x = x.to(device=self.device, dtype=self.compute_dtype)
         
-        # 使用原始权重做矩阵乘法，模拟原始行为
 
-        # 反量化权重进行矩阵乘法
         weight_dequant = self._dequantize_weight(self.weight, self.weight_scale, bits=8)
         out = x @ weight_dequant.T
         

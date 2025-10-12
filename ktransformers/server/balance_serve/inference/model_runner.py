@@ -40,7 +40,6 @@ def pad_num_tokens(num_tokens):
 def deduplicate_and_sort(lst):
     return sorted(set(lst))
 def generate_cuda_graphs(chunk_size: int) -> list:
-    # 如果输入不符合要求，assert掉
     assert chunk_size <= 1024 or chunk_size % 1024 == 0, "chunk_size must <= 1024 or a multiple of 1024"
     base_list = [1, 2, 3, Config().max_batch_size, 64, 256, 512, chunk_size]
 
@@ -60,7 +59,6 @@ class ModelRunner:
     def __init__(self, model = None, device = None, use_cuda_graph = False, max_decode_batch_size = 1, max_chunk_size = 4096, num_mini_batches: int = 1, page_size = 256, block_num = 8):
         
         self.stream = torch.cuda.Stream(device=device)
-        # 先注释掉
         self.model = model  # Compile and move model to the specified device
         self.device = device
         self.input = None

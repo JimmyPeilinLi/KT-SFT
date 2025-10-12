@@ -17,7 +17,6 @@ def generate_text(api_url,question , model_name, stream=False, auth_token=None):
     headers = {
         'accept': 'application/json',
         'Content-Type': 'application/json',
-        # 添加 API Key
         'Authorization' : 'Bearer ' + auth_token if auth_token else ''
     }
     question = instruct_prompt(question)
@@ -42,7 +41,6 @@ def load_data(file_path):
         Load data from a Parquet file into a list.
         Each record in the Parquet file should represent an individual record.
         """
-        # 读取 Parquet 文件
         # dataset = load_dataset('parquet', data_files=file_path)
         data = []
         ds = load_dataset(file_path)

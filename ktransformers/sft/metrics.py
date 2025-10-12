@@ -98,7 +98,7 @@ class ComputeSimilarity:
                 scores = rouge.get_scores(" ".join(hypothesis), " ".join(reference))
                 result = scores[0]
                 
-                refs = [reference]                          # 单参考；多参考可传入多条 list
+                refs = [reference]
                 hyp  = hypothesis
                 smooth = SmoothingFunction().method3
                 bleu1 = sentence_bleu(refs, hyp, weights=(1.0, 0.0, 0.0, 0.0), smoothing_function=smooth)

@@ -23,7 +23,6 @@ class DataEvaluator:
         Load data from a Parquet file into a list.
         Each record in the Parquet file should represent an individual record.
         """
-        # 读取 Parquet 文件
         # dataset = load_dataset('parquet', data_files=file_path)
         splits = {'test': 'all/test-00000-of-00001.parquet', 'validation': 'all/validation-00000-of-00001.parquet',
                   'dev': 'all/dev-00000-of-00001.parquet',
@@ -39,7 +38,6 @@ class DataEvaluator:
         :param record: Dictionary containing fields to populate the template.
         :return: A formatted prompt string.
         """
-        # 查看ABCD。。。的选项
         options_str = "\n".join([f"{chr(65 + i)}. {opt}" for i, opt in enumerate(record['choices'])])
         prompt = hint + "\nQuestion: " + record['question'] + "\n" + options_str + "\nAnswer: '"
         return prompt
@@ -72,7 +70,6 @@ def generate_text(api_url, question, model_name, stream=False):
     headers = {
         'accept': 'application/json',
         'Content-Type': 'application/json',
-        # 添加 API Key
         'Authorization' : 'Bearer '
     }
     data = {
@@ -99,7 +96,6 @@ def main(concurrent_requests, data_evaluator: DataEvaluator, result_file, log_fi
     total_score = 0
 
     results = []
-   # 设置随机数种子
     random.seed(42)
     random.shuffle(data_evaluator.data)
     for i in range(min(concurrent_requests, len(data_evaluator.data))):

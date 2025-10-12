@@ -2,7 +2,6 @@ import os
 
 class _GlobalConfig:
     def __init__(self):
-        # 设置默认值
         self._config = {
             "mod": 'infer', # infer or sft
         }
@@ -25,5 +24,4 @@ class _GlobalConfig:
     def __setitem__(self, key, value):
         self._config[key] = value
 
-# 单例实例，供其他模块 import
 GLOBAL_CONFIG = _GlobalConfig()

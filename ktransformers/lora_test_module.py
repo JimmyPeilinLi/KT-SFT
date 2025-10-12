@@ -33,7 +33,6 @@ class TestModelLora(nn.Module):
 
         random_linear_layer = nn.Linear(in_features=3072, out_features=2048, bias=False)
         
-        # 模拟原始线性层
         orig_linear = KTransformersLinear(
             key='blk.0.attn_q',
             gguf_loader=gguf_loader,
@@ -55,7 +54,6 @@ class TestModelLora(nn.Module):
 class TestModelBase(nn.Module):
     def __init__(self):
         super().__init__()
-        # 需填充必要的初始化参数
         self.layer = KTransformersLinear(
             key="linear",
             gguf_loader=gguf_loader, 
@@ -65,11 +63,11 @@ class TestModelBase(nn.Module):
         )
         # self.layer.generate_linear.weight = torch.randn(3072, 2048).to("cuda")
         weight = torch.randn(3072, 2048, device="cuda")
-        self.layer.load(w=nn.Parameter(weight), mode = InferenceState.GENERATE) # 这里不存在矩阵转置，所以没有TBackward也很合理
+        self.layer.load(w=nn.Parameter(weight), mode = InferenceState.GENERATE)
         # self.layer.generate_linear.weight = nn.Parameter(torch.randn(3072, 2048).to("cuda"))
         self.fc1 = nn.Linear(3072, 2048, bias=False)
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(2048, 3072, bias=False) # 这里有一个矩阵转置的T，所以TBackward
+        self.fc2 = nn.Linear(2048, 3072, bias=False)
         # self.layer.load(mode=InferenceState.GENERATE)
 
     def forward(self, x):
@@ -82,7 +80,6 @@ class TestModelBase(nn.Module):
 class TestModelTorch(nn.Module):
     def __init__(self):
         super().__init__()
-        # 需填充必要的初始化参数
         self.layer = KLinearTorch(
             key="linear",
             gguf_loader=gguf_loader, 
@@ -92,10 +89,10 @@ class TestModelTorch(nn.Module):
         # self.layer.weight = nn.Parameter(torch.randn(3072, 2048).to("cuda"))
         # self.layer.weight = torch.randn(3072, 2048).to("cuda")
         weight = torch.randn(3072, 2048, device="cuda")
-        self.layer.load(w=nn.Parameter(weight), device="cuda") # 这里不存在矩阵转置，所以没有TBackward也很合理
+        self.layer.load(w=nn.Parameter(weight), device="cuda")
         self.fc1 = nn.Linear(3072, 2048, bias=False)
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(2048, 3072, bias=False) # 这里有一个矩阵转置的T，所以TBackward
+        self.fc2 = nn.Linear(2048, 3072, bias=False)
         # self.layer.load(mode=InferenceState.GENERATE) 
 
     def forward(self, x):
@@ -113,7 +110,6 @@ class TestModelTorch(nn.Module):
 # make_dot(out, params=dict(model.named_parameters())).render("KTLinear_graph", format="svg")
 
 
-# # 对基础模型 WELL DONE for test!
 # model = TestModelBase()
 # x = torch.randn(2048, 3072, requires_grad=True)
 # out = model(x)
@@ -123,7 +119,6 @@ class TestModelTorch(nn.Module):
 # MyConvNet_graph.theme=hl.graph.THEMES['blue'].copy()
 # MyConvNet_graph.save(path='./base_graph.png',format='png')
 
-# # 对 LoRA 模型
 # model = TestModelLora()
 # x = torch.randn(2048, 3072, requires_grad=True)
 # out = model(x)
@@ -140,31 +135,24 @@ class BaseModel(nn.Module):
     def forward(self, x):
         return self.linear(x)
 
-# 初始化模型并移动到GPU
 model = BaseModel().to("cuda")
 
-# 配置LoRA参数
 lora_config = LoraConfig(
-    r=8,  # LoRA秩
+    r=8,
     lora_alpha=16,
-    target_modules=["linear"],  # 指定要注入LoRA的模块
+    target_modules=["linear"],
     lora_dropout=0.0,
     bias="none",
 )
 
-# 应用LoRA适配器
 peft_model = get_peft_model(model, lora_config)
-print(peft_model)  # 查看模型结构，确认LoRA注入
+print(peft_model)
 
-# 生成测试输入
 x = torch.randn(2048, 3072, requires_grad=True).to("cuda")
 
-# 前向传播
 out = peft_model(x)
 
-# 生成计算图（注意捕捉所有参数）
 dot = make_dot(out, 
              params=dict(peft_model.named_parameters()))
 
-# 保存为SVG文件
 dot.render("origin_lora_graph", format="svg")
