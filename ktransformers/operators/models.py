@@ -582,6 +582,7 @@ class KDeepseekV2Model(BaseInjectedModule):
             int | None
         ) = None,  # if None, no per-layer prefill
     ) -> Union[Tuple, BaseModelOutputWithPast]:
+        self.gradient_checkpointing = False
         if per_layer_prefill_intput_threshold is None:
             per_layer_prefill_intput_threshold = self.per_layer_prefill_intput_threshold
         per_layer_prefill_flag = False
