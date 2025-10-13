@@ -41,6 +41,7 @@ from ktransformers.sft.lora import inject_lora_layer, lora_and_load_adapter
 from ktransformers.util.custom_loader import GGUFLoader, SafeTensorLoader
 from ktransformers.util.globals import GLOBAL_CONFIG
 from ktransformers.sft.metrics import ComputeSimilarity
+from ktransformers.sft.monkey_patch_torch_module import install_patch, restore_patch
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
@@ -382,6 +383,7 @@ def local_chat(
 
 
 if __name__ == "__main__":
+    install_patch()
     IS_DEBUG = True
 
     if IS_DEBUG == False:
@@ -441,10 +443,10 @@ if __name__ == "__main__":
             # sft_data_path="test_adapter/western_train.json",
             # sft_data_path="test_adapter/500token_test.json",
             save_adapter_path="/mnt/data/lpl/test_adapter/test_KT_newLoader_singleGPU_deepseekV2_Neko_AFS",
-            use_adapter=True,
-            use_adapter_path="/mnt/data/lpl/test_adapter/llamafactory_deepseekV2_WEST_AFS/checkpoint-661",
-            is_test_data=False,
-            test_data_path="test_adapter/western_test.json",
-            output_dir="/mnt/data/lpl/test_adapter/KT_newLoader_singleGPU_deepseekV2_WEST_AFS/baselines",
+            use_adapter=False,
+            use_adapter_path="/mnt/data/lpl/test_adapter/Kllama_deepseekV2_AfriMed_mcq",
+            is_test_data=True,
+            test_data_path="/home/lpl/LLaMA-Factory-KT/data/mcq_test.json",
+            output_dir="/mnt/data/lpl/test_adapter/Kllama_deepseekV2_AfriMed_mcq/baselines",
         )
         
