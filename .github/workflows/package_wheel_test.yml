@@ -1,36 +1,43 @@
-name: Build Wheels Tests
-on: 
+name: build-wheels-ubuntu22
+
+on:
   workflow_dispatch:
     inputs:
       release:
-        description: 'Release? 1 = yes, 0 = no'
+        description: 'Release? keep 0 for local artifacts only'
         default: '0'
         required: true
         type: string
+
 jobs:
   build_wheels:
-    name: ${{ matrix.os }} Python=${{ matrix.pyver }} CUDA=${{ matrix.cuda }} CPU_INSTRUCT=${{ matrix.instruct }} Torch=${{ matrix.torch }}
-    runs-on: ${{ matrix.os }}
+    name: ubuntu-22.04 Py=${{ matrix.pyver }} Torch=${{ matrix.torch }} cu${{ matrix.torch_cu }} CPU=${{ matrix.instruct }}
+    runs-on: ubuntu-22.04
+
     strategy:
       fail-fast: false
       matrix:
         include:
-        # Ubuntu
-        - { os: ubuntu-20.04, pyver:  '3.12', cuda: '12.5.1', torch: '2.4.0', cudaarch: '8.9;9.0+PTX', instruct: 'FANCY', torch_cu: '124'}
-        - { os: ubuntu-20.04, pyver:  '3.12', cuda: '12.2.2', torch: '2.3.0', cudaarch: '8.9;9.0+PTX', instruct: 'FANCY', torch_cu: '121'}
-        - { os: windows-2022, pyver:  '3.11', cuda: '12.5.1', torch: '2.4.0', cudaarch: '8.9;9.0+PTX', instruct: 'AVX2', torch_cu: '124'}
-        - { os: windows-2022, pyver:  '3.12', cuda: '12.1.1', torch: '2.3.0', cudaarch: '8.9;9.0+PTX', instruct: 'AVX2', torch_cu: '121'}
+          - { pyver: '3.10', torch: '2.8.0', torch_cu: '126', cuda: '12.6.1', cudaarch: '8.0;8.6;8.7;8.9;9.0+PTX', instruct: 'FANCY' }
+          - { pyver: '3.11', torch: '2.8.0', torch_cu: '126', cuda: '12.6.1', cudaarch: '8.0;8.6;8.7;8.9;9.0+PTX', instruct: 'FANCY' }
+          - { pyver: '3.12', torch: '2.8.0', torch_cu: '126', cuda: '12.6.1', cudaarch: '8.0;8.6;8.7;8.9;9.0+PTX', instruct: 'FANCY' }
+          # - { pyver: '3.11', torch: '2.8.0', torch_cu: '124', cuda: '12.4.1', cudaarch: '8.0;8.6;8.7;8.9;9.0+PTX', instruct: 'FANCY' }
+          # - { pyver: '3.12', torch: '2.8.0', torch_cu: '124', cuda: '12.4.1', cudaarch: '8.0;8.6;8.7;8.9;9.0+PTX', instruct: 'FANCY' }
+          # - { pyver: '3.10', torch: '2.8.0', torch_cu: '125', cuda: '12.5.1', cudaarch: '8.0;8.6;8.7;8.9;9.0+PTX', instruct: 'FANCY' }
+          # - { pyver: '3.10', torch: '2.8.0', torch_cu: '124', cuda: '12.4.1', cudaarch: '8.0;8.6;8.7;8.9;9.0+PTX', instruct: 'AVX512' }
+          # - { pyver: '3.10', torch: '2.8.0', torch_cu: '124', cuda: '12.4.1', cudaarch: '8.0;8.6;8.7;8.9;9.0+PTX', instruct: 'AVX2' }
 
     defaults:
       run:
-        shell: pwsh
-    
+        shell: bash -l {0}   # 关键：用 bash login shell，保证 conda 激活
+
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@v1.3.1
-        if: runner.os == 'Linux'
         with:
           tool-cache: true
           android: true
@@ -39,24 +46,10 @@ jobs:
           large-packages: false
           swap-storage: true
 
-      - uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.pyver }}
-
-      - name: check_space
-        run: |
-          if($IsLinux) {df -h}
-          if($IsWindows) {Get-PSDrive -PSProvider 'FileSystem'}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Setup Mamba
-        if: matrix.cuda != ''
+      - name: Setup Mamba (Miniforge)
         uses: conda-incubator/setup-miniconda@v3
         with:
-          activate-environment: "ktransformers"
+          activate-environment: ktransformers
           python-version: ${{ matrix.pyver }}
           miniforge-variant: Miniforge3
           miniforge-version: latest
@@ -64,78 +57,70 @@ jobs:
           add-pip-as-python-dependency: true
           auto-activate-base: false
 
+      - name: Check Disk
+        run: df -h
 
-
-      - name: build web
+      - name: (Optional) Build website
         run: |
-          cd ktransformers/website/
-          npm install
-          npm run build
-          cd ../../
+          if [ -d "ktransformers/website" ]; then
+            pushd ktransformers/website
+            npm ci
+            npm run build
+            popd
+          else
+            echo "website dir not found; skip"
+          fi
 
-      - name: build for cuda
-        if: matrix.cuda != ''
+      - name: Install CUDA (from NVIDIA channel)
+        env:
+          CUDA_VER: ${{ matrix.cuda }}
         run: |
-          git submodule init
-          git submodule update
-          if($IsWindows){
-            $originalPath = Get-Location
-            Import-Module 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\Microsoft.VisualStudio.DevShell.dll'
-            Enter-VsDevShell -VsInstallPath 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise' -DevCmdArguments '-arch=x64 -host_arch=x64'
-            $env:DISTUTILS_USE_SDK=1
-            Set-Location $originalPath
-          }
-          $cudaVersion = '${{ matrix.cuda }}'
-          $env:MAMBA_NO_LOW_SPEED_LIMIT = 1
-          mamba install -y -c nvidia/label/cuda-$cudaVersion cuda-toolkit cuda-runtime
-          $env:CUDA_PATH = $env:CONDA_PREFIX
-          $env:CUDA_HOME = $env:CONDA_PREFIX
-          if ($IsLinux) {
-            $env:LD_LIBRARY_PATH = $env:CONDA_PREFIX + '/lib:' + $env:LD_LIBRARY_PATH
-            $env:LD_LIBRARY_PATH = $env:CONDA_PREFIX + '/lib/python${{ matrix.pyver }}/site-packages/nvidia/nvjitlink/lib:' + $env:LD_LIBRARY_PATH
-            if (!(Test-Path $env:CUDA_HOME/lib64)) {
-              New-Item -ItemType SymbolicLink -Path $env:CUDA_HOME/lib64 -Target $env:CUDA_HOME/lib
-            }
-          }
-          if ($IsWindows) {
-            if (Test-Path -Path "$env:CUDA_PATH/Library/bin/nvcc.exe"){
-              $env:CUDA_PATH = "$env:CUDA_PATH/Library"
-              $env:CUDA_HOME = $env:CUDA_PATH
-            }
-            $env:PATH = "$env:CUDA_PATH/bin;" + $env:PATH
-            $directory = "$env:CUDA_PATH/lib/x64/"
-            if (-not (Test-Path -Path $directory)) {
-              New-Item -ItemType Directory -Path $directory
-              Write-Output "Directory '$directory' created."
-            }
-            cp $env:CUDA_PATH/lib/*.lib $env:CUDA_PATH/lib/x64/
-            $env:INCLUDE =$env:CUDA_PATH + "/include/targets/x64;" + $env:INCLUDE
-            $env:INCLUDE =$env:CONDA_PREFIX + "/include;" + $env:INCLUDE
-          }
-          python -m pip install torch==${{ matrix.torch }} torchvision torchaudio --index-url https://download.pytorch.org/whl/cu${{ matrix.torch_cu }}
-          python -m pip install cpufeature build wheel ninja packaging setuptools
-          $env:KTRANSFORMERS_FORCE_BUILD = "TRUE"
-          $env:CPU_INSTRUCT = '${{ matrix.instruct }}'
-          $env:TORCH_CUDA_ARCH_LIST = '${{ matrix.cudaarch }}'
+          mamba install -y -c nvidia/label/cuda-$CUDA_VER cuda-toolkit cuda-runtime
+          export CUDA_HOME="$CONDA_PREFIX"
+          export CUDA_PATH="$CONDA_PREFIX"
+          mkdir -p "$CUDA_HOME/lib64" || true
+          export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$CONDA_PREFIX/lib/python${{ matrix.pyver }}/site-packages/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH"
+          echo "CUDA_HOME=$CUDA_HOME" >> $GITHUB_ENV
+          echo "CUDA_PATH=$CUDA_PATH" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> $GITHUB_ENV
+
+      - name: Install build deps + Torch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "cmake>=3.25.0" ninja packaging setuptools wheel build auditwheel
+          python -m pip install "torch==${{ matrix.torch }}" torchvision torchaudio --index-url https://download.pytorch.org/whl/cu${{ matrix.torch_cu }}
+
+      - name: Build wheel from source (force, no prebuilt)
+        env:
+          KTRANSFORMERS_FORCE_BUILD: "TRUE"
+          KTRANSFORMERS_DISABLE_PREBUILT: "1"
+          CPU_INSTRUCT: ${{ matrix.instruct }}
+          TORCH_CUDA_ARCH_LIST: ${{ matrix.cudaarch }}
+        run: |
+          rm -rf build/ dist/ csrc/ktransformers_ext/build
           python -m build --no-isolation --verbose
+          python - <<'PY'
+import glob,zipfile,sys
+w=sorted(glob.glob("dist/*.whl"))
+assert w, "no wheels"
+w=w[-1]
+with zipfile.ZipFile(w) as z:
+    names=z.namelist()
+    assert any("cpuinfer_ext" in n for n in names), f"wheel missing cpuinfer_ext: {w}\nFound: {names}"
+print("OK - wheel contains cpuinfer_ext:", w)
+PY
 
-
-      - name: create Rlease dir
+      - name: Auditwheel repair (manylinux)
         run: |
-          if ($IsWindows) {
-            $env:date = $(Get-Date -Format "yyyy-MM-dd")
-            New-Item -ItemType Directory -Force -Path "$Env:USERPROFILE\.ssh"
-            $Env:SSH_PATH = "$Env:USERPROFILE\.ssh\id_rsa"
-            Set-Content -Path $Env:SSH_PATH -Value "${{ secrets.SSH_PRIVATE_KEY }}"
-            (Get-Content -Path $Env:SSH_PATH).Replace("`r`n","`n") | Set-Content -Path $Env:SSH_PATH
-            chmod 600 $Env:SSH_PATH
-          }
-          if ($IsLinux) {
-            $env:date = $(date +%Y-%m-%d)
-            mkdir -p ~/.ssh/
-            echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-            chmod 600 ~/.ssh/id_rsa
-          }
-          
-          ssh -p ${{ secrets.SSH_PORT }} -o StrictHostKeyChecking=no root@${{ secrets.SSH_SERVER }} "mkdir -p /mnt/data/release-$env:date"
-          scp -P ${{ secrets.SSH_PORT }} -o StrictHostKeyChecking=no dist/*.whl root@${{ secrets.SSH_SERVER }}:/mnt/data/release-$env:date/
+          mkdir -p dist/repaired
+          auditwheel show dist/*.whl || true
+          auditwheel repair -w dist/repaired dist/*.whl
+          ls -lh dist dist/repaired || true
+
+      - name: Upload artifacts (local testing)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-ubuntu22.04-py${{ matrix.pyver }}-cu${{ matrix.torch_cu }}-${{ matrix.instruct }}
+          path: |
+            dist/*.whl
+            dist/repaired/*.whl

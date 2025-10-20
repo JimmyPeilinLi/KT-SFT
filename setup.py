@@ -50,8 +50,6 @@ if dev_backend == "xpu":
 else:
     triton_dep = ["triton>=3.2"]
 
-with_balance = os.environ.get("USE_BALANCE_SERVE", "0") == "1"
-
 class CpuInstructInfo:
     CPU_INSTRUCT = os.getenv("CPU_INSTRUCT", "NATIVE")
     FANCY = "FANCY"
@@ -259,7 +257,8 @@ class BuildWheelsCommand(_bdist_wheel):
 
 
     def run(self):
-        if VersionInfo.FORCE_BUILD:
+        disable_prebuilt = os.getenv("KTRANSFORMERS_DISABLE_PREBUILT", "")
+        if disable_prebuilt or VersionInfo.FORCE_BUILD:
             super().run()
             return
         wheel_filename, wheel_url = self.get_wheel_name()
@@ -639,31 +638,21 @@ elif torch.xpu.is_available(): #XPUExtension is not available now.
 else:
     raise ValueError("Unsupported backend: CUDA_HOME ROCM_HOME MUSA_HOME are not set and XPU is not available.")
 
-if not torch.xpu.is_available():
-    ext_modules = [
-        CMakeExtension("cpuinfer_ext", os.fspath(Path("").resolve() / "csrc" / "ktransformers_ext")),
-        ops_module,
-        CUDAExtension(
-            'vLLMMarlin', [
-                'csrc/custom_marlin/binding.cpp',
-                'csrc/custom_marlin/gptq_marlin/gptq_marlin.cu',
-                'csrc/custom_marlin/gptq_marlin/gptq_marlin_repack.cu',
-            ],
-            extra_compile_args={
-                'cxx': ['-O3'],
-                'nvcc': ['-O3', '-Xcompiler', '-fPIC'],
-            },
-        )
-    ]
-    if with_balance:
-        print("using balance_serve")
-        ext_modules.append(
-            CMakeExtension("balance_serve", os.fspath(Path("").resolve()/ "csrc"/ "balance_serve"))
-        )
-else:
-    ext_modules = [
-        CMakeExtension("cpuinfer_ext", os.fspath(Path("").resolve() / "csrc" / "ktransformers_ext")),
-    ]
+ext_modules = [
+	CMakeExtension("cpuinfer_ext", os.fspath(Path("").resolve() / "csrc" / "ktransformers_ext")),
+	ops_module,
+	CUDAExtension(
+		'vLLMMarlin', [
+			'csrc/custom_marlin/binding.cpp',
+			'csrc/custom_marlin/gptq_marlin/gptq_marlin.cu',
+			'csrc/custom_marlin/gptq_marlin/gptq_marlin_repack.cu',
+		],
+		extra_compile_args={
+			'cxx': ['-O3'],
+			'nvcc': ['-O3', '-Xcompiler', '-fPIC'],
+		},
+	)
+]
 
 setup(
     name=VersionInfo.PACKAGE_NAME,
