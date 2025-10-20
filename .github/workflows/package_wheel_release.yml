@@ -1,4 +1,4 @@
-name: Build Wheels (Ubuntu 22.04, local artifacts)
+name: build-wheels-ubuntu22
 
 on:
   workflow_dispatch:
