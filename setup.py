@@ -34,11 +34,22 @@ import torch.version
 from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 from setuptools import setup, Extension
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME, ROCM_HOME
+from packaging.requirements import Requirement
 try:
     from torch_musa.utils.simple_porting import SimplePorting
     from torch_musa.utils.musa_extension import BuildExtension, MUSAExtension, MUSA_HOME
 except ImportError:
     MUSA_HOME=None
+try:
+    import tomllib  # Py3.11+
+except Exception:
+    import tomli as tomllib  # 兼容老 Python
+
+def _load_pyproject_deps():
+    with open("pyproject.toml", "rb") as f:
+        data = tomllib.load(f)
+    return list(data.get("project", {}).get("dependencies", []) or [])
+
 KTRANSFORMERS_BUILD_XPU = torch.xpu.is_available()
 
 # 检测 DEV_BACKEND 环境变量
@@ -48,7 +59,28 @@ if dev_backend == "xpu":
         "pytorch-triton-xpu==3.3.0"
     ]
 else:
-    triton_dep = ["triton>=3.2"]
+    triton_dep = []
+
+base_deps = _load_pyproject_deps()
+combined_deps = base_deps + triton_dep
+
+
+def _strip_req(reqs, name: str):
+    out = []
+    for r in reqs:
+        try:
+            rn = Requirement(r).name.lower()
+        except Exception:
+            rn = r.split()[0].lower()
+        if rn != name.lower():
+            out.append(r)
+    return out
+
+_tver = parse(torch.__version__)
+_tlow = f"{_tver.major}.{_tver.minor}"
+_thigh = f"{_tver.major}.{_tver.minor + 1}"
+TORCH_RANGE = f"torch>={_tlow},<{_thigh}"
+install_requires_pinned = _strip_req(combined_deps, "torch") + [TORCH_RANGE]
 
 with_balance = os.environ.get("USE_BALANCE_SERVE", "0") == "1"
 
@@ -230,7 +262,7 @@ class VersionInfo:
         cpu_instruct = self.get_cpu_instruct()
         backend_version = ""
         if CUDA_HOME is not None:
-            backend_version = f"cu{self.get_cuda_bare_metal_version(CUDA_HOME)}"
+            backend_version = f"cu{self.get_cuda_version_of_torch()}"
         elif MUSA_HOME is not None:
             backend_version = f"mu{self.get_musa_bare_metal_version(MUSA_HOME)}"
         elif ROCM_HOME is not None:
@@ -668,7 +700,7 @@ else:
 setup(
     name=VersionInfo.PACKAGE_NAME,
     version=VersionInfo().get_package_version(),
-    install_requires=triton_dep,
+    install_requires=install_requires_pinned,
     cmdclass={"bdist_wheel":BuildWheelsCommand ,"build_ext": CMakeBuild},
     ext_modules=ext_modules
 )

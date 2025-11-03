@@ -84,3 +84,5 @@ duipai_pure_tf
 data/dataset_info.json
 
 test_adapter/*.json
+
+.venv*
