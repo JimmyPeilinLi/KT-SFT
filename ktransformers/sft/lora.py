@@ -308,13 +308,14 @@ class KTrainer(Trainer):
             with amp.scale_loss(loss, self.optimizer) as scaled_loss:  # type: ignore
                 scaled_loss.backward()
         else:
+            self.model_accepts_loss_kwargs = False
             if not self.model_accepts_loss_kwargs and self.compute_loss_func is None:
                 loss = loss / self.args.gradient_accumulation_steps
 
             if getattr(self.accelerator, "distributed_type", None) and \
                str(self.accelerator.distributed_type) == "DistributedType.DEEPSPEED":
                 kwargs["scale_wrt_gas"] = False
-
+            
             self.accelerator.backward(loss, **kwargs)
 
         ret = loss.detach()
